@@ -27,6 +27,12 @@ Click the W button beside Settings at the sidebar foot to open the "Add WSL work
 
 Click "Create & open" to start a new session in the workspace. In the new session the bash tool executes commands inside the chosen distribution and `read`/`write`/`edit` operate on WSL files, so every path the model sees is a Linux path. The mode picker keeps working as usual: Standard, PTC, Minimal and Creative each land on their WSL variant automatically, and Windows files stay reachable from inside the session under `/mnt/<drive>` (for example `/mnt/c/Users/...`).
 
+## Behavior notes
+
+- **bash tool**: runs inside the WSL distribution as the configured username (empty = the distro default user, often `root`), so it can read and write anywhere in the distro. The Windows ACL sandbox cannot wrap `wsl.exe` — its children run on the Linux kernel side — so WSL itself is the isolation boundary and the DSH file policy does not apply to bash.
+- **File tools (`read`/`write`/`edit`)**: go through the Windows-side WSL 9P share and run under the DSH file policy. Under `workspace-write`, reads work anywhere but writes are restricted to the session workspace; switch the file policy to `danger-full-access` to also allow writes outside it. The username field does not affect the file tools.
+- The garbled `localhost` port-forwarding banner `wsl.exe` prints to stderr when the distro was not running yet is harmless.
+
 ## License & attribution
 
 MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE). The NOTICE precisely lists:
