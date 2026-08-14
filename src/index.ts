@@ -39,21 +39,41 @@ import { isWslVariantId, transformPresetForWsl, variantIdFor } from './host/vari
 export const DEFAULT_ROUTE = '/wsl-workspace/api'
 
 /**
- * English display names for the shipped source modes, matching the app's own
- * built-in copy. The DSH picker localizes only the four built-in ids itself;
- * `wsl-*` variant ids render the preset.yml text verbatim, so the plugin
- * writes English names for the four shipped modes (custom presets keep
- * theirs).
+ * Bilingual display labels for the shipped source modes, matching the app's
+ * own built-in copy in each language — note the `code` preset is "PTC 模式"
+ * in the Chinese copy but "Code mode" in English. The DSH picker localizes
+ * only the four built-in ids itself; `wsl-*` variant ids render the
+ * preset.yml text verbatim, so the plugin writes one bilingual string so
+ * both locales can identify each variant. Custom presets keep their own
+ * name.
  */
-const MODE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  standard: 'Standard mode',
-  code: 'Code mode',
-  minimal: 'Minimal mode',
-  cordis: 'Creator mode',
+const MODE_DISPLAY_LABELS: Readonly<Record<string, { en: string; zh: string }>> = {
+  standard: { en: 'Standard mode', zh: '标准模式' },
+  code: { en: 'Code mode', zh: 'PTC 模式' },
+  minimal: { en: 'Minimal mode', zh: '极简模式' },
+  cordis: { en: 'Creator mode', zh: '创造模式' },
 }
 
-/** One English sentence describing a WSL variant's execution world. */
-function variantDescription(display: string): string {
+/**
+ * Quote a value as a single-line YAML single-quoted scalar. Plain scalars
+ * cannot contain `: ` (colon + space), which plain English sentences do —
+ * written unquoted they make the whole preset.yml unparsable, dropping the
+ * name, description and order together.
+ */
+function yamlScalar(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+/** The variant name for one shipped mode (bilingual) or a custom preset. */
+function variantName(presetId: string, sourceName: string): string {
+  const labels = MODE_DISPLAY_LABELS[presetId]
+  return labels === undefined ? `WSL · ${sourceName}` : `WSL · ${labels.en}（${labels.zh}）`
+}
+
+/** The variant description for one shipped mode (bilingual) or a custom preset. */
+function variantDescription(presetId: string): string {
+  const labels = MODE_DISPLAY_LABELS[presetId]
+  const display = labels === undefined ? presetId : `${labels.en}（${labels.zh}）`
   return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution.`
 }
 
@@ -294,18 +314,18 @@ async function materializeVariants(
     const dir = join(userRoot, variantId)
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'agent.cordis.yml'), transformed, 'utf8')
-    let name = `WSL · ${preset.id}`
+    const labels = MODE_DISPLAY_LABELS[preset.id]
+    let name = variantName(preset.id, preset.id)
     let orderLine = ''
     try {
       const meta = readFileSync(join(dirname(preset.path), 'preset.yml'), 'utf8')
-      const match = /^name:\s*(.+)$/m.exec(meta)
-      // Shipped modes show English display names (the picker reads the file
-      // text verbatim for wsl-* ids); custom presets keep their own name.
-      const displayName = MODE_DISPLAY_NAMES[preset.id]
-      if (displayName !== undefined) {
-        name = `WSL · ${displayName}`
-      } else if (match?.[1] !== undefined && match[1].trim() !== '') {
-        name = `WSL · ${match[1].trim()}`
+      if (labels === undefined) {
+        // Custom presets keep their own display name; shipped modes use the
+        // bilingual labels above so both locales can identify the variant.
+        const match = /^name:\s*(.+)$/m.exec(meta)
+        if (match?.[1] !== undefined && match[1].trim() !== '') {
+          name = variantName(preset.id, match[1].trim())
+        }
       }
       // Inherit the source's declared order so the WSL variants line up with
       // the local modes in the roster (standard, PTC, minimal, cordis).
@@ -316,9 +336,9 @@ async function materializeVariants(
     }
     writeFileSync(
       join(dir, 'preset.yml'),
-      `name: ${name}\n`
+      `name: ${yamlScalar(name)}\n`
       + orderLine
-      + `description: ${variantDescription(MODE_DISPLAY_NAMES[preset.id] ?? preset.id)}\n`,
+      + `description: ${yamlScalar(variantDescription(preset.id))}\n`,
       'utf8',
     )
     generated.add(variantId)
