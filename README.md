@@ -13,7 +13,7 @@ Pick one of the three ways below, then restart `dsh web`:
 dsh plugin --profile web add dsh-wsl-workspace
 
 # 2) GitHub repository (ships the prebuilt lib/, no local build required)
-dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspac
+dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspace
 
 # 3) Local directory (development / self-hosted)
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace

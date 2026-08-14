@@ -13,7 +13,7 @@
 dsh plugin --profile web add dsh-wsl-workspace
 
 # 2) GitHub 仓库（仓库内已含预构建 lib/，无需本地构建）
-dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspac
+dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspace
 
 # 3) 本地目录（开发/自用）
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace

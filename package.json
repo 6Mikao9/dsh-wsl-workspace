@@ -5,7 +5,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/6Mikao9/dsh-wsl-workspac.git"
+    "url": "git+https://github.com/6Mikao9/dsh-wsl-workspace.git"
   },
   "main": "lib/index.js",
   "exports": {
