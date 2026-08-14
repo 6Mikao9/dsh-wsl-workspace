@@ -1,0 +1,46 @@
+{
+  // Typecheck-only project for the third-party plugin. Emission is tsdown's
+  // job (tsdown.config.ts). Resolves @deepseek-ai/* against the BUILT
+  // declarations (packages' lib/types) — the artifact plane the running
+  // harness actually loads — instead of the repo's source-plane facade, which
+  // requires the repository's per-package aggregate face configuration that a
+  // standalone plugin program cannot reproduce.
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "noEmit": true,
+    // paths entries resolve relative to THIS file's directory; the leading
+    // "../.." prefix names the repository root.
+    "paths": {
+      "@deepseek-ai/cordis": ["../../vendor/cordis/lib/types"],
+      "@deepseek-ai/schemastery": ["../../vendor/schemastery/lib/types"],
+      "@deepseek-ai/dsh-fs": ["../../packages/fs/fs/lib/types"],
+      "@deepseek-ai/dsh-fs-local": ["../../packages/fs/fs-local/lib/types"],
+      "@deepseek-ai/dsh-shell": ["../../packages/shell/shell/lib/types"],
+      "@deepseek-ai/dsh-subprocess": ["../../packages/subprocess/subprocess/lib/types"],
+      "@deepseek-ai/dsh-timeout": ["../../packages/util/timeout/lib/types"],
+      "@deepseek-ai/dsh-client-runtime/client": ["../../packages/client/runtime/lib/types/client"],
+      "@deepseek-ai/dsh-api-remotes/client": ["../../packages/api/remotes/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-locale/client": ["../../packages/client/locale/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-sidebar/client": ["../../packages/client/ui-sidebar/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-slots": ["../../packages/client/ui-slots/lib/types"],
+      "react": ["../../packages/client/ui-sidebar/node_modules/@types/react"],
+      "react/jsx-runtime": ["../../packages/client/ui-sidebar/node_modules/@types/react/jsx-runtime"]
+    }
+  },
+  "include": ["src", "tests"]
+}

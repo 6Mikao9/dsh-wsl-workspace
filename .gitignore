@@ -1,0 +1,6 @@
+# Build artifacts of the plugin are committed so a GitHub clone is directly
+# installable (`dsh plugin add <git-url>` runs no build). Rebuild after
+# editing sources with `tsdown` (see README).
+# Keep the local dev junction (`node_modules` → DSH profile fallback) out of
+# version control.
+node_modules/

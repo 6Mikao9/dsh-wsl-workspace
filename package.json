@@ -1,0 +1,57 @@
+{
+  "name": "dsh-wsl-workspace",
+  "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required.",
+  "version": "0.1.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/6Mikao9/dsh-wsl-workspac.git"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./shell": "./lib/shell.js",
+    "./fs": "./lib/fs.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "wsl",
+    "workspace",
+    "plugin",
+    "windows"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-fs": "*",
+    "@deepseek-ai/dsh-fs-local": "*",
+    "@deepseek-ai/dsh-shell": "*",
+    "@deepseek-ai/dsh-subprocess": "*",
+    "@deepseek-ai/dsh-timeout": "*"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "src",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "README.en.md"
+  ]
+}

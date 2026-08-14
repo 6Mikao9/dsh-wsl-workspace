@@ -1,0 +1,68 @@
+# Third-party notices
+
+This plugin is published under the MIT License (see [LICENSE](LICENSE)). It
+adapts source code and references the design of the following projects. All
+are permissive licenses (MIT / BSD-3-Clause) that permit modification and
+redistribution with attribution. Where source code was adapted or inherited,
+the original copyright and license notices are preserved in the adapted
+sources.
+
+## Adapted / inherited source code
+
+### DeepSeek Harness (MIT) — https://github.com/deepseek-ai/deepseek-harness
+
+Copyright (c) DeepSeek (Beijing) Intelligent Technology Co., Ltd.
+
+This plugin is part of the DeepSeek Harness ecosystem and directly adapts or
+inherits source code from the upstream repository:
+
+- `@deepseek-ai/dsh-bash-local` (packages/shell/bash-local) — the executor
+  mechanics of `WslShellExecutor` (`src/shell.ts`) are adapted from this
+  package: the fused timeout/abort deadline, bounded collect output with
+  spill files, the background-process adaptation, and the `ENV_OVERRIDES`
+  model-friendly environment set. The WSL argv, WSLENV translation, and
+  workdir planning are original to this plugin.
+- `@deepseek-ai/dsh-fs-local` (packages/fs/fs-local) — `WslFileSystem`
+  (`src/fs.ts`) subclasses `LocalFileSystem` unchanged for realpath target
+  identity, per-target write locks, atomic staging, and version guards, and
+  overrides the atomic-publication primitives (rename-based, since the WSL
+  9P share has no hard links) plus the path-world translation.
+- `apps/cli/config/agent-presets/{standard,minimal,code,cordis}/agent.cordis.yml`
+  — the preset-variant generator (`src/host/variants.ts`) reads and
+  transforms these shipped compositions; the variant persona text is
+  rewritten from the `standard` persona.
+
+The upstream license text is included in the repository at `LICENSE` (root)
+and applies to the adapted portions above.
+
+## Design references (no source code copied)
+
+### dsh-bash-terminal (MIT) — https://github.com/MAXeaglet/dsh-bash-terminal
+
+Copyright (c) MAXeaglet. The `wsl.exe` argument construction
+(`wsl -d <distro> --cd <dir> -e bash -lc`), the WSLENV environment-passing
+approach, and the documented ConPTY/wsl.exe interactive-terminal caveats
+(0x8007072c) informed `src/shell.ts` and the design. No source files were
+copied.
+
+### dsh-side-panel (BSD-3-Clause) — https://github.com/ccq1/dsh-side-panel
+
+Copyright (c) ccq1. The pattern of a third-party plugin serving its own data
+route to the browser informed the `/wsl-workspace/api` route
+(`src/index.ts`) and the dialog's stylesheet-injection approach
+(`src/client/styles.ts`). The implementation is original to this plugin; no
+source files were copied.
+
+### vpshub (MIT) — https://github.com/Sdongmaker/vpshub
+
+Copyright (c) Sdongmaker. The SSH-ledger model (connections as first-class
+entries, credentials as path references) is the reference for the planned SSH
+remote-workspace extension (roadmap M4). No source files were copied.
+
+## Dependency licenses (runtime, resolved from the hosting harness)
+
+At runtime this plugin imports `@deepseek-ai/cordis`, `@deepseek-ai/dsh-fs`,
+`@deepseek-ai/dsh-fs-local`, `@deepseek-ai/dsh-shell`,
+`@deepseek-ai/dsh-subprocess`, and `@deepseek-ai/dsh-timeout` as peer
+dependencies provided by the DeepSeek Harness installation (MIT). No
+third-party runtime dependency is bundled inside this package.
