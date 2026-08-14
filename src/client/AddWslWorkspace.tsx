@@ -38,8 +38,12 @@ export interface AddWslWorkspaceInjected {
    * @returns undefined on success, else a message to show.
    */
   createWorkspace(path: string, username: string): Promise<string | undefined>
-  /** Translate a `wslWorkspace` dictionary key. */
+  /** Translate a `wslWorkspace` dictionary key in the dialog's current language. */
   t: (key: string, params?: Record<string, unknown>) => string
+  /** The dialog language at injection time; the component mirrors it as its initial state. */
+  language: 'zh' | 'en'
+  /** Switch the dialog language for every injected helper (defaults to zh). */
+  setLanguage(language: 'zh' | 'en'): void
 }
 
 /** Full component props: the owner share plus the injected face. */
@@ -74,9 +78,10 @@ function WslGlyph({ size = 16 }: { size?: number }): React.ReactElement {
  * The "Add WSL workspace…" footer action and its dialog.
  * @param props - owner share + injected face.
  */
-export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, check, createWorkspace }: AddWslWorkspaceProps): React.ReactElement | null {
+export function AddWslWorkspace({ wide, language, setLanguage, t, checkPreset, listDistros, listDir, check, createWorkspace }: AddWslWorkspaceProps): React.ReactElement | null {
   const [open, setOpen] = useState(false)
   const [opening, setOpening] = useState(false)
+  const [lang, setLang] = useState<'zh' | 'en'>(language)
   const [distros, setDistros] = useState<string[]>([])
   const [distro, setDistro] = useState('')
   const [pathInput, setPathInput] = useState('/home/')
@@ -246,6 +251,10 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
 
   const children = (listing?.entries.filter(entry => entry.kind === 'directory') ?? []).map(entry => entry.name)
   const maskClick = (): void => { if (!busy) setOpen(false) }
+  const onLanguageChange = (next: 'zh' | 'en'): void => {
+    setLang(next)
+    setLanguage(next)
+  }
   const listScroll: UIEventHandler<HTMLDivElement> = () => { /* scroll container handles overflow */ }
 
   return (
@@ -254,9 +263,29 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
       <div className="dww-card" role="dialog" aria-modal="true" aria-label={t('dialog.title')}>
         <div className="dww-header">
           <h2 className="dww-title">{t('dialog.title')}</h2>
-          <button type="button" className="dww-close" aria-label={t('dialog.cancel')} onClick={maskClick}>
-            ✕
-          </button>
+          <div className="dww-header-actions">
+            <div className="dww-lang" role="group" aria-label="Language">
+              <button
+                type="button"
+                className={lang === 'zh' ? 'dww-lang-btn dww-lang-btn--active' : 'dww-lang-btn'}
+                disabled={busy}
+                onClick={() => onLanguageChange('zh')}
+              >
+                中文
+              </button>
+              <button
+                type="button"
+                className={lang === 'en' ? 'dww-lang-btn dww-lang-btn--active' : 'dww-lang-btn'}
+                disabled={busy}
+                onClick={() => onLanguageChange('en')}
+              >
+                EN
+              </button>
+            </div>
+            <button type="button" className="dww-close" aria-label={t('dialog.cancel')} onClick={maskClick}>
+              ✕
+            </button>
+          </div>
         </div>
         <div className="dww-body">
           {error !== null ? (
