@@ -38,6 +38,25 @@ import { isWslVariantId, transformPresetForWsl, variantIdFor } from './host/vari
 /** The HTTP route this plugin serves (a relative, same-origin path). */
 export const DEFAULT_ROUTE = '/wsl-workspace/api'
 
+/**
+ * English display names for the shipped source modes, matching the app's own
+ * built-in copy. The DSH picker localizes only the four built-in ids itself;
+ * `wsl-*` variant ids render the preset.yml text verbatim, so the plugin
+ * writes English names for the four shipped modes (custom presets keep
+ * theirs).
+ */
+const MODE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  standard: 'Standard mode',
+  code: 'Code mode',
+  minimal: 'Minimal mode',
+  cordis: 'Creator mode',
+}
+
+/** One English sentence describing a WSL variant's execution world. */
+function variantDescription(display: string): string {
+  return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution.`
+}
+
 /** Plugin config. */
 export interface Config {
   /** The route under which the dialog data API is served. */
@@ -280,7 +299,14 @@ async function materializeVariants(
     try {
       const meta = readFileSync(join(dirname(preset.path), 'preset.yml'), 'utf8')
       const match = /^name:\s*(.+)$/m.exec(meta)
-      if (match?.[1] !== undefined && match[1].trim() !== '') name = `WSL · ${match[1].trim()}`
+      // Shipped modes show English display names (the picker reads the file
+      // text verbatim for wsl-* ids); custom presets keep their own name.
+      const displayName = MODE_DISPLAY_NAMES[preset.id]
+      if (displayName !== undefined) {
+        name = `WSL · ${displayName}`
+      } else if (match?.[1] !== undefined && match[1].trim() !== '') {
+        name = `WSL · ${match[1].trim()}`
+      }
       // Inherit the source's declared order so the WSL variants line up with
       // the local modes in the roster (standard, PTC, minimal, cordis).
       const orderMatch = /^order:\s*(\d+)\s*$/m.exec(meta)
@@ -292,7 +318,7 @@ async function materializeVariants(
       join(dir, 'preset.yml'),
       `name: ${name}\n`
       + orderLine
-      + `description: ${preset.id} 模式叠加 WSL 执行世界：bash 与文件工具运行在 WSL 发行版内。\n`,
+      + `description: ${variantDescription(MODE_DISPLAY_NAMES[preset.id] ?? preset.id)}\n`,
       'utf8',
     )
     generated.add(variantId)

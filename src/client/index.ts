@@ -66,26 +66,11 @@ export function apply(ctx: ClientContext): void {
     'dsh-wsl-workspace: locale dictionaries',
   )
 
-  // The dialog owns a built-in language switch (default zh) independent of
-  // the app locale. Injected helpers read the current choice through this
-  // mutable holder, so their messages (checkPreset etc.) follow the dialog's
-  // language too.
-  let language: 'zh' | 'en' = 'zh'
-  const dictionaries = { zh, en }
-  const t = (key: string, params?: Record<string, unknown>): string => {
-    let text = dictionaries[language][key] ?? key
-    if (params !== undefined) {
-      for (const [name, value] of Object.entries(params)) {
-        text = text.replaceAll(`{${name}}`, String(value))
-      }
-    }
-    return text
-  }
-  const setLanguage = (next: 'zh' | 'en'): void => { language = next }
+  // The injected translate function reads the live DeepSeek Harness locale,
+  // so the dialog copy follows the app language setting automatically.
+  const t = ctx.locale.bind('wslWorkspace' as never) as unknown as (key: string, params?: Record<string, unknown>) => string
 
   const injected = (): AddWslWorkspaceInjected => ({
-    language,
-    setLanguage,
     t,
     checkPreset: async (): Promise<string | undefined> => {
       let roster

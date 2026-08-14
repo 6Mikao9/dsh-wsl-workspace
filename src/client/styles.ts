@@ -94,33 +94,6 @@ const STYLES = `
   gap: 8px;
   padding: 18px 20px 12px;
 }
-.dww-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-/* Built-in dialog language switch (中文 / EN), independent of the app locale. */
-.dww-lang {
-  display: inline-flex;
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-}
-.dww-lang-btn {
-  height: 28px;
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font-size: 12px;
-}
-.dww-lang-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
-.dww-lang-btn--active {
-  background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-label-primary-foreground);
-}
-.dww-lang-btn:disabled { cursor: default; opacity: 0.6; }
 .dww-title {
   margin: 0;
   font-size: 16px;
