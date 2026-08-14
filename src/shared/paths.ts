@@ -143,3 +143,17 @@ export function mntToWindowsPath(linuxPath: string): string | null {
 export function isWindowsPathShaped(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')
 }
+
+/** Linux username shape for `wsl.exe -u`: starts with a letter or underscore, then letters/digits/`_`/`.`/`-` (max 64). */
+const WSL_USERNAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/
+
+/**
+ * Whether a value is a safe Linux username for `wsl.exe -u`. The check is
+ * strict on purpose: a value starting with `-` could be parsed as a wsl.exe
+ * option instead of a username.
+ * @param value - candidate username.
+ * @returns whether it matches the Linux username shape.
+ */
+export function isValidWslUsername(value: string): boolean {
+  return WSL_USERNAME_PATTERN.test(value)
+}

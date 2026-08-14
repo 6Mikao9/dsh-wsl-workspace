@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   isAbsoluteLinuxPath,
+  isValidWslUsername,
   isWindowsPathShaped,
   isWslUnc,
   joinUnc,
@@ -118,4 +119,16 @@ test('isWindowsPathShaped classifies path values for WSLENV', () => {
   assert.equal(isWindowsPathShaped('\\\\wsl.localhost\\Ubuntu'), true)
   assert.equal(isWindowsPathShaped('/home/me'), false)
   assert.equal(isWindowsPathShaped('plain-value'), false)
+})
+
+test('isValidWslUsername accepts Linux-shaped usernames', () => {
+  for (const good of ['root', 'me', '_svc', 'user.name', 'user-1', 'U_2.x']) {
+    assert.equal(isValidWslUsername(good), true, `expected accept for ${JSON.stringify(good)}`)
+  }
+})
+
+test('isValidWslUsername rejects option-like or malformed usernames', () => {
+  for (const bad of ['', '-x', '1abc', 'a b', 'a/b', 'a\nb', 'x'.repeat(65), '..', '.', 'a\\b']) {
+    assert.equal(isValidWslUsername(bad), false, `expected reject for ${JSON.stringify(bad)}`)
+  }
 })

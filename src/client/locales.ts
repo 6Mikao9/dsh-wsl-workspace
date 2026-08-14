@@ -14,6 +14,8 @@ export const zh: Record<string, string> = {
   'dialog.distro': '发行版',
   'dialog.path': '路径',
   'dialog.pathPlaceholder': '/home/',
+  'dialog.username': '用户名',
+  'dialog.usernamePlaceholder': '留空则使用发行版默认用户',
   'dialog.loading': '正在加载…',
   'dialog.browseEmpty': '此目录没有子文件夹',
   'dialog.upLevel': '..（返回上级）',
@@ -28,6 +30,7 @@ export const zh: Record<string, string> = {
   'error.loadDir': '无法浏览该目录',
   'error.presetMissing': '未找到健康的 wsl preset，请确认插件宿主端已安装并配置该 preset',
   'error.invalidPath': '请输入以 / 开头的 Linux 绝对路径',
+  'error.invalidUsername': '用户名无效：需以字母或下划线开头，仅含字母、数字、_、.、-',
   'error.pathNotFound': '该路径不存在或是文件，请选择一个文件夹',
   'error.createFailed': '创建工作区失败',
 }
@@ -43,6 +46,8 @@ export const en: Record<string, string> = {
   'dialog.distro': 'Distro',
   'dialog.path': 'Path',
   'dialog.pathPlaceholder': '/home/',
+  'dialog.username': 'Username',
+  'dialog.usernamePlaceholder': 'Leave empty to use the distro default user',
   'dialog.loading': 'Loading…',
   'dialog.browseEmpty': 'No subdirectories here',
   'dialog.upLevel': '.. (up)',
@@ -57,6 +62,7 @@ export const en: Record<string, string> = {
   'error.loadDir': 'Could not browse this directory',
   'error.presetMissing': 'No healthy "wsl" preset found; confirm the plugin host side installed and configured it',
   'error.invalidPath': 'Enter an absolute Linux path starting with /',
+  'error.invalidUsername': 'Invalid username: start with a letter or underscore; only letters, digits, _ . -',
   'error.pathNotFound': 'The path does not exist or is a file; choose a folder',
   'error.createFailed': 'Failed to create the workspace',
 }

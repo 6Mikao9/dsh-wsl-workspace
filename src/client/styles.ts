@@ -45,6 +45,16 @@ const STYLES = `
 }
 .dww-action svg { flex: none; }
 
+/* The W letter mark of the sidebar action (sized for wide/rail buttons). */
+.dww-letter {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.dww-action--rail .dww-letter { font-size: 17px; }
+
 /* Full-viewport overlay + centered card (mirrors the platform Mask/Dialog). */
 .dww-overlay {
   position: fixed;

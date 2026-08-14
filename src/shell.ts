@@ -1,9 +1,9 @@
 /**
  * WSL Service Provider for the `ctx.shell` capability seam. Every command
- * runs inside one WSL distribution as `wsl.exe -d <distro> --cd <linux cwd>
- * -e bash -lc <command>`, so the model-facing bash dialect matches the
- * execution world exactly — the "like direct calls" experience of a WSL
- * workspace session.
+ * runs inside one WSL distribution as `wsl.exe -d <distro> [-u <user>]
+ * --cd <linux cwd> -e bash -lc <command>`, so the model-facing bash dialect
+ * matches the execution world exactly — the "like direct calls" experience
+ * of a WSL workspace session.
  *
  * The executor is a fresh implementation modeled on
  * `@deepseek-ai/dsh-bash-local` (same deadline fusion, bounded collect,
@@ -34,9 +34,12 @@ import type {
 import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import {
   isWindowsPathShaped,
+  isValidWslUsername,
+  joinUnc,
   parseWslUnc,
   windowsToMntPath,
 } from './shared/paths.ts'
+import { getWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistroSync } from './shared/wsl.ts'
 
 /**
@@ -66,6 +69,11 @@ export interface Config {
    * (UNC workdirs always do; Linux/Windows drive workdirs do not).
    */
   distro?: string
+  /**
+   * Linux user bash runs as when the call carries no per-workspace user
+   * (`wsl.exe -u <username>`); undefined/empty = the distro default user.
+   */
+  username?: string
   /** The `wsl.exe` executable (absolute path or PATH name). */
   wslPath?: string
   /** Start bash as a login shell (`-lc`) so user profile PATHs (nvm, cargo…) load. */
@@ -83,7 +91,7 @@ export interface Config {
 }
 
 /** The shape after schemastery applied the defaults. */
-type ResolvedConfig = Required<Omit<Config, 'cwd' | 'distro'>> & Pick<Config, 'cwd' | 'distro'>
+type ResolvedConfig = Required<Omit<Config, 'cwd' | 'distro' | 'username'>> & Pick<Config, 'cwd' | 'distro' | 'username'>
 
 /** Project a settled collect-mode reader into the final CollectedOutput shape. */
 function finalOutput(reader: SubprocessOutputReader): CollectedOutput {
@@ -121,6 +129,9 @@ export function assertServiceableWslConfig(config: Config): void {
   if (resolved.distro !== undefined && resolved.distro.trim() === '') {
     throw new Error('wsl-shell: distro must be a non-empty distribution name')
   }
+  if (resolved.username !== undefined && resolved.username !== '' && !isValidWslUsername(resolved.username)) {
+    throw new Error('wsl-shell: username must match the Linux username pattern [A-Za-z_][A-Za-z0-9_.-]*')
+  }
 }
 
 /** One translated execution plan: the Linux world coordinates plus the argv. */
@@ -149,6 +160,7 @@ export class WslShellExecutor extends ShellExecutor {
   static Config: z<Config> = z.object({
     cwd: z.string(),
     distro: z.string(),
+    username: z.string(),
     wslPath: z.string().default('wsl.exe'),
     loginShell: z.boolean().default(true),
     timeoutMs: z.number().default(120_000),
@@ -212,6 +224,7 @@ export class WslShellExecutor extends ShellExecutor {
     let distro: string
     let linuxCwd: string
     let windowsCwd: string
+    let username: string | undefined
     const unc = parseWslUnc(workdir)
     if (unc !== null) {
       distro = unc.distro
@@ -220,10 +233,12 @@ export class WslShellExecutor extends ShellExecutor {
       // cwd is irrelevant (`--cd` sets the Linux side), and spawning with a
       // UNC cwd is a documented Node/Windows edge. SystemRoot always exists.
       windowsCwd = process.env.SystemRoot ?? process.cwd()
+      username = this.resolveUser(spec, joinUnc(unc.distro, unc.linuxPath))
     } else if (workdir.startsWith('/')) {
       distro = this.resolveDistro(spec)
       linuxCwd = workdir
       windowsCwd = process.cwd()
+      username = this.resolveUser(spec, undefined)
     } else {
       const mnt = windowsToMntPath(workdir)
       if (mnt === null) {
@@ -232,11 +247,13 @@ export class WslShellExecutor extends ShellExecutor {
       distro = this.resolveDistro(spec)
       linuxCwd = mnt
       windowsCwd = workdir
+      username = this.resolveUser(spec, undefined)
     }
     const env = this.withWslEnv(spec)
     const argv = [
       this.config.wslPath,
       '-d', distro,
+      ...(username !== undefined && username !== '' ? ['-u', username] : []),
       '--cd', linuxCwd,
       '-e', 'bash',
       this.config.loginShell ? '-lc' : '-c',
@@ -267,6 +284,29 @@ export class WslShellExecutor extends ShellExecutor {
       'wsl-shell: Linux workdir carries no distribution; no session DSH_WSL_DISTRO, distro config, '
       + 'or default distribution is available',
     )
+  }
+
+  /**
+   * Resolve the Linux user bash runs as. The chain: the calling session's
+   * workspace user (`DSH_WSL_USER`, contributed by the host half), then the
+   * workspace's stored username when the workdir is a UNC path, then the
+   * configured `username`. Absent everywhere, the distribution's default
+   * user runs. Invalid values are skipped (they were validated on write;
+   * the guard is defense in depth).
+   * @param spec - the resolved execution spec (its dshEnv carries the session fact).
+   * @param uncKey - canonical UNC key of the workdir when it is a UNC path.
+   * @returns the username, or undefined for the distro default user.
+   */
+  private resolveUser(spec: ShellExecSpec, uncKey: string | undefined): string | undefined {
+    const candidates = [
+      spec.dshEnv?.DSH_WSL_USER,
+      uncKey === undefined ? undefined : getWorkspaceUsername(uncKey),
+      this.config.username,
+    ]
+    for (const candidate of candidates) {
+      if (candidate !== undefined && candidate !== '' && isValidWslUsername(candidate)) return candidate
+    }
+    return undefined
   }
 
   /**

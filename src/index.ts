@@ -12,9 +12,10 @@
  *    resolution from the preset's home directory.
  *
  * 2. Serve the browser dialog's data route (`/wsl-workspace/api`):
- *    distribution discovery, one-level directory listing, and path checks,
- *    all over the 9P UNC share. Loopback-only, matching the sensitivity of
- *    the privileged configuration surface.
+ *    distribution discovery, one-level directory listing, path checks, and
+ *    the per-workspace username store — all over the 9P UNC share.
+ *    Loopback-only, matching the sensitivity of the privileged configuration
+ *    surface.
  *
  * 3. Contribute the per-session `DSH_WSL_DISTRO` managed-env fact so the WSL
  *    shell executor can resolve a plain Linux `workdir` to the calling
@@ -29,7 +30,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { joinUnc, normalizeLinuxPath, isAbsoluteLinuxPath, parseWslUnc } from './shared/paths.ts'
+import { joinUnc, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
+import { canonicalWslUnc, getWorkspaceUsername, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isWslVariantId, transformPresetForWsl, variantIdFor } from './host/variants.ts'
 
@@ -164,6 +166,14 @@ function requireLinuxPath(value: unknown, label: string): string {
   return normalizeLinuxPath(value)
 }
 
+/** Validate a wire-supplied workspace path and return its canonical UNC form. */
+function requireWslUnc(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('path must be a string')
+  const canonical = canonicalWslUnc(value)
+  if (canonical === null) throw new Error('path must be a WSL UNC workspace path')
+  return canonical
+}
+
 /** Resolve one directory listing over the 9P share. */
 function listWslDir(distro: string, linuxPath: string): WslDirListingWire {
   const unc = joinUnc(distro, linuxPath)
@@ -211,6 +221,19 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       } catch {
         return { exists: false, isDirectory: false }
       }
+    }
+    case 'setUser': {
+      const path = requireWslUnc(params.path)
+      const username = params.username
+      if (username === undefined || username === '') {
+        setWorkspaceUsername(path, undefined)
+      } else {
+        if (typeof username !== 'string' || !isValidWslUsername(username)) {
+          throw new Error('username must match the Linux username pattern [A-Za-z_][A-Za-z0-9_.-]*')
+        }
+        setWorkspaceUsername(path, username)
+      }
+      return null
     }
     default:
       throw new Error(`unknown method "${method}"`)
@@ -334,11 +357,18 @@ export function apply(ctx: Context, config: Config): void {
         DSH_WSL_DISTRO: {
           description: 'The WSL distribution of the calling session workspace, when the session cwd is a WSL UNC path.',
         },
+        DSH_WSL_USER: {
+          description: 'The Linux user of the calling session workspace, when the workspace has one configured.',
+        },
       },
       resolve(execution) {
         const cwd = execution.agent?.session.header.cwd
         const unc = cwd === undefined ? null : parseWslUnc(cwd)
-        return unc === null ? {} : { DSH_WSL_DISTRO: unc.distro }
+        if (unc === null) return {}
+        const username = getWorkspaceUsername(joinUnc(unc.distro, unc.linuxPath))
+        return username === undefined || username === ''
+          ? { DSH_WSL_DISTRO: unc.distro }
+          : { DSH_WSL_DISTRO: unc.distro, DSH_WSL_USER: username }
       },
     }), 'dsh-wsl-workspace: per-session distro env fact')
   }

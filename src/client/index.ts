@@ -18,7 +18,7 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, listDir as listDirApi, listDistros as listDistrosApi } from './api.ts'
+import { check as checkApi, listDir as listDirApi, listDistros as listDistrosApi, setWorkspaceUser as setWorkspaceUserApi } from './api.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
@@ -88,9 +88,10 @@ export function apply(ctx: ClientContext): void {
     listDistros: () => listDistrosApi(),
     listDir: (distro, path) => listDirApi(distro, path),
     check: (distro, path) => checkApi(distro, path),
-    createWorkspace: async (path): Promise<string | undefined> => {
+    createWorkspace: async (path, username): Promise<string | undefined> => {
       try {
         const view = await workspaces.create({ path })
+        await setWorkspaceUserApi(path, username)
         workspaces.startSession(view.workspaceId)
         return undefined
       } catch (error) {

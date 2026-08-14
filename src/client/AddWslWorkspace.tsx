@@ -10,7 +10,7 @@
 
 import type * as React from 'react'
 import { useEffect, useRef, useState, type UIEventHandler } from 'react'
-import { isAbsoluteLinuxPath, joinUnc, normalizeLinuxPath } from '../shared/paths.ts'
+import { isAbsoluteLinuxPath, isValidWslUsername, joinUnc, normalizeLinuxPath } from '../shared/paths.ts'
 import type { WslDirListing, WslPathCheck } from './api.ts'
 
 /** Result-level shape of a browse/check/list call we surface uniformly. */
@@ -34,9 +34,10 @@ export interface AddWslWorkspaceInjected {
   /**
    * Register a workspace over a WSL UNC path and start a session in it.
    * @param path - the `\\wsl.localhost\<distro>\...` UNC path.
+   * @param username - optional Linux user for the session (empty = distro default).
    * @returns undefined on success, else a message to show.
    */
-  createWorkspace(path: string): Promise<string | undefined>
+  createWorkspace(path: string, username: string): Promise<string | undefined>
   /** Translate a `wslWorkspace` dictionary key. */
   t: (key: string, params?: Record<string, unknown>) => string
 }
@@ -58,7 +59,7 @@ export function dirChildPath(parent: string, name: string): string {
   return parent === '/' ? `/${name}` : `${parent}/${name}`
 }
 
-/** A tiny inline terminal glyph for the rail action and rows. */
+/** A tiny inline terminal glyph for the dialog's directory rows. */
 function WslGlyph({ size = 16 }: { size?: number }): React.ReactElement {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -79,6 +80,7 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
   const [distros, setDistros] = useState<string[]>([])
   const [distro, setDistro] = useState('')
   const [pathInput, setPathInput] = useState('/home/')
+  const [username, setUsername] = useState('')
   const [listing, setListing] = useState<WslDirListing | null>(null)
   const [browsePath, setBrowsePath] = useState('/')
   const [browsing, setBrowsing] = useState(false)
@@ -150,7 +152,7 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
   }, [open, busy])
 
   if (!open) {
-    // A polished icon action beside Settings at the sidebar foot; the title
+    // A W-letter action beside Settings at the sidebar foot; the title
     // carries the label in both wide and rail states.
     return (
       <button
@@ -160,7 +162,7 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
         aria-label={t('action.title')}
         onClick={() => setOpen(true)}
       >
-        <WslGlyph size={wide ? 16 : 18} />
+        <span className="dww-letter" aria-hidden="true">W</span>
       </button>
     )
   }
@@ -213,6 +215,11 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
       setError(t('error.invalidPath'))
       return
     }
+    const user = username.trim()
+    if (user !== '' && !isValidWslUsername(user)) {
+      setError(t('error.invalidUsername'))
+      return
+    }
     setBusy(true)
     try {
       let facts: WslPathCheck
@@ -226,7 +233,7 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
         setError(t('error.pathNotFound'))
         return
       }
-      const failure = await createWorkspace(joinUnc(distro, path))
+      const failure = await createWorkspace(joinUnc(distro, path), user)
       if (failure !== undefined) {
         setError(failure)
         return
@@ -287,6 +294,19 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
                 {t('dialog.check')}
               </button>
             </div>
+          </div>
+          <div className="dww-field">
+            <label className="dww-field-label" htmlFor="dww-username">{t('dialog.username')}</label>
+            <input
+              id="dww-username"
+              className="dww-input"
+              value={username}
+              placeholder={t('dialog.usernamePlaceholder')}
+              disabled={opening || busy}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={event => setUsername(event.target.value)}
+            />
           </div>
           <div className="dww-feedback">
             <div className="dww-breadcrumb">{browsePath}</div>

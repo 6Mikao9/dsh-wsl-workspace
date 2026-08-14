@@ -93,3 +93,12 @@ export async function listDir(distro: string, path: string): Promise<WslDirListi
 export async function check(distro: string, path: string): Promise<WslPathCheck> {
   return call<WslPathCheck>('check', { distro, path })
 }
+
+/**
+ * Store (or clear, with an empty string) the username of one WSL workspace.
+ * @param path - the workspace UNC path.
+ * @param username - the Linux username; empty string clears the stored value.
+ */
+export async function setWorkspaceUser(path: string, username: string): Promise<void> {
+  return call<void>('setUser', { path, username })
+}
