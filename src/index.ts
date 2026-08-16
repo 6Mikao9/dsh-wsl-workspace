@@ -25,7 +25,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -296,6 +296,21 @@ interface AgentPresetsService {
  * @param shellPath - absolute path of the plugin's built WSL shell provider.
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
  */
+/**
+ * Relative './x.mjs' row files a composition references. Local function-plugin
+ * rows travel with their preset directory; generated variants must copy them
+ * along or the variant composition fails to load.
+ * @param composition - the composition text.
+ */
+function localRowFiles(composition: string): Set<string> {
+  const files = new Set<string>()
+  for (const line of composition.split('\n')) {
+    const match = /^\s*name:\s*['"]?(\.\/[^'"]+\.m?js)['"]?\s*$/.exec(line)
+    if (match?.[1] !== undefined) files.add(match[1])
+  }
+  return files
+}
+
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
@@ -314,6 +329,34 @@ async function materializeVariants(
     const dir = join(userRoot, variantId)
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'agent.cordis.yml'), transformed, 'utf8')
+    // Copy local function-plugin row files (name: './x.mjs') from the source
+    // preset into the variant directory, including their transitive relative
+    // imports — the variant composition references them relatively and they
+    // must travel with it, or the variant fails to load at mount time.
+    const pending = [...localRowFiles(transformed)]
+    const visited = new Set<string>()
+    while (pending.length > 0) {
+      const rowFile = pending.pop()
+      if (rowFile === undefined || visited.has(rowFile)) continue
+      visited.add(rowFile)
+      const srcFile = join(dirname(preset.path), rowFile)
+      if (!existsSync(srcFile)) continue
+      mkdirSync(dirname(join(dir, rowFile)), { recursive: true })
+      copyFileSync(srcFile, join(dir, rowFile))
+      try {
+        const content = readFileSync(srcFile, 'utf8')
+        const importRe = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](\.\/[^'"]+)['"]/g
+        let match: RegExpExecArray | null
+        while ((match = importRe.exec(content)) !== null) {
+          let spec = match[1]
+          if (!/\.m?js$/.test(spec)) spec += '.mjs'
+          pending.push(spec)
+        }
+      } catch {
+        // Unreadable row file: keep whatever was copied; the variant reports
+        // the failure through the roster when mounted.
+      }
+    }
     const labels = MODE_DISPLAY_LABELS[preset.id]
     let name = variantName(preset.id, preset.id)
     let orderLine = ''
