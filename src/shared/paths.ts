@@ -134,6 +134,22 @@ export function mntToWindowsPath(linuxPath: string): string | null {
 }
 
 /**
+ * Canonical Windows drive path for store keys and cross-realm identity:
+ * separators unified to `\`, trailing separator stripped, and the WHOLE path
+ * lowercased — Windows paths compare case-insensitively, and the workspace
+ * registry may realpath a different casing than the caller spelled (8.3 or
+ * on-disk casing), so the store key must collide across casings.
+ * @param path - candidate Windows drive path.
+ * @returns the canonical form, or `null` when not drive-shaped.
+ */
+export function canonicalWindowsPath(path: string): string | null {
+  const match = /^([A-Za-z]):[\\/](.*)$/.exec(path)
+  if (match === null) return null
+  const rest = (match[2] ?? '').replace(/[\\/]+/g, '\\').replace(/\\$/, '').toLowerCase()
+  return `${(match[1] ?? '').toLowerCase()}:\\${rest}`
+}
+
+/**
  * True when a value is a Windows-shaped path (drive or UNC), which is how
  * the shell executor decides the WSLENV `/p` translation flag: only Windows
  * path values need translation when they cross into the Linux process.

@@ -10,7 +10,7 @@
 
 import type * as React from 'react'
 import { useEffect, useRef, useState, type UIEventHandler } from 'react'
-import { isAbsoluteLinuxPath, isValidWslUsername, joinUnc, normalizeLinuxPath } from '../shared/paths.ts'
+import { isAbsoluteLinuxPath, isValidWslUsername, normalizeLinuxPath } from '../shared/paths.ts'
 import type { WslDirListing, WslPathCheck } from './api.ts'
 
 /** Result-level shape of a browse/check/list call we surface uniformly. */
@@ -32,12 +32,15 @@ export interface AddWslWorkspaceInjected {
   /** Check a Linux path's existence/directory facts. */
   check(distro: string, path: string): Promise<WslPathCheck>
   /**
-   * Register a workspace over a WSL UNC path and start a session in it.
-   * @param path - the `\\wsl.localhost\<distro>\...` UNC path.
+   * Register a WSL workspace and start a session in it. `/mnt/<drive>`
+   * paths register under their Windows drive spelling (9P cannot serve
+   * drvfs); ext4 paths register as `\\wsl.localhost\<distro>\...` UNC.
+   * @param linuxPath - the absolute Linux workspace path.
    * @param username - optional Linux user for the session (empty = distro default).
+   * @param distro - the WSL distribution the path belongs to.
    * @returns undefined on success, else a message to show.
    */
-  createWorkspace(path: string, username: string): Promise<string | undefined>
+  createWorkspace(linuxPath: string, username: string, distro: string): Promise<string | undefined>
   /** Translate a `wslWorkspace` dictionary key (follows the DeepSeek Harness locale). */
   t: (key: string, params?: Record<string, unknown>) => string
 }
@@ -233,7 +236,7 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
         setError(t('error.pathNotFound'))
         return
       }
-      const failure = await createWorkspace(joinUnc(distro, path), user)
+      const failure = await createWorkspace(path, user, distro)
       if (failure !== undefined) {
         setError(failure)
         return
