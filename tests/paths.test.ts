@@ -6,6 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  canonicalWindowsPath,
   isAbsoluteLinuxPath,
   isValidWslUsername,
   isWindowsPathShaped,
@@ -112,6 +113,15 @@ test('mntToWindowsPath round-trips with windowsToMntPath', () => {
     assert.equal(mntToWindowsPath(mnt!), win.replace(/\//g, '\\'))
   }
   assert.equal(mntToWindowsPath('/home/me'), null)
+})
+
+test('canonicalWindowsPath unifies drive-path spellings for store keys', () => {
+  assert.equal(canonicalWindowsPath('C:\\Users\\Me\\Proj'), 'c:\\users\\me\\proj')
+  assert.equal(canonicalWindowsPath('D:/Work//Src\\'), 'd:\\work\\src')
+  assert.equal(canonicalWindowsPath('C:\\'), 'c:\\')
+  assert.equal(canonicalWindowsPath('no-drive'), null)
+  assert.equal(canonicalWindowsPath('/home/me'), null)
+  assert.equal(canonicalWindowsPath('\\\\wsl.localhost\\Ubuntu'), null)
 })
 
 test('isWindowsPathShaped classifies path values for WSLENV', () => {

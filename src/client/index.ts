@@ -22,7 +22,7 @@ import { check as checkApi, listDir as listDirApi, listDistros as listDistrosApi
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
-import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath, windowsToMntPath } from '../shared/paths.ts'
+import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
 
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces']

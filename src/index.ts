@@ -387,6 +387,7 @@ async function materializeVariants(
         let match: RegExpExecArray | null
         while ((match = importRe.exec(content)) !== null) {
           let spec = match[1]
+          if (spec === undefined) continue
           if (!/\.m?js$/.test(spec)) spec += '.mjs'
           pending.push(spec)
         }
