@@ -18,11 +18,11 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, listDir as listDirApi, listDistros as listDistrosApi, setWorkspaceUser as setWorkspaceUserApi } from './api.ts'
+import { check as checkApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaces as listWorkspacesApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi } from './api.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
-import { isWslUnc } from '../shared/paths.ts'
+import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath, windowsToMntPath } from '../shared/paths.ts'
 
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces']
@@ -70,6 +70,11 @@ export function apply(ctx: ClientContext): void {
   // so the dialog copy follows the app language setting automatically.
   const t = ctx.locale.bind('wslWorkspace' as never) as unknown as (key: string, params?: Record<string, unknown>) => string
 
+  // Canonical Windows drive keys of every registered `/mnt/<drive>` workspace
+  // (refreshed from the host store; see refreshRoster). A blank session whose
+  // cwd is one of these binds to the WSL variant like a UNC-cwd session.
+  let wslWindowsPaths = new Set<string>()
+
   const injected = (): AddWslWorkspaceInjected => ({
     t,
     checkPreset: async (): Promise<string | undefined> => {
@@ -89,10 +94,24 @@ export function apply(ctx: ClientContext): void {
     listDistros: () => listDistrosApi(),
     listDir: (distro, path) => listDirApi(distro, path),
     check: (distro, path) => checkApi(distro, path),
-    createWorkspace: async (path, username): Promise<string | undefined> => {
+    createWorkspace: async (linuxPath, username, distro): Promise<string | undefined> => {
       try {
-        const view = await workspaces.create({ path })
-        await setWorkspaceUserApi(path, username)
+        const winPath = mntToWindowsPath(linuxPath)
+        if (winPath !== null) {
+          // `/mnt/<drive>` workspace: the workspace registry realpath/stats
+          // the path and 9P cannot serve drvfs mounts, so register under the
+          // drive spelling and store distro/username for the session env.
+          // The browser binding below recognizes the drive cwd as WSL.
+          const view = await workspaces.create({ path: winPath })
+          await registerWindowsApi(linuxPath, distro, username)
+          const canonical = canonicalWindowsPath(winPath)
+          if (canonical !== null) wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
+          workspaces.startSession(view.workspaceId)
+          return undefined
+        }
+        const uncPath = joinUnc(distro, linuxPath)
+        const view = await workspaces.create({ path: uncPath })
+        await setWorkspaceUserApi(uncPath, username)
         workspaces.startSession(view.workspaceId)
         return undefined
       } catch (error) {
@@ -146,12 +165,32 @@ export function apply(ctx: ClientContext): void {
       })
     }
     refreshRoster()
+    const refreshWorkspaces = (): void => {
+      void listWorkspacesApi().then((keys: string[]) => {
+        const next = new Set<string>()
+        for (const key of keys) {
+          const canonical = canonicalWindowsPath(key)
+          if (canonical !== null) next.add(canonical)
+        }
+        wslWindowsPaths = next
+      }).catch(() => {
+        // A failed store read leaves the previous set; sessions stay on
+        // their current composition until the next refresh.
+      })
+    }
+    refreshWorkspaces()
     const maybeBind = (): void => {
       const state = sessions.list.getSnapshot()
       for (const id of state.ids) {
         const summary = state.byId[id]
         if (summary === undefined || !summary.blank || summary.cwd === undefined) continue
-        if (!isWslUnc(summary.cwd)) continue
+        // A session belongs to the WSL world when its cwd is a WSL UNC path,
+        // or a Windows drive path registered as a `/mnt/<drive>` workspace
+        // (9P cannot serve drvfs, so those workspaces carry drive cwds).
+        const canonical = canonicalWindowsPath(summary.cwd)
+        const isWsl = isWslUnc(summary.cwd)
+          || (canonical !== null && wslWindowsPaths.has(canonical))
+        if (!isWsl) continue
         const current = summary.agentPreset
         if (current !== undefined && current.startsWith('wsl-')) continue
         // Legacy standalone `wsl` (now folded into the variants): remap it to

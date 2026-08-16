@@ -30,8 +30,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { joinUnc, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
-import { canonicalWslUnc, getWorkspaceUsername, setWorkspaceUsername } from './shared/wsl-credentials.ts'
+import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
+import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isWslVariantId, transformPresetForWsl, variantIdFor } from './host/variants.ts'
 
@@ -213,10 +213,29 @@ function requireWslUnc(value: unknown): string {
   return canonical
 }
 
-/** Resolve one directory listing over the 9P share. */
+/**
+ * Resolve one directory listing for the dialog. The 9P share (`\\wsl.localhost\…`)
+ * serves only the ext4 volume: `/mnt/<drive>` (drvfs) reads return Access
+ * denied, so drvfs paths are read through their Windows drive spelling and
+ * `/mnt` itself is synthesized from the drives present on the host.
+ */
 function listWslDir(distro: string, linuxPath: string): WslDirListingWire {
-  const unc = joinUnc(distro, linuxPath)
-  const dirents = readdirSync(unc, { withFileTypes: true })
+  if (linuxPath === '/mnt') {
+    const entries: WslDirEntryWire[] = []
+    for (let i = 0; i < 26; i++) {
+      const letter = String.fromCharCode(65 + i)
+      try {
+        const info = statSync(`${letter}:\\`)
+        if (info.isDirectory()) entries.push({ name: letter.toLowerCase(), kind: 'directory' })
+      } catch {
+        // Absent drive: skip.
+      }
+    }
+    return { path: '/mnt', parent: '/', entries }
+  }
+  const winPath = mntToWindowsPath(linuxPath)
+  const readPath = winPath !== null ? winPath : joinUnc(distro, linuxPath)
+  const dirents = readdirSync(readPath, { withFileTypes: true })
   const entries: WslDirEntryWire[] = dirents
     .slice(0, 1000)
     .map((dirent): WslDirEntryWire => {
@@ -253,13 +272,32 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
     case 'check': {
       const distro = requireDistro(params.distro)
       const path = requireLinuxPath(params.path, 'path')
-      const unc = joinUnc(distro, path)
+      // drvfs paths (Access denied over 9P) are checked through their drive spelling.
+      const winPath = mntToWindowsPath(path)
+      const readPath = winPath !== null ? winPath : joinUnc(distro, path)
       try {
-        const info = statSync(unc)
+        const info = statSync(readPath)
         return { exists: true, isDirectory: info.isDirectory() }
       } catch {
         return { exists: false, isDirectory: false }
       }
+    }
+    case 'registerWindows': {
+      // A `/mnt/<drive>` workspace registers under its Windows drive path
+      // (the registry realpath/stats it, and 9P cannot serve drvfs) with the
+      // distro stored for the per-session env contributor.
+      const distro = requireDistro(params.distro)
+      const linuxPath = requireLinuxPath(params.linuxPath, 'path')
+      const winPath = mntToWindowsPath(linuxPath)
+      if (winPath === null) throw new Error('registerWindows requires a /mnt/<drive> Linux path')
+      const username = typeof params.username === 'string' ? params.username : undefined
+      registerWindowsWorkspace(winPath, distro, username)
+      return null
+    }
+    case 'listWorkspaces': {
+      // Every registered WSL workspace key (UNC and Windows drive spellings):
+      // the client uses the drive keys to recognize `/mnt` workspaces.
+      return listWorkspaceKeys()
     }
     case 'setUser': {
       const path = requireWslUnc(params.path)
@@ -453,11 +491,24 @@ export function apply(ctx: Context, config: Config): void {
       resolve(execution) {
         const cwd = execution.agent?.session.header.cwd
         const unc = cwd === undefined ? null : parseWslUnc(cwd)
-        if (unc === null) return {}
-        const username = getWorkspaceUsername(joinUnc(unc.distro, unc.linuxPath))
-        return username === undefined || username === ''
-          ? { DSH_WSL_DISTRO: unc.distro }
-          : { DSH_WSL_DISTRO: unc.distro, DSH_WSL_USER: username }
+        if (unc !== null) {
+          const username = getWorkspaceUsername(joinUnc(unc.distro, unc.linuxPath))
+          return username === undefined || username === ''
+            ? { DSH_WSL_DISTRO: unc.distro }
+            : { DSH_WSL_DISTRO: unc.distro, DSH_WSL_USER: username }
+        }
+        // A Windows-drive cwd belongs to a `/mnt/<drive>` WSL workspace (9P
+        // cannot serve drvfs, so those register under their drive path): the
+        // stored distro drives `wsl.exe -d` for bash.
+        if (cwd !== undefined && /^[A-Za-z]:[\\/]/.test(cwd)) {
+          const entry = getWindowsWorkspace(cwd)
+          if (entry !== undefined && entry.distro !== undefined && entry.distro !== '') {
+            return entry.username === undefined || entry.username === ''
+              ? { DSH_WSL_DISTRO: entry.distro }
+              : { DSH_WSL_DISTRO: entry.distro, DSH_WSL_USER: entry.username }
+          }
+        }
+        return {}
       },
     }), 'dsh-wsl-workspace: per-session distro env fact')
   }

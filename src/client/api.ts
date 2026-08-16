@@ -102,3 +102,23 @@ export async function check(distro: string, path: string): Promise<WslPathCheck>
 export async function setWorkspaceUser(path: string, username: string): Promise<void> {
   return call<void>('setUser', { path, username })
 }
+
+/**
+ * Register a `/mnt/<drive>` WSL workspace under its Windows drive path,
+ * recording the distro (and optional username) for the session env.
+ * @param linuxPath - the `/mnt/<drive>/…` Linux path.
+ * @param distro - the WSL distribution the workspace belongs to.
+ * @param username - optional Linux username.
+ */
+export async function registerWindows(linuxPath: string, distro: string, username: string): Promise<void> {
+  return call<void>('registerWindows', { linuxPath, distro, username })
+}
+
+/**
+ * List every registered WSL workspace key (canonical UNC and Windows drive
+ * spellings). The client uses the drive keys to recognize `/mnt` workspaces
+ * across page reloads.
+ */
+export async function listWorkspaces(): Promise<string[]> {
+  return call<string[]>('listWorkspaces', {})
+}
