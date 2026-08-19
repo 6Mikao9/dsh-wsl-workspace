@@ -349,6 +349,56 @@ function localRowFiles(composition: string): Set<string> {
   return files
 }
 
+/**
+ * Preset data assets a composition's local plugin rows may read at mount
+ * time, relative to the preset directory. The prefab-family presets load
+ * `template.jsonl` (plus its sibling metadata and `templates/` directory)
+ * from the seeder plugin's own directory; a variant missing them fails to
+ * mount (ENOENT) and the session falls back to another preset.
+ */
+const PRESET_DATA_FILES = ['template.jsonl', 'template.jsonl.meta.json'] as const
+const PRESET_DATA_DIRS = ['templates'] as const
+
+/**
+ * Recursive regular-file directory copy for preset data assets. Deliberately
+ * small: files and directories only, no symlink chasing — preset assets are
+ * plain data the source preset already trusted.
+ */
+function copyDirectorySync(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true })
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    const srcPath = join(src, entry.name)
+    const destPath = join(dest, entry.name)
+    if (entry.isDirectory()) copyDirectorySync(srcPath, destPath)
+    else if (entry.isFile()) copyFileSync(srcPath, destPath)
+  }
+}
+
+/**
+ * Copy the source preset's data assets into the generated variant directory.
+ * Missing assets are not an error — most presets carry none.
+ */
+function copyPresetDataAssets(sourceDir: string, destDir: string, variantId: string): void {
+  for (const dataFile of PRESET_DATA_FILES) {
+    const srcFile = join(sourceDir, dataFile)
+    if (!existsSync(srcFile)) continue
+    try {
+      copyFileSync(srcFile, join(destDir, dataFile))
+    } catch (error) {
+      console.error(`dsh-wsl-workspace: failed to copy preset data asset ${dataFile} for ${variantId}: ${String(error instanceof Error ? error.message : error)}`)
+    }
+  }
+  for (const dataDir of PRESET_DATA_DIRS) {
+    const srcDir = join(sourceDir, dataDir)
+    if (!existsSync(srcDir) || !statSync(srcDir).isDirectory()) continue
+    try {
+      copyDirectorySync(srcDir, join(destDir, dataDir))
+    } catch (error) {
+      console.error(`dsh-wsl-workspace: failed to copy preset data directory ${dataDir} for ${variantId}: ${String(error instanceof Error ? error.message : error)}`)
+    }
+  }
+}
+
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
@@ -367,6 +417,10 @@ async function materializeVariants(
     const dir = join(userRoot, variantId)
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'agent.cordis.yml'), transformed, 'utf8')
+    // Data assets the source's local plugin rows read at mount time
+    // (the prefab seeder's template.jsonl and its siblings): copy them
+    // along or the variant fails to mount and falls back to another preset.
+    copyPresetDataAssets(dirname(preset.path), dir, variantId)
     // Copy local function-plugin row files (name: './x.mjs') from the source
     // preset into the variant directory, including their transitive relative
     // imports — the variant composition references them relatively and they

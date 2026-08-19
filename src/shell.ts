@@ -250,6 +250,16 @@ export class WslShellExecutor extends ShellExecutor {
       username = this.resolveUser(spec, undefined)
     }
     const env = this.withWslEnv(spec)
+    // A login shell (`-lc`) loads /etc/profile + the user profile chain, and
+    // several of those reset the cwd to $HOME (observed on Ubuntu 22.04 with
+    // a zsh user default: `wsl.exe --cd <dir> -e bash -lc 'pwd'` prints the
+    // home directory, while `-c` honors `--cd`). The model-facing cwd must
+    // be the resolved workdir in both modes, so prefix an explicit `cd`
+    // when the login shell runs. `cd` into a deleted directory fails the
+    // command exactly like `--cd` would; the failure text is unchanged.
+    const command = this.config.loginShell
+      ? `cd '${linuxCwd.replace(/'/g, `'\\''`)}' && ${spec.command}`
+      : spec.command
     const argv = [
       this.config.wslPath,
       '-d', distro,
@@ -257,7 +267,7 @@ export class WslShellExecutor extends ShellExecutor {
       '--cd', linuxCwd,
       '-e', 'bash',
       this.config.loginShell ? '-lc' : '-c',
-      spec.command,
+      command,
     ]
     return { distro, linuxCwd, windowsCwd, env, argv }
   }

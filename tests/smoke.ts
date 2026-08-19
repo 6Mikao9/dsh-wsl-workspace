@@ -147,6 +147,23 @@ async function main(): Promise<void> {
   const bgOut = bg.readOutput().delta
   if (!bgOut.includes('background-done')) throw new Error(`background output mismatch: ${JSON.stringify(bgOut)}`)
   console.log('background OK')
+
+  // ── no-config distro resolution (default-distro fallback) ────────────────
+  // The str_replace_editor tool resolves with `{ signal }` only — no cwd —
+  // and preset rows mount fs-wsl without distro config. Absolute Linux paths
+  // must still land on a distribution through the Lxss default.
+  const bare = new Context()
+  await bare.plugin(LocalSubprocessRuntime)
+  await bare.plugin(WslFileSystem, {})
+  const bareTarget = await bare.fs.resolve('/etc/hostname')
+  if (bareTarget.displayPath !== '/etc/hostname') {
+    throw new Error(`bare resolve displayPath mismatch: ${bareTarget.displayPath}`)
+  }
+  const bareInfo = await bare.fs.stat(bareTarget)
+  if (bareInfo === undefined || bareInfo.type !== 'file') {
+    throw new Error('bare resolve should stat /etc/hostname as a file')
+  }
+  console.log('no-config distro fallback OK (default distribution)')
   } finally {
     // ── cleanup ─────────────────────────────────────────────────────────────
     rmSync(fileUnc, { force: true })

@@ -13,7 +13,7 @@
  */
 
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
-const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'filesystem', 'persistent-shell'])
+const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
 
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
 function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean): string {
@@ -47,46 +47,6 @@ function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean
           '        maxOutputChars: 16000',
         ]
       : []),
-    '',
-  ].join('\n')
-}
-
-/**
- * The persistent-shell group re-pointed at WSL: the PTY spawns wsl.exe's
- * bash instead of a host `bash` (which does not exist on Windows).
- */
-function persistentShellGroup(): string {
-  return [
-    '# ── persistent shell over WSL (variant) ─────────────────────────────────',
-    '- id: persistent-shell',
-    '  name: cordis:group',
-    '  group: true',
-    '  isolate:',
-    '    terminals: true',
-    '  config:',
-    '    - id: pty',
-    "      name: '@deepseek-ai/dsh-terminal'",
-    '',
-    '    - id: terminal-bash',
-    "      name: '@deepseek-ai/dsh-terminal-bash'",
-    '      config:',
-    '        timeoutMs: 300000',
-    "        shellPath: 'wsl.exe'",
-    "        shellArgs: ['-e', 'bash', '-l']",
-    '',
-    '    - id: persistent-bash',
-    "      name: '@deepseek-ai/dsh-tool-bash-persistent'",
-    '      config:',
-    '        timeoutMs: 300000',
-    '        description: |-',
-    '          Run commands in a bash shell inside the WSL distribution',
-    '          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.',
-    "          * You don't have access to the internet via this tool.",
-    '          * You do have access to a mirror of common linux and python packages via apt and pip.',
-    '          * State is persistent across command calls and discussions with the user.',
-    "          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.",
-    '          * Please avoid commands that may produce a very large amount of output.',
-    "          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.",
     '',
   ].join('\n')
 }
@@ -149,7 +109,14 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
 /**
  * Transform one source preset composition into its WSL variant: drop the
  * execution-world rows, keep everything else verbatim, and append the WSL
- * world group (plus the persistent-shell group when the source had one).
+ * world group. The persistent-shell group is NOT re-added: it registers the
+ * same `bash` tool name as the WSL world's `dsh-tool-bash`, and the tools
+ * registry rejects duplicates within one preset layer — the whole variant
+ * fails to mount and the session falls back to another preset. Its PTY
+ * backend additionally cannot run on this plugin's Windows host
+ * (`dsh-subprocess-local`: "terminal inspection is unsupported on platform
+ * win32"), so the group could never spawn a shell here anyway. The WSL
+ * world's ordinary `bash` tool covers command execution for every variant.
  * @param source - the source composition text.
  * @param shellPath - absolute path of the plugin's built WSL shell provider.
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
@@ -160,7 +127,6 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
   const spans = topLevelSpans(lines)
   const kept: string[] = []
   let sawEditor = false
-  let sawPersistent = false
   let personaAppended = false
   for (const span of spans) {
     const id = spanId(lines, span)
@@ -168,10 +134,7 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
       kept.push(...lines.slice(span.start, span.end))
       continue
     }
-    if (WORLD_ROWS.has(id)) {
-      if (id === 'persistent-shell') sawPersistent = true
-      continue
-    }
+    if (WORLD_ROWS.has(id)) continue
     if (id === 'persona' && !personaAppended && appendablePersona(lines, span)) {
       kept.push(...appendPersona(lines, span))
       personaAppended = true
@@ -184,7 +147,6 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
   result.push(wslWorldGroup(shellPath, fsPath, sawEditor))
-  if (sawPersistent) result.push(persistentShellGroup())
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

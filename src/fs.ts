@@ -26,6 +26,7 @@ import {
   parseWslUnc,
   windowsToMntPath,
 } from './shared/paths.ts'
+import { defaultDistroSync } from './shared/wsl.ts'
 
 /** Plugin config. `cwd`/`distro` are optional because UNC workdirs carry both. */
 export interface Config {
@@ -153,14 +154,22 @@ export class WslFileSystem extends LocalFileSystem {
     throw new FsError(`wsl-fs: cwd "${base}" is not in the WSL execution world`, 'FS_IO_ERROR')
   }
 
+  /**
+   * Resolve the distribution an absolute Linux path opens inside. The chain:
+   * the caller cwd when it is a WSL UNC path, then the configured `distro`,
+   * then the host's default distribution from the Lxss registry (mirroring
+   * the shell executor's chain). Callers that pass no cwd — the
+   * `str_replace_editor` tool resolves with `{ signal }` only — still land
+   * on the same distro the session's bash runs in instead of failing.
+   */
   private distroFor(cwd?: string): string {
     const fromCwd = parseWslUnc(cwd ?? '')
     if (fromCwd !== null) return fromCwd.distro
     const distro = this.distro
-    if (distro === undefined || distro === '') {
-      throw new FsError('wsl-fs: Linux path carries no distribution and none is configured', 'FS_IO_ERROR')
-    }
-    return distro
+    if (distro !== undefined && distro !== '') return distro
+    const fallback = defaultDistroSync()
+    if (fallback !== undefined) return fallback
+    throw new FsError('wsl-fs: Linux path carries no distribution and none is configured', 'FS_IO_ERROR')
   }
 
   /** The Linux display path for a resolved Windows-side path. */

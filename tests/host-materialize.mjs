@@ -71,15 +71,51 @@ const MINIMAL_SRC = `- id: persona
       config:
         maxOutputChars: 16000
 `
+const PREFAB_SRC = `# prefab-like source preset (win32-only custom bash + local fs group)
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a helpful software engineer assistant.
+    complete: true
+    includeRuntimeContext: false
+
+- id: custom-bash
+  name: ./custom-bash.mjs
+  disabled: !!js process.platform !== 'win32'
+  config:
+    bashPath: 'C:\\Program Files\\Git\\bin\\bash.exe'
+
+- id: bootstrap-filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+`
 const sources = {
   standard: { path: join(home, 'src-standard', 'agent.cordis.yml'), text: STANDARD_SRC },
   minimal: { path: join(home, 'src-minimal', 'agent.cordis.yml'), text: MINIMAL_SRC },
+  'prefab-anchored-standard': { path: join(home, 'src-prefab', 'agent.cordis.yml'), text: PREFAB_SRC },
 }
 // Source display metadata with declared roster order (the shipped layout).
 mkdirSync(join(home, 'src-standard'), { recursive: true })
 mkdirSync(join(home, 'src-minimal'), { recursive: true })
+mkdirSync(join(home, 'src-prefab'), { recursive: true })
 writeFileSync(join(home, 'src-standard', 'preset.yml'), 'name: 标准模式\norder: 1\n', 'utf8')
 writeFileSync(join(home, 'src-minimal', 'preset.yml'), 'name: 极简模式\norder: 3\n', 'utf8')
+writeFileSync(join(home, 'src-prefab', 'preset.yml'), 'name: Prefab Anchored Standard\norder: 8\n', 'utf8')
+// The prefab seeder reads these data assets from its preset directory at
+// mount time; the variant must carry copies.
+writeFileSync(join(home, 'src-prefab', 'template.jsonl'), '{"type":"session","version":0}\n', 'utf8')
+writeFileSync(join(home, 'src-prefab', 'template.jsonl.meta.json'), '{"templateKind":"generic"}\n', 'utf8')
+mkdirSync(join(home, 'src-prefab', 'templates'), { recursive: true })
+writeFileSync(join(home, 'src-prefab', 'templates', 'benchmark.jsonl'), '{"type":"session","version":0}\n', 'utf8')
 const registrations = []
 const fakeCtx = {
   get: (key) => {
@@ -142,7 +178,19 @@ const minYaml = readFileSync(join(minVariant, 'agent.cordis.yml'), 'utf8')
 assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant keeps the editor')
-assert(minYaml.includes("shellPath: 'wsl.exe'"), 'minimal variant re-points PTY at wsl.exe')
+assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the PTY group (duplicate bash registration + unsupported win32 PTY)')
+assert(!minYaml.includes('persistent-bash'), 'minimal variant drops persistent-bash')
+
+const prefabVariant = join(home, '.agent-presets', 'wsl-prefab-anchored-standard')
+const prefabYaml = readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8')
+assert(existsSync(prefabVariant), 'wsl-prefab-anchored-standard variant generated')
+assert(!prefabYaml.includes('custom-bash'), 'prefab variant drops custom-bash (would double-register bash)')
+assert(!prefabYaml.includes('bootstrap-filesystem'), 'prefab variant drops bootstrap-filesystem (host-local fs)')
+assert(prefabYaml.includes('- id: wsl-world'), 'prefab variant injects wsl realm')
+assert((prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'prefab variant registers bash exactly once')
+assert(existsSync(join(prefabVariant, 'template.jsonl')), 'prefab variant carries the seed template')
+assert(existsSync(join(prefabVariant, 'template.jsonl.meta.json')), 'prefab variant carries the seed template metadata')
+assert(existsSync(join(prefabVariant, 'templates', 'benchmark.jsonl')), 'prefab variant carries the templates directory')
 
 // Stale variant cleanup: a wsl-ghost dir whose source vanished must go.
 mkdirSync(join(home, '.agent-presets', 'wsl-ghost'), { recursive: true })
