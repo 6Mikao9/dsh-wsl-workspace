@@ -101,21 +101,19 @@ const PREFAB_SRC = `# prefab-like source preset (win32-only custom bash + local 
 const sources = {
   standard: { path: join(home, 'src-standard', 'agent.cordis.yml'), text: STANDARD_SRC },
   minimal: { path: join(home, 'src-minimal', 'agent.cordis.yml'), text: MINIMAL_SRC },
-  'prefab-anchored-standard': { path: join(home, 'src-prefab', 'agent.cordis.yml'), text: PREFAB_SRC },
+  'third-party-local': { path: join(home, 'src-third-party', 'agent.cordis.yml'), text: PREFAB_SRC },
 }
 // Source display metadata with declared roster order (the shipped layout).
 mkdirSync(join(home, 'src-standard'), { recursive: true })
 mkdirSync(join(home, 'src-minimal'), { recursive: true })
-mkdirSync(join(home, 'src-prefab'), { recursive: true })
+mkdirSync(join(home, 'src-third-party'), { recursive: true })
 writeFileSync(join(home, 'src-standard', 'preset.yml'), 'name: 标准模式\norder: 1\n', 'utf8')
 writeFileSync(join(home, 'src-minimal', 'preset.yml'), 'name: 极简模式\norder: 3\n', 'utf8')
-writeFileSync(join(home, 'src-prefab', 'preset.yml'), 'name: Prefab Anchored Standard\norder: 8\n', 'utf8')
-// The prefab seeder reads these data assets from its preset directory at
-// mount time; the variant must carry copies.
-writeFileSync(join(home, 'src-prefab', 'template.jsonl'), '{"type":"session","version":0}\n', 'utf8')
-writeFileSync(join(home, 'src-prefab', 'template.jsonl.meta.json'), '{"templateKind":"generic"}\n', 'utf8')
-mkdirSync(join(home, 'src-prefab', 'templates'), { recursive: true })
-writeFileSync(join(home, 'src-prefab', 'templates', 'benchmark.jsonl'), '{"type":"session","version":0}\n', 'utf8')
+writeFileSync(join(home, 'src-third-party', 'preset.yml'), 'name: Third Party Local\norder: 8\n', 'utf8')
+// A source preset is an opaque, self-contained unit. Assets must travel
+// without the WSL plugin knowing their names, extensions, or consumers.
+mkdirSync(join(home, 'src-third-party', 'plugin-data'), { recursive: true })
+writeFileSync(join(home, 'src-third-party', 'plugin-data', 'trajectory.bin'), 'opaque preset data\n', 'utf8')
 const registrations = []
 const fakeCtx = {
   get: (key) => {
@@ -177,29 +175,37 @@ const minVariant = join(home, '.agent-presets', 'wsl-minimal')
 const minYaml = readFileSync(join(minVariant, 'agent.cordis.yml'), 'utf8')
 assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
-assert(minYaml.includes('str-replace-editor'), 'minimal variant keeps the editor')
+assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
 assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the PTY group (duplicate bash registration + unsupported win32 PTY)')
 assert(!minYaml.includes('persistent-bash'), 'minimal variant drops persistent-bash')
 
-const prefabVariant = join(home, '.agent-presets', 'wsl-prefab-anchored-standard')
+const prefabVariant = join(home, '.agent-presets', 'wsl-third-party-local')
 const prefabYaml = readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8')
-assert(existsSync(prefabVariant), 'wsl-prefab-anchored-standard variant generated')
-assert(!prefabYaml.includes('custom-bash'), 'prefab variant drops custom-bash (would double-register bash)')
-assert(!prefabYaml.includes('bootstrap-filesystem'), 'prefab variant drops bootstrap-filesystem (host-local fs)')
-assert(prefabYaml.includes('- id: wsl-world'), 'prefab variant injects wsl realm')
-assert((prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'prefab variant registers bash exactly once')
-assert(existsSync(join(prefabVariant, 'template.jsonl')), 'prefab variant carries the seed template')
-assert(existsSync(join(prefabVariant, 'template.jsonl.meta.json')), 'prefab variant carries the seed template metadata')
-assert(existsSync(join(prefabVariant, 'templates', 'benchmark.jsonl')), 'prefab variant carries the templates directory')
+assert(existsSync(prefabVariant), 'third-party WSL variant generated')
+assert(!prefabYaml.includes('custom-bash'), 'third-party variant drops custom-bash (would double-register bash)')
+assert(!prefabYaml.includes('bootstrap-filesystem'), 'third-party variant drops bootstrap-filesystem (host-local fs)')
+assert(prefabYaml.includes('- id: wsl-world'), 'third-party variant injects wsl realm')
+assert((prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'third-party variant registers bash exactly once')
+assert(prefabYaml.includes('str-replace-editor'), 'third-party variant re-injects the editor over the WSL fs')
+assert(existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'third-party opaque asset directory is mirrored')
 
 // Stale variant cleanup: a wsl-ghost dir whose source vanished must go.
 mkdirSync(join(home, '.agent-presets', 'wsl-ghost'), { recursive: true })
 writeFileSync(join(home, '.agent-presets', 'wsl-ghost', 'agent.cordis.yml'), '- id: x\n', 'utf8')
 // Rerun apply to exercise cleanup.
+rmSync(join(home, 'src-third-party', 'plugin-data', 'trajectory.bin'))
 apply(fakeCtx, { route: '/wsl-workspace/api' })
 await new Promise(resolve => setTimeout(resolve, 300))
 assert(!existsSync(join(home, '.agent-presets', 'wsl-ghost')), 'stale variant cleaned up')
 assert(existsSync(join(home, '.agent-presets', 'wsl-standard')), 'kept variant survives rerun')
+assert(!existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'removed source asset does not survive regeneration')
+
+// A failed source mirror must leave the previous complete variant untouched.
+sources['third-party-local'].text = `${PREFAB_SRC}\n# incomplete-update-must-not-publish\n`
+sources['third-party-local'].path = join(home, 'missing-source', 'agent.cordis.yml')
+apply(fakeCtx, { route: '/wsl-workspace/api' })
+await new Promise(resolve => setTimeout(resolve, 300))
+assert(!readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8').includes('incomplete-update-must-not-publish'), 'failed regeneration preserves the previous complete variant')
 
 rmSync(home, { recursive: true, force: true })
 console.log('HOST MATERIALIZE PASSED')

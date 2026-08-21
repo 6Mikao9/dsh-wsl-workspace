@@ -25,7 +25,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -324,81 +324,25 @@ interface AgentPresetsService {
 }
 
 /**
- * Materialize a `wsl-<mode>` variant for every healthy source preset, and
- * remove this plugin's managed residue: stale variants whose source
- * disappeared, plus the legacy standalone `wsl` preset directory (the
- * execution world now composes with modes; a standalone WSL mode no longer
- * exists). Managed files: rewritten on every boot.
- * @param agentPresets - the roster service.
- * @param dshHome - the harness home (user preset root parent).
- * @param shellPath - absolute path of the plugin's built WSL shell provider.
- * @param fsPath - absolute path of the plugin's built WSL fs provider.
+ * Publish a fully staged preset directory while preserving the last complete
+ * variant if publication fails. Stable sibling names also let the next boot
+ * recover an interrupted old-to-backup rename before doing new work.
  */
-/**
- * Relative './x.mjs' row files a composition references. Local function-plugin
- * rows travel with their preset directory; generated variants must copy them
- * along or the variant composition fails to load.
- * @param composition - the composition text.
- */
-function localRowFiles(composition: string): Set<string> {
-  const files = new Set<string>()
-  for (const line of composition.split('\n')) {
-    const match = /^\s*name:\s*['"]?(\.\/[^'"]+\.m?js)['"]?\s*$/.exec(line)
-    if (match?.[1] !== undefined) files.add(match[1])
+function publishVariant(staging: string, dest: string): void {
+  const previous = `${dest}.previous`
+  if (!existsSync(dest) && existsSync(previous)) renameSync(previous, dest)
+  if (existsSync(previous)) rmSync(previous, { recursive: true, force: true })
+  if (existsSync(dest)) renameSync(dest, previous)
+  try {
+    renameSync(staging, dest)
+  } catch (error) {
+    if (!existsSync(dest) && existsSync(previous)) renameSync(previous, dest)
+    throw error
   }
-  return files
+  rmSync(previous, { recursive: true, force: true })
 }
 
-/**
- * Preset data assets a composition's local plugin rows may read at mount
- * time, relative to the preset directory. The prefab-family presets load
- * `template.jsonl` (plus its sibling metadata and `templates/` directory)
- * from the seeder plugin's own directory; a variant missing them fails to
- * mount (ENOENT) and the session falls back to another preset.
- */
-const PRESET_DATA_FILES = ['template.jsonl', 'template.jsonl.meta.json'] as const
-const PRESET_DATA_DIRS = ['templates'] as const
-
-/**
- * Recursive regular-file directory copy for preset data assets. Deliberately
- * small: files and directories only, no symlink chasing — preset assets are
- * plain data the source preset already trusted.
- */
-function copyDirectorySync(src: string, dest: string): void {
-  mkdirSync(dest, { recursive: true })
-  for (const entry of readdirSync(src, { withFileTypes: true })) {
-    const srcPath = join(src, entry.name)
-    const destPath = join(dest, entry.name)
-    if (entry.isDirectory()) copyDirectorySync(srcPath, destPath)
-    else if (entry.isFile()) copyFileSync(srcPath, destPath)
-  }
-}
-
-/**
- * Copy the source preset's data assets into the generated variant directory.
- * Missing assets are not an error — most presets carry none.
- */
-function copyPresetDataAssets(sourceDir: string, destDir: string, variantId: string): void {
-  for (const dataFile of PRESET_DATA_FILES) {
-    const srcFile = join(sourceDir, dataFile)
-    if (!existsSync(srcFile)) continue
-    try {
-      copyFileSync(srcFile, join(destDir, dataFile))
-    } catch (error) {
-      console.error(`dsh-wsl-workspace: failed to copy preset data asset ${dataFile} for ${variantId}: ${String(error instanceof Error ? error.message : error)}`)
-    }
-  }
-  for (const dataDir of PRESET_DATA_DIRS) {
-    const srcDir = join(sourceDir, dataDir)
-    if (!existsSync(srcDir) || !statSync(srcDir).isDirectory()) continue
-    try {
-      copyDirectorySync(srcDir, join(destDir, dataDir))
-    } catch (error) {
-      console.error(`dsh-wsl-workspace: failed to copy preset data directory ${dataDir} for ${variantId}: ${String(error instanceof Error ? error.message : error)}`)
-    }
-  }
-}
-
+/** Materialize one WSL variant per healthy source preset. */
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
@@ -415,41 +359,13 @@ async function materializeVariants(
     const source = await agentPresets.read(preset.id)
     const transformed = transformPresetForWsl(source, shellPath, fsPath)
     const dir = join(userRoot, variantId)
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'agent.cordis.yml'), transformed, 'utf8')
-    // Data assets the source's local plugin rows read at mount time
-    // (the prefab seeder's template.jsonl and its siblings): copy them
-    // along or the variant fails to mount and falls back to another preset.
-    copyPresetDataAssets(dirname(preset.path), dir, variantId)
-    // Copy local function-plugin row files (name: './x.mjs') from the source
-    // preset into the variant directory, including their transitive relative
-    // imports — the variant composition references them relatively and they
-    // must travel with it, or the variant fails to load at mount time.
-    const pending = [...localRowFiles(transformed)]
-    const visited = new Set<string>()
-    while (pending.length > 0) {
-      const rowFile = pending.pop()
-      if (rowFile === undefined || visited.has(rowFile)) continue
-      visited.add(rowFile)
-      const srcFile = join(dirname(preset.path), rowFile)
-      if (!existsSync(srcFile)) continue
-      mkdirSync(dirname(join(dir, rowFile)), { recursive: true })
-      copyFileSync(srcFile, join(dir, rowFile))
-      try {
-        const content = readFileSync(srcFile, 'utf8')
-        const importRe = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](\.\/[^'"]+)['"]/g
-        let match: RegExpExecArray | null
-        while ((match = importRe.exec(content)) !== null) {
-          let spec = match[1]
-          if (spec === undefined) continue
-          if (!/\.m?js$/.test(spec)) spec += '.mjs'
-          pending.push(spec)
-        }
-      } catch {
-        // Unreadable row file: keep whatever was copied; the variant reports
-        // the failure through the roster when mounted.
-      }
-    }
+    const staging = `${dir}.staging`
+    rmSync(staging, { recursive: true, force: true })
+    // A preset directory is an opaque, self-contained plugin unit. Mirror it
+    // without interpreting local code or asset names, then overwrite only the
+    // two files owned by this generator.
+    cpSync(dirname(preset.path), staging, { recursive: true, force: true })
+    writeFileSync(join(staging, 'agent.cordis.yml'), transformed, 'utf8')
     const labels = MODE_DISPLAY_LABELS[preset.id]
     let name = variantName(preset.id, preset.id)
     let orderLine = ''
@@ -471,12 +387,13 @@ async function materializeVariants(
       // Absent or unreadable display metadata falls back to the id-based name.
     }
     writeFileSync(
-      join(dir, 'preset.yml'),
+      join(staging, 'preset.yml'),
       `name: ${yamlScalar(name)}\n`
       + orderLine
       + `description: ${yamlScalar(variantDescription(preset.id))}\n`,
       'utf8',
     )
+    publishVariant(staging, dir)
     generated.add(variantId)
   }
   for (const entry of readdirSync(userRoot, { withFileTypes: true })) {
@@ -503,8 +420,8 @@ export const Config: z<Config> = z.object({
 })
 
 /**
- * Apply the host half: materialize the `wsl` preset plus a `wsl-<mode>`
- * variant for every healthy roster preset, register the data route, and
+ * Apply the host half: materialize a `wsl-<mode>` variant for every healthy
+ * roster preset, register the data route, and
  * contribute the per-session `DSH_WSL_DISTRO` managed-env fact so the WSL
  * shell executor can resolve a plain Linux `workdir` to the calling
  * session's distribution.

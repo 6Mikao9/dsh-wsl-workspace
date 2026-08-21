@@ -149,9 +149,8 @@ async function main(): Promise<void> {
   console.log('background OK')
 
   // ── no-config distro resolution (default-distro fallback) ────────────────
-  // The str_replace_editor tool resolves with `{ signal }` only — no cwd —
-  // and preset rows mount fs-wsl without distro config. Absolute Linux paths
-  // must still land on a distribution through the Lxss default.
+  // Provider-level calls without a session may still resolve through the Lxss
+  // default. Model-facing tools use the calling session cwd instead.
   const bare = new Context()
   await bare.plugin(LocalSubprocessRuntime)
   await bare.plugin(WslFileSystem, {})

@@ -13,7 +13,7 @@
  */
 
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
-const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
+const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
 
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
 function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean): string {
@@ -39,6 +39,9 @@ function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean
     "      name: '@deepseek-ai/dsh-tool-bash'",
     '    - id: tool-fs',
     "      name: '@deepseek-ai/dsh-tool-fs'",
+    // The editor resolves through this entry-local WSL fs. Older editor builds
+    // pass no cwd, so the provider inherits it from the current tool execution.
+    // Anchored-family presets require this name during bootstrap.
     ...(includeEditor
       ? [
           '    - id: str-replace-editor',
