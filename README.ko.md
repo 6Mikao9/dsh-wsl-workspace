@@ -43,6 +43,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **bash 도구**: 설정된 사용자 이름으로 WSL 배포판 안에서 실행됩니다(비움 = 배포판 기본 사용자, 대개 `root`). 배포판 어디든 읽고 쓸 수 있습니다. Windows ACL 샌드박스는 `wsl.exe`를 감쌀 수 없으며(자식 프로세스는 Linux 커널 쪽에서 실행됨), WSL 자체가 격리 경계가 되어 DSH 파일 정책은 bash에 적용되지 않습니다.
 - **파일 도구(`read`/`write`/`edit`)**: Windows 쪽 WSL 9P 공유를 통해 동작하며 DSH 파일 정책의 적용을 받습니다. `workspace-write`에서는 읽기는 어디서나 가능하지만 쓰기는 세션 워크스페이스 안으로 제한됩니다. 파일 정책을 `danger-full-access`로 바꾸면 워크스페이스 밖 쓰기도 가능합니다. 사용자 이름 필드는 파일 도구에 영향을 주지 않습니다.
 - 배포판이 아직 시작되지 않았을 때 `wsl.exe`가 stderr로 출력하는 `localhost` 포트 포워딩 깨진 배너는 무해합니다.
+- **모드 변형**: DSH가 제공하는 모든 모드(Standard·PTC·Minimal·Creative, 그리고 Anchored Standard 등 실험적 모드)에 대해 이 플러그인은 대응하는 `wsl-<mode>` 변형을 추가합니다. 원래 모드는 그대로 사용 가능하며 변경되지 않고, WSL 변형은 같은 모드를 WSL 실행 환경에서 실행할 뿐입니다.
 
 ## 변경 로그
 

@@ -43,6 +43,7 @@ Clique em "Create & open" para iniciar uma nova sessão no espaço de trabalho. 
 - **Ferramenta bash**: é executada dentro da distribuição WSL com o nome de usuário configurado (vazio = usuário padrão da distribuição, geralmente `root`), podendo ler e escrever em qualquer lugar da distribuição. O sandbox de ACL do Windows não consegue envolver o `wsl.exe` — seus processos filhos rodam no lado do kernel Linux — então o WSL em si é a fronteira de isolamento e a política de arquivos do DSH não se aplica ao bash.
 - **Ferramentas de arquivo (`read`/`write`/`edit`)**: passam pelo compartilhamento WSL 9P do lado do Windows e ficam sujeitas à política de arquivos do DSH. Com `workspace-write`, leituras funcionam em qualquer lugar, mas escritas ficam restritas ao espaço de trabalho da sessão; mude a política para `danger-full-access` para permitir também escritas fora dele. O campo nome de usuário não afeta as ferramentas de arquivo.
 - O banner de encaminhamento de porta `localhost` (texto ilegível) que o `wsl.exe` imprime em stderr quando a distribuição ainda não estava em execução é inofensivo.
+- **Variantes de modo**: para cada modo fornecido pelo DSH — Standard, PTC, Minimal, Creative e os experimentais como Anchored Standard — este plugin adiciona uma variante `wsl-<modo>` correspondente. Os modos originais continuam disponíveis sem alterações; as variantes WSL apenas executam o mesmo modo dentro de um ambiente de execução WSL.
 
 ## Registo de alterações
 

@@ -40,6 +40,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **bash 工具**：以配置的用户名在 WSL 发行版内运行（留空 = 发行版默认用户，通常为 root），可对发行版内任意路径读写。Windows 的 ACL 沙箱无法包裹 `wsl.exe`（子进程运行在 Linux 内核侧），WSL 自身即隔离边界，DSH 文件策略不作用于 bash。
 - **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问，受 DSH 文件策略约束。`workspace-write` 下读可到任意位置、写仅限会话工作区；改为 `danger-full-access` 后工作区外也可写入。用户名设置不影响文件工具。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
+- **模式变体**：DSH 自带的每一个模式（标准、PTC、极简、创造，以及实验性的 Anchored Standard 等），本插件都会额外生成一个对应的 `wsl-<模式>` 变体。原始模式照常可用、不受影响；WSL 变体只是让同一模式运行在 WSL 执行环境里。
 
 ## 更新日志
 

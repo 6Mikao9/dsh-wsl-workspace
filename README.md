@@ -41,6 +41,7 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 - **bash tool**: runs inside the WSL distribution as the configured username (empty = the distro default user, often `root`), so it can read and write anywhere in the distro. The Windows ACL sandbox cannot wrap `wsl.exe` — its children run on the Linux kernel side — so WSL itself is the isolation boundary and the DSH file policy does not apply to bash.
 - **File tools (`read`/`write`/`edit`)**: go through the Windows-side WSL 9P share and run under the DSH file policy. Under `workspace-write`, reads work anywhere but writes are restricted to the session workspace; switch the file policy to `danger-full-access` to also allow writes outside it. The username field does not affect the file tools.
 - The garbled `localhost` port-forwarding banner `wsl.exe` prints to stderr when the distro was not running yet is harmless.
+- **Mode variants**: for every mode DSH ships — Standard, PTC, Minimal, Creative, and experimental ones like Anchored Standard — this plugin adds a matching `wsl-<mode>` variant. The original modes stay available unchanged; the WSL variants simply run the same mode inside a WSL execution world.
 
 ## Changelog
 

@@ -43,6 +43,7 @@ Klicke auf „Create & open", um eine neue Sitzung im Arbeitsbereich zu starten.
 - **Bash-Tool**: läuft in der WSL-Distribution als der konfigurierte Benutzername (leer = Standardbenutzer der Distribution, oft `root`) und kann daher überall in der Distribution lesen und schreiben. Die Windows-ACL-Sandbox kann `wsl.exe` nicht umhüllen — die Kindprozesse laufen auf der Linux-Kernelseite — daher ist WSL selbst die Isolationsgrenze, und die DSH-Dateipolitik gilt nicht für Bash.
 - **Datei-Tools (`read`/`write`/`edit`)**: laufen über die Windows-seitige WSL-9P-Freigabe und unterliegen der DSH-Dateipolitik. Unter `workspace-write` ist Lesen überall möglich, Schreiben aber auf den Sitzungs-Arbeitsbereich beschränkt; stelle die Politik auf `danger-full-access` um, um auch außerhalb schreiben zu können. Das Benutzername-Feld betrifft die Datei-Tools nicht.
 - Das verzerrte `localhost`-Port-Forwarding-Banner, das `wsl.exe` auf stderr ausgibt, wenn die Distribution noch nicht lief, ist harmlos.
+- **Modus-Varianten**: Für jeden von DSH mitgelieferten Modus — Standard, PTC, Minimal, Creative und experimentelle wie Anchored Standard — fügt dieses Plugin eine passende `wsl-<modus>`-Variante hinzu. Die Originalmodi bleiben unverändert verfügbar; die WSL-Varianten führen denselben Modus lediglich in einer WSL-Ausführungswelt aus.
 
 ## Änderungsprotokoll
 
