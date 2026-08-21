@@ -117,15 +117,61 @@ test('standard-like transform drops world rows and injects the WSL realm', () =>
   assert.ok(!out.includes('persistent-shell'), 'no persistent shell for standard-like')
 })
 
-test('minimal-like transform keeps persona fixed and re-points the PTY at wsl.exe', () => {
+test('minimal-like transform keeps persona fixed and uses the cwd-aware fs tools', () => {
   const out = transformPresetForWsl(MINIMAL_LIKE, SHELL, FS)
   assert.ok(!out.includes('fs-local'), 'fs-local dropped')
-  assert.ok(out.includes('str-replace-editor'), 'editor re-injected into the WSL realm')
-  assert.ok(out.includes('persistent-shell'), 'persistent shell kept')
-  assert.ok(out.includes("shellPath: 'wsl.exe'"), 'terminal re-pointed at wsl.exe')
-  assert.ok(out.includes("shellArgs: ['-e', 'bash', '-l']"), 'wsl argv present')
+  assert.ok(out.includes('str-replace-editor'), 'editor re-injected over the session-aware WSL fs')
+  assert.ok(!out.includes('persistent-shell'), 'persistent shell dropped (duplicate bash name + unsupported win32 PTY)')
+  assert.ok(!out.includes('persistent-bash'), 'persistent-bash dropped')
   assert.ok(!out.includes('complete: true') || out.includes('complete: true'), 'persona untouched')
   assert.ok(!out.includes('inside a WSL'), 'minimal persona not amended (complete prompt)')
+})
+
+/** A prefab-family composition: win32-only custom bash + local fs group. */
+const PREFAB_LIKE = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a helpful software engineer assistant.
+    complete: true
+    includeRuntimeContext: false
+
+- id: custom-bash
+  name: ./custom-bash.mjs
+  disabled: !!js process.platform !== 'win32'
+  config:
+    bashPath: 'C:\\Program Files\\Git\\bin\\bash.exe'
+
+- id: bootstrap-filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+`
+
+test('third-party transform drops the extra host execution-world rows', () => {
+  const out = transformPresetForWsl(PREFAB_LIKE, SHELL, FS)
+  assert.ok(!out.includes('custom-bash'), 'custom-bash dropped (would double-register bash)')
+  assert.ok(!out.includes('bootstrap-filesystem'), 'bootstrap-filesystem dropped (host-local fs)')
+  assert.ok(!/name: '\.\/custom-bash\.mjs'/.test(out), 'custom-bash row file not referenced')
+  assert.ok(out.includes('- id: wsl-world'), 'wsl realm injected')
+  assert.ok(out.includes('str-replace-editor'), 'editor re-injected over the WSL fs')
+  const bashRegistrants = out.match(/name: '@deepseek-ai\/dsh-tool-bash'/g)?.length ?? 0
+  assert.equal(bashRegistrants, 1, 'exactly one bash tool registration')
+})
+
+test('a top-level editor is replaced instead of registered twice', () => {
+  const out = transformPresetForWsl(`- id: str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+`, SHELL, FS)
+  const editorRegistrants = out.match(/name: '@deepseek-ai\/dsh-tool-str-replace-editor'/g)?.length ?? 0
+  assert.equal(editorRegistrants, 1)
 })
 
 test('transform preserves unknown rows verbatim', () => {

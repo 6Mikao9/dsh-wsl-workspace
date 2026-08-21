@@ -196,7 +196,7 @@ dsh-wsl-workspace/                    # 一个仓库，多包（或单包多入�
 
 用户反馈「选 WSL 后无法再用标准/PTC/极简/创造等模式」——根因是把「WSL 执行世界」做成了独占 preset。重构为**变体族**：
 
-- host 启动时枚举 roster 全部健康 preset（`ctx.agentPresets` 服务），为每个生成 `wsl-<模式>` 变体（`wsl-standard`/`wsl-code`/`wsl-minimal`/`wsl-cordis`…）：文本级变换（`src/host/variants.ts`）——删除 `tool-bash`/`tool-pwsh`/`tool-fs` 及 `filesystem`/`persistent-shell` 组，注入 WSL realm 组（shell-wsl + fs-wsl + tool-bash + tool-fs，极简变体另含 str-replace-editor 并把 PTY 指到 `wsl.exe -e bash -l`）；标准类 persona 追加 WSL 引导句；陈旧变体（源 preset 消失）自动清理。
+- host 启动时枚举 roster 全部健康 preset（`ctx.agentPresets` 服务），为每个生成 `wsl-<模式>` 变体（`wsl-standard`/`wsl-code`/`wsl-minimal`/`wsl-cordis`…）：把源 preset 目录作为不透明、自包含单元完整镜像，再由 `src/host/variants.ts` 删除宿主执行世界行并注入 WSL realm（shell-wsl + fs-wsl + tool-bash + tool-fs，以及源 preset 需要的 str-replace-editor）。WSL fs 从当前 `tools/execute` 上下文继承 session cwd，因此未显式传 cwd 的旧文件工具也保持会话发行版亲和；真正无 session 的 provider 调用才回退默认发行版。`persistent-shell` 不重加。标准类 persona 追加 WSL 引导句；陈旧变体（源 preset 消失）自动清理。
 - 前端自动绑定改为**模式映射**：WSL 工作区的空白会话，从当前模式（含部署默认）映射到 `wsl-<模式>` 变体；选择器里也直接可见「WSL · 标准模式」等条目。全局引导注入（上一轮治标方案）按用户意见移除。
 - 验证：变体变换 6 项单测 + materialize 全流程断言（变体生成/内容/persona/PTY 改向/陈旧清理）+ 构建/冒烟全绿。
 

@@ -15,6 +15,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { link, lstat, rename } from 'node:fs/promises'
 import { FsError } from '@deepseek-ai/dsh-fs'
 import type { FsPathInfo, FsTarget } from '@deepseek-ai/dsh-fs'
@@ -26,6 +27,7 @@ import {
   parseWslUnc,
   windowsToMntPath,
 } from './shared/paths.ts'
+import { defaultDistroSync } from './shared/wsl.ts'
 
 /** Plugin config. `cwd`/`distro` are optional because UNC workdirs carry both. */
 export interface Config {
@@ -45,6 +47,10 @@ interface Translated {
   cwd: string
 }
 
+interface ToolExecution {
+  agent?: { session: { header: { cwd?: string } } }
+}
+
 /**
  * The WSL filesystem backend. Identity keys are canonical UNC paths; the
  * Linux form is derived on demand, so both worlds stay in sync across
@@ -58,12 +64,16 @@ export class WslFileSystem extends LocalFileSystem {
   })
 
   private readonly distro: string | undefined
+  private readonly executionCwd = new AsyncLocalStorage<string | undefined>()
 
   constructor(ctx: Context, config: Config) {
     // schemastery fills the defaults before construction; the parent validates
     // `diffBasisMaxBytes` and stores the resolved shape.
     super(ctx, config)
     this.distro = config.distro
+    ctx.on('tools/execute', (exec: ToolExecution, next: () => unknown) => (
+      this.executionCwd.run(exec.agent?.session.header.cwd, next)
+    ))
     // The 9P/drvfs substrate has no hard links and no Win32 security semantics:
     // replace the atomic-publication boundaries the parent's fsio defaults to.
     this.internals = {
@@ -138,11 +148,11 @@ export class WslFileSystem extends LocalFileSystem {
 
   /** A base for absolute inputs (unused by resolution, but the parent needs one). */
   private cwdOr(cwd?: string): string {
-    return cwd ?? this.config.cwd ?? process.cwd()
+    return cwd ?? this.executionCwd.getStore() ?? this.config.cwd ?? process.cwd()
   }
 
   private uncCwd(cwd?: string): string {
-    const base = cwd ?? this.config.cwd
+    const base = cwd ?? this.executionCwd.getStore() ?? this.config.cwd
     if (base === undefined || base === '') {
       throw new FsError('wsl-fs: no cwd and no configured base for relative resolution', 'FS_IO_ERROR')
     }
@@ -153,14 +163,23 @@ export class WslFileSystem extends LocalFileSystem {
     throw new FsError(`wsl-fs: cwd "${base}" is not in the WSL execution world`, 'FS_IO_ERROR')
   }
 
+  /**
+   * Resolve the distribution an absolute Linux path opens inside. The chain:
+   * the caller cwd when it is a WSL UNC path, then the current tool
+   * execution's session cwd, then the configured `distro`,
+   * then the host's default distribution from the Lxss registry. The registry
+   * fallback is reserved for calls that genuinely have no session.
+   */
   private distroFor(cwd?: string): string {
     const fromCwd = parseWslUnc(cwd ?? '')
     if (fromCwd !== null) return fromCwd.distro
+    const fromExecution = parseWslUnc(this.executionCwd.getStore() ?? '')
+    if (fromExecution !== null) return fromExecution.distro
     const distro = this.distro
-    if (distro === undefined || distro === '') {
-      throw new FsError('wsl-fs: Linux path carries no distribution and none is configured', 'FS_IO_ERROR')
-    }
-    return distro
+    if (distro !== undefined && distro !== '') return distro
+    const fallback = defaultDistroSync()
+    if (fallback !== undefined) return fallback
+    throw new FsError('wsl-fs: Linux path carries no distribution and none is configured', 'FS_IO_ERROR')
   }
 
   /** The Linux display path for a resolved Windows-side path. */
