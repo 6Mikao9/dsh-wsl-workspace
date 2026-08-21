@@ -126,6 +126,14 @@ test('minimal-like transform keeps persona fixed and re-points the PTY at wsl.ex
   assert.ok(out.includes("shellArgs: ['-e', 'bash', '-l']"), 'wsl argv present')
   assert.ok(!out.includes('complete: true') || out.includes('complete: true'), 'persona untouched')
   assert.ok(!out.includes('inside a WSL'), 'minimal persona not amended (complete prompt)')
+  // Minimal must not grow a standard-like tool catalog (issue #5): no one-shot
+  // bash / fs tools alongside persistent-bash + str_replace_editor.
+  assert.ok(!/^\s*- id: tool-bash$/m.test(out), 'minimal omits tool-bash')
+  assert.ok(!/^\s*- id: tool-fs$/m.test(out), 'minimal omits tool-fs')
+  assert.ok(!out.includes('shell-wsl'), 'minimal omits unused shell-wsl provider')
+  assert.ok(out.includes('fs-wsl'), 'minimal keeps fs-wsl for the editor')
+  assert.ok(out.includes('isolate:\n    fs: true'), 'minimal realm isolates fs only')
+  assert.ok(!/isolate:\n    shell: true\n    fs: true[\s\S]*- id: tool-bash/.test(out), 'minimal does not mount shell tools realm')
 })
 
 test('transform preserves unknown rows verbatim', () => {

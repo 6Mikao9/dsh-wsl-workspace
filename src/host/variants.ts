@@ -16,7 +16,7 @@
 const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'filesystem', 'persistent-shell'])
 
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
-function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean): string {
+function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean, includeShellFsTools: boolean): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
     '# The shell and fs services are provided entry-locally (the isolate',
@@ -28,17 +28,24 @@ function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean
     "  name: cordis:group",
     '  group: true',
     '  isolate:',
-    '    shell: true',
-    '    fs: true',
+    ...(includeShellFsTools ? ['    shell: true', '    fs: true'] : ['    fs: true']),
     '  config:',
-    `    - id: shell-wsl`,
-    `      name: '${shellPath.replace(/'/g, "''")}'`,
-    '    - id: fs-wsl',
+    ...(includeShellFsTools
+      ? [
+          `    - id: shell-wsl`,
+          `      name: '${shellPath.replace(/'/g, "''")}'`,
+        ]
+      : []),
+    `    - id: fs-wsl`,
     `      name: '${fsPath.replace(/'/g, "''")}'`,
-    '    - id: tool-bash',
-    "      name: '@deepseek-ai/dsh-tool-bash'",
-    '    - id: tool-fs',
-    "      name: '@deepseek-ai/dsh-tool-fs'",
+    ...(includeShellFsTools
+      ? [
+          '    - id: tool-bash',
+          "      name: '@deepseek-ai/dsh-tool-bash'",
+          '    - id: tool-fs',
+          "      name: '@deepseek-ai/dsh-tool-fs'",
+        ]
+      : []),
     ...(includeEditor
       ? [
           '    - id: str-replace-editor',
@@ -161,6 +168,8 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
   const kept: string[] = []
   let sawEditor = false
   let sawPersistent = false
+  let hadShellTool = false
+  let hadFsTool = false
   let personaAppended = false
   for (const span of spans) {
     const id = spanId(lines, span)
@@ -170,6 +179,8 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
     }
     if (WORLD_ROWS.has(id)) {
       if (id === 'persistent-shell') sawPersistent = true
+      if (id === 'tool-bash' || id === 'tool-pwsh') hadShellTool = true
+      if (id === 'tool-fs') hadFsTool = true
       continue
     }
     if (id === 'persona' && !personaAppended && appendablePersona(lines, span)) {
@@ -181,9 +192,15 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
     if (id === 'str-replace-editor') sawEditor = true
   }
   if (source.includes('str-replace-editor')) sawEditor = true
+  // Minimal-like sources only expose persistent-bash + str_replace_editor.
+  // Injecting tool-bash/tool-fs here duplicates the `bash` tool name and adds
+  // read/write/edit/read_image schemas — enough to derail DeepSeek V4 Pro's
+  // first-request we-need/lets thinking chain (issue #5).
+  const shouldOmitShellFsTools = sawPersistent && !hadShellTool && !hadFsTool
+  const includeShellFsTools = !shouldOmitShellFsTools
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, includeShellFsTools))
   if (sawPersistent) result.push(persistentShellGroup())
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }

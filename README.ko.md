@@ -35,6 +35,12 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **파일 도구(`read`/`write`/`edit`)**: Windows 쪽 WSL 9P 공유를 통해 동작하며 DSH 파일 정책의 적용을 받습니다. `workspace-write`에서는 읽기는 어디서나 가능하지만 쓰기는 세션 워크스페이스 안으로 제한됩니다. 파일 정책을 `danger-full-access`로 바꾸면 워크스페이스 밖 쓰기도 가능합니다. 사용자 이름 필드는 파일 도구에 영향을 주지 않습니다.
 - 배포판이 아직 시작되지 않았을 때 `wsl.exe`가 stderr로 출력하는 `localhost` 포트 포워딩 깨진 배너는 무해합니다.
 
+## 변경 로그
+
+### 0.2.4
+
+- **#5 수정 — WSL 최소 모드가 첫 요청의 "we need/lets" 사고 체인을 더 이상 깨뜨리지 않습니다.** 이전에는 최소형 프리셋(`persistent-bash`와 `str-replace-editor`만 노출하는 프리셋)의 WSL 변형에 일회용 `bash` 도구와 `read`/`write`/`edit`/`read_image` 파일 도구가 함께 주입되었습니다. 중복된 `bash` 도구 이름과 추가 스키마가 첫 요청의 도구 카탈로그를 부풀려 사고 체인을 방해했습니다. 이제 최소형 변형은 `persistent-bash`, `str-replace-editor`, `fs-wsl` 프로바이더만 유지하고, 표준형 프리셋은 기존처럼 전체 셸 + 파일 도구 환경을 받습니다.
+
 ## 라이선스 및 출처
 
 MIT — [LICENSE](LICENSE)와 [NOTICE](NOTICE)를 참고하세요. NOTICE에 정확한 목록이 있습니다:
