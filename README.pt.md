@@ -22,6 +22,15 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 Após reiniciar o `dsh web`, um botão W aparece ao lado de Settings na parte inferior da barra lateral.
 
+## Build nativo na instalação
+
+Instalar este plugin traz `@deepseek-ai/dsh-fs-local` (uma dependência peer), que depende de [`koffi`](https://www.npmjs.com/package/koffi) — uma FFI C dinâmica para Node.js. O koffi executa um script de `install` durante o `npm install` (`node ./cnoke.cjs -P . -D src/koffi --prebuild --release`):
+
+- **Pré-construído primeiro**: tenta carregar um addon pré-construído específico da plataforma a partir das `optionalDependencies` do koffi (`@koromix/koffi-<plataforma>`); cobre `win32-x64/arm64/ia32`, `linux-x64/arm64/ia32/riscv64/loong64`, `darwin-x64/arm64`, `freebsd-*`, `openbsd-*`. Quando um pré-construído carrega, **não há compilação**.
+- **Compilação de fallback**: apenas se nenhum addon pré-construído estiver disponível/carregável, ele recompila a partir do código-fonte, o que requer CMake e um compilador C/C++ (Windows prefere Clang, ou MinGW sob MSYSTEM). Esse é o comportamento padrão do próprio koffi; este plugin não constrói nem inclui qualquer código nativo.
+
+Isso é esperado e não é malicioso (koffi é licenciado MIT). Instalar com `--ignore-scripts` ignora a seleção/build do addon do koffi, então `@deepseek-ai/dsh-fs-local` pode falhar ao carregar em plataformas sem um binário pré-construído em cache. A sessão WSL em si não precisa de toolchain: a ferramenta bash executa dentro da distribuição WSL e as ferramentas de arquivo passam pelo compartilhamento WSL do lado do Windows.
+
 ## Uso
 
 Clique no botão W ao lado de Settings na parte inferior da barra lateral para abrir o diálogo "Add WSL workspace". Escolha uma distribuição, navegue pela árvore de diretórios ou digite um caminho Linux absoluto (por exemplo `/home/me/proj`) — o botão Check verifica se o caminho existe antes de criar o espaço de trabalho. O diálogo segue o idioma da interface do DeepSeek Harness. O campo nome de usuário é opcional: deixe vazio para executar os comandos com o usuário padrão da distribuição, ou informe um usuário Linux dessa distribuição para executar a sessão como esse usuário (equivalente a `wsl.exe -u <usuário>`). O nome de usuário só altera a identidade de execução da ferramenta bash — as ferramentas de arquivo passam pelo compartilhamento WSL do lado do Windows e não são afetadas. O nome de usuário de cada espaço de trabalho fica em `<dshHome>/wsl-workspaces.json`; exclua a entrada (ou recrie o espaço de trabalho pelo diálogo) para voltar ao usuário padrão.

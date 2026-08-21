@@ -22,6 +22,15 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 Nach dem Neustart von `dsh web` erscheint neben Settings am unteren Rand der Seitenleiste ein W-Button.
 
+## Nativer Build bei der Installation
+
+Die Installation dieses Plugins zieht `@deepseek-ai/dsh-fs-local` (eine Peer-Dependency) nach, das von [`koffi`](https://www.npmjs.com/package/koffi) abhängt — einer dynamischen C-FFI für Node.js. koffi führt während `npm install` ein `install`-Skript aus (`node ./cnoke.cjs -P . -D src/koffi --prebuild --release`):
+
+- **Prebuild zuerst**: es versucht, ein plattformspezifisches vorgebautes Addon aus koffis `optionalDependencies` (`@koromix/koffi-<plattform>`) zu laden; abgedeckt sind `win32-x64/arm64/ia32`, `linux-x64/arm64/ia32/riscv64/loong64`, `darwin-x64/arm64`, `freebsd-*`, `openbsd-*`. Lädt ein Prebuild, findet **keine Kompilierung statt**.
+- **Fallback-Kompilierung**: nur wenn kein vorgebautes Addon verfügbar/ladbar ist, wird aus dem Quellcode neu gebaut; das erfordert CMake und einen C/C++-Compiler (Windows bevorzugt Clang, oder MinGW unter MSYSTEM). Das ist koffis eigenes Standardverhalten; dieses Plugin baut oder liefert selbst keinen nativen Code.
+
+Das ist erwartet und nicht bösartig (koffi ist MIT-lizenziert). Eine Installation mit `--ignore-scripts` überspringt koffis Addon-Auswahl/-Build, sodass `@deepseek-ai/dsh-fs-local` auf Plattformen ohne zwischengespeichertes Prebuild möglicherweise nicht geladen werden kann. Die WSL-Sitzung selbst benötigt keine Toolchain: das Bash-Tool läuft in der WSL-Distribution und die Datei-Tools laufen über die Windows-seitige WSL-Freigabe.
+
 ## Verwendung
 
 Klicke in der Seitenleiste unten neben Settings auf den W-Button, um den Dialog „Add WSL workspace" zu öffnen. Wähle eine Distribution, durchsuche den Verzeichnisbaum oder gib einen absoluten Linux-Pfad ein (z. B. `/home/me/proj`) — mit dem Check-Button kannst du prüfen, ob der Pfad existiert. Der Dialog folgt der Sprache der DeepSeek-Harness-Oberfläche. Das Feld Benutzername ist optional: Leer lassen führt die Befehle als Standardbenutzer der Distribution aus, ein Eintrag führt die Sitzung als diesen Benutzer aus (äquivalent zu `wsl.exe -u <benutzer>`). Der Benutzername ändert nur die Ausführungsidentität des Bash-Tools — die Datei-Tools laufen über die Windows-seitige WSL-Freigabe und sind davon unberührt. Der Benutzername jedes Arbeitsbereichs liegt in `<dshHome>/wsl-workspaces.json`; lösche den Eintrag (oder erstelle den Arbeitsbereich über den Dialog neu), um zum Standardbenutzer zurückzukehren.

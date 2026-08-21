@@ -21,6 +21,15 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 After restarting `dsh web`, a W button appears beside Settings at the sidebar foot.
 
+## Native build at install time
+
+Installing this plugin pulls `@deepseek-ai/dsh-fs-local` (a peer dependency), which depends on [`koffi`](https://www.npmjs.com/package/koffi) — a dynamic C FFI for Node.js. koffi runs an `install` script during `npm install` (`node ./cnoke.cjs -P . -D src/koffi --prebuild --release`):
+
+- **Prebuilt first**: it tries to load a platform-specific prebuilt addon from koffi's `optionalDependencies` (`@koromix/koffi-<platform>`), covering `win32-x64/arm64/ia32`, `linux-x64/arm64/ia32/riscv64/loong64`, `darwin-x64/arm64`, `freebsd-*`, `openbsd-*`. When a prebuild loads, **no compilation happens**.
+- **Fallback compile**: only if no prebuilt addon is available/loadable does it rebuild from source, which needs CMake and a C/C++ compiler (Windows prefers Clang, or MinGW under MSYSTEM). This is koffi's own standard behavior; this plugin builds and ships no native code itself.
+
+This is expected and not malicious (koffi is MIT-licensed). Installing with `--ignore-scripts` skips koffi's addon selection/build, so `@deepseek-ai/dsh-fs-local` may fail to load on platforms without a cached prebuilt binary. The WSL session itself needs no toolchain: the bash tool runs inside the WSL distribution and the file tools go through the Windows-side WSL share.
+
 ## Usage
 
 Click the W button beside Settings at the sidebar foot to open the "Add WSL workspace" dialog. Pick a distribution from the list, then browse the directory tree or type an absolute Linux path (for example `/home/me/proj`) — use the Check button to verify the path exists before creating the workspace. The dialog follows the DeepSeek Harness UI language. The username field is optional: leave it empty to run commands as the distribution's default user, or name a Linux user of that distribution to run the session as that user instead (equivalent to `wsl.exe -u <username>`). The username only changes the bash tool's run identity — the file tools go through the Windows-side WSL share and are unaffected. Each workspace's username is kept in `<dshHome>/wsl-workspaces.json`; delete the entry (or recreate the workspace from the dialog) to return to the default user.

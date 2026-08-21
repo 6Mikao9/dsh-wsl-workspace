@@ -22,6 +22,15 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 Après le redémarrage de `dsh web`, un bouton W apparaît à côté de Settings en bas de la barre latérale.
 
+## Build natif à l'installation
+
+L'installation de ce plugin tire `@deepseek-ai/dsh-fs-local` (une dépendance peer), qui dépend de [`koffi`](https://www.npmjs.com/package/koffi) — une FFI C dynamique pour Node.js. koffi exécute un script d'`install` pendant `npm install` (`node ./cnoke.cjs -P . -D src/koffi --prebuild --release`) :
+
+- **Préconstruit d'abord** : il tente de charger un addon préconstruit spécifique à la plateforme depuis les `optionalDependencies` de koffi (`@koromix/koffi-<plateforme>`), couvrant `win32-x64/arm64/ia32`, `linux-x64/arm64/ia32/riscv64/loong64`, `darwin-x64/arm64`, `freebsd-*`, `openbsd-*`. Quand un préconstruit se charge, **aucune compilation n'a lieu**.
+- **Compilation de repli** : uniquement si aucun addon préconstruit n'est disponible/chargeable, il recompile depuis les sources, ce qui nécessite CMake et un compilateur C/C++ (Windows préfère Clang, ou MinGW sous MSYSTEM). C'est le comportement standard de koffi ; ce plugin ne construit ni ne fournit de code natif lui-même.
+
+C'est attendu et non malveillant (koffi est sous licence MIT). Une installation avec `--ignore-scripts` saute la sélection/build de l'addon koffi, donc `@deepseek-ai/dsh-fs-local` peut échouer à se charger sur les plateformes sans binaire préconstruit en cache. La session WSL elle-même ne nécessite pas de toolchain : l'outil bash s'exécute dans la distribution WSL et les outils fichiers passent par le partage WSL côté Windows.
+
 ## Utilisation
 
 Cliquez sur le bouton W à côté de Settings en bas de la barre latérale pour ouvrir la boîte de dialogue « Add WSL workspace ». Choisissez une distribution, parcourez l'arborescence ou saisissez un chemin Linux absolu (par exemple `/home/me/proj`) — le bouton Check vérifie que le chemin existe avant la création. La langue de la boîte de dialogue suit la langue de l'interface DeepSeek Harness. Le champ nom d'utilisateur est facultatif : laissez-le vide pour exécuter les commandes avec l'utilisateur par défaut de la distribution, ou indiquez un utilisateur Linux de cette distribution pour exécuter la session sous cet utilisateur (équivalent à `wsl.exe -u <utilisateur>`). Le nom d'utilisateur ne change que l'identité d'exécution de l'outil bash — les outils de fichiers passent par le partage WSL côté Windows et ne sont pas affectés. Le nom d'utilisateur de chaque espace de travail est conservé dans `<dshHome>/wsl-workspaces.json` ; supprimez l'entrée (ou recréez l'espace de travail depuis la boîte de dialogue) pour revenir à l'utilisateur par défaut.

@@ -21,6 +21,15 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 重启 `dsh web` 后，侧栏底部 Settings 旁出现 W 按钮。
 
+## 安装期的原生构建
+
+安装本插件会拉取 peer 依赖 `@deepseek-ai/dsh-fs-local`，它又依赖 [`koffi`](https://www.npmjs.com/package/koffi)（Node.js 的动态 C FFI 库）。koffi 在 `npm install` 时会运行安装脚本（`node ./cnoke.cjs -P . -D src/koffi --prebuild --release`）：
+
+- **预编译优先**：先尝试从 koffi 的 `optionalDependencies`（`@koromix/koffi-<平台>`）加载平台预编译 addon，覆盖 `win32-x64/arm64/ia32`、`linux-x64/arm64/ia32/riscv64/loong64`、`darwin-x64/arm64`、`freebsd-*`、`openbsd-*`。预编译可用时**不会编译**。
+- **回退源码编译**：仅在预编译不可用/无法加载时才从源码重建，此时需要 CMake 与 C/C++ 编译器（Windows 下默认 Clang，MSYSTEM 环境用 MinGW）。这是 koffi 自身的标准行为；本插件本身不构建、也不携带任何原生代码。
+
+这是预期行为，并非恶意（koffi 为 MIT 许可）。若以 `--ignore-scripts` 安装，koffi 的 addon 选择/构建会被跳过，在没有缓存预编译二进制的平台上 `@deepseek-ai/dsh-fs-local` 可能加载失败。WSL 会话本身无需工具链：bash 工具在 WSL 发行版内执行，文件工具经 Windows 侧 WSL 共享访问。
+
 ## 使用
 点侧栏底部 Settings 旁的 W 按钮，打开「添加 WSL 工作区」对话框。先从下拉框选择一个发行版，再浏览目录树或直接输入 Linux 绝对路径（如 `/home/me/proj`），可以点「检查」确认路径存在。对话框文案跟随 DSH 界面语言。用户名是可选项：留空则以该发行版的默认用户运行，填写该发行版里的某个 Linux 用户名则以该用户运行（等价于 `wsl.exe -u <用户名>`）。用户名只影响 bash 命令的运行身份，文件工具通过 Windows 侧的 WSL 共享访问、不受其影响；每个工作区填写的用户名保存在 `<dshHome>/wsl-workspaces.json`，删除对应条目（或重开对话框重建工作区）即可恢复默认用户。
 

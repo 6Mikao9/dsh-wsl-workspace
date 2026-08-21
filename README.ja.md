@@ -22,6 +22,15 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 `dsh web` を再起動すると、サイドバー下部の Settings の隣に W ボタンが表示されます。
 
+## インストール時のネイティブビルド
+
+このプラグインをインストールすると、peer 依存の `@deepseek-ai/dsh-fs-local` が pull され、それが [`koffi`](https://www.npmjs.com/package/koffi)（Node.js の動的 C FFI）に依存します。koffi は `npm install` 時にインストールスクリプト（`node ./cnoke.cjs -P . -D src/koffi --prebuild --release`）を実行します：
+
+- **プリビルド優先**：koffi の `optionalDependencies`（`@koromix/koffi-<platform>`）からプラットフォーム別のプリビルド addon の読み込みを試みます。`win32-x64/arm64/ia32`、`linux-x64/arm64/ia32/riscv64/loong64`、`darwin-x64/arm64`、`freebsd-*`、`openbsd-*` をカバーします。プリビルドが読めれば**コンパイルは発生しません**。
+- **フォールバックコンパイル**：プリビルドが利用/読込不可の場合のみソースからリビルドし、CMake と C/C++ コンパイラが必要です（Windows は Clang 優先、MSYSTEM 環境では MinGW）。これは koffi 自体の標準動作であり、本プラグイン自身はネイティブコードをビルド/同梱しません。
+
+これは想定動作であり悪意はありません（koffi は MIT ライセンス）。`--ignore-scripts` でインストールすると koffi の addon 選択/ビルドがスキップされ、キャッシュされたプリビルドがないプラットフォームでは `@deepseek-ai/dsh-fs-local` の読み込みに失敗することがあります。WSL セッション自体にツールチェーンは不要です：bash ツールは WSL ディストリビューション内で実行され、ファイルツールは Windows 側の WSL 共有経由です。
+
 ## 使い方
 
 サイドバー下部の Settings の隣にある W ボタンをクリックして「Add WSL workspace」ダイアログを開きます。ディストリビューションを選択し、ディレクトリツリーを閲覧するか Linux の絶対パス（例：`/home/me/proj`）を入力します。Check ボタンでパスの存在を確認できます。ダイアログの言語は DeepSeek Harness の UI 言語に追従します。ユーザー名フィールドは任意です。空欄の場合はディストリビューションのデフォルトユーザーで実行され、入力した場合はそのユーザーで実行されます（`wsl.exe -u <ユーザー名>` と同等）。ユーザー名は bash ツールの実行ユーザーのみに影響し、ファイルツールは Windows 側の WSL 共有経由のため影響を受けません。ワークスペースごとのユーザー名は `<dshHome>/wsl-workspaces.json` に保存されます。エントリを削除する（またはダイアログからワークスペースを作り直す）とデフォルトユーザーに戻ります。
