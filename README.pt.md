@@ -35,6 +35,12 @@ Clique em "Create & open" para iniciar uma nova sessão no espaço de trabalho. 
 - **Ferramentas de arquivo (`read`/`write`/`edit`)**: passam pelo compartilhamento WSL 9P do lado do Windows e ficam sujeitas à política de arquivos do DSH. Com `workspace-write`, leituras funcionam em qualquer lugar, mas escritas ficam restritas ao espaço de trabalho da sessão; mude a política para `danger-full-access` para permitir também escritas fora dele. O campo nome de usuário não afeta as ferramentas de arquivo.
 - O banner de encaminhamento de porta `localhost` (texto ilegível) que o `wsl.exe` imprime em stderr quando a distribuição ainda não estava em execução é inofensivo.
 
+## Registo de alterações
+
+### 0.2.4
+
+- **Corrigido o #5 — o modo WSL Minimal deixou de quebrar a cadeia de pensamento «we need/lets» do primeiro pedido.** Antes, a variante WSL de um preset minimalista (que expõe apenas `persistent-bash` + `str-replace-editor`) também injetava a ferramenta `bash` de uso único e as ferramentas de ficheiros `read`/`write`/`edit`/`read_image`; o nome duplicado da ferramenta `bash` e os esquemas extra inflavam o catálogo de ferramentas do primeiro pedido e perturbavam a cadeia de pensamento. As variantes minimalistas passam a manter apenas `persistent-bash`, `str-replace-editor` e o fornecedor `fs-wsl`; os presets padrão continuam a receber o mundo completo de shell + ferramentas de ficheiros.
+
 ## Licença e atribuição
 
 MIT — veja [LICENSE](LICENSE) e [NOTICE](NOTICE). O NOTICE lista com precisão:

@@ -33,6 +33,12 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 - **File tools (`read`/`write`/`edit`)**: go through the Windows-side WSL 9P share and run under the DSH file policy. Under `workspace-write`, reads work anywhere but writes are restricted to the session workspace; switch the file policy to `danger-full-access` to also allow writes outside it. The username field does not affect the file tools.
 - The garbled `localhost` port-forwarding banner `wsl.exe` prints to stderr when the distro was not running yet is harmless.
 
+## Changelog
+
+### 0.2.4
+
+- **Fixed #5 — WSL Minimal mode no longer breaks the first-request "we need/lets" thinking chain.** The WSL variant of a minimal-like preset (one that only exposes `persistent-bash` + `str-replace-editor`) previously also injected the one-shot `bash` tool plus the `read`/`write`/`edit`/`read_image` file tools; the duplicated `bash` tool name and the extra schemas inflated the first-request tool catalog and derailed the chain of thought. Minimal-like variants now keep only `persistent-bash`, `str-replace-editor` and the `fs-wsl` provider; standard-like presets still receive the full shell + file-tool world.
+
 ## License & attribution
 
 MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE). The NOTICE precisely lists:

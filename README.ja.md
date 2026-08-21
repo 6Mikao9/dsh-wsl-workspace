@@ -35,6 +35,12 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **ファイルツール（`read`/`write`/`edit`）**：Windows 側の WSL 9P 共有経由で動作し、DSH のファイルポリシーの適用を受けます。`workspace-write` では読み取りはどこでも可能ですが、書き込みはセッションのワークスペース内に制限されます。ファイルポリシーを `danger-full-access` に変更するとワークスペース外への書き込みも可能になります。ユーザー名フィールドはファイルツールには影響しません。
 - ディストリビューションがまだ起動していないときに `wsl.exe` が stderr に出力する `localhost` ポート転送の文字化けバナーは無害です。
 
+## 変更履歴
+
+### 0.2.4
+
+- **#5 を修正 — WSL ミニマルモードで初回リクエストの「we need/lets」思考チェーンが壊れなくなりました。** これまで、ミニマル系プリセット（`persistent-bash` と `str-replace-editor` のみを公開するもの）の WSL バリアントには、ワンショットの `bash` ツールと `read`/`write`/`edit`/`read_image` のファイルツールも追加注入されていました。重複する `bash` ツール名と余分なスキーマが初回リクエストのツールカタログを膨らませ、思考チェーンを妨げていました。ミニマル系バリアントは `persistent-bash`、`str-replace-editor`、`fs-wsl` プロバイダーのみを保持するようになり、標準系プリセットは従来どおり完全なシェル＋ファイルツール環境を取得します。
+
 ## ライセンスとクレジット
 
 MIT — [LICENSE](LICENSE) と [NOTICE](NOTICE) をご覧ください。NOTICE に正確なリストがあります：

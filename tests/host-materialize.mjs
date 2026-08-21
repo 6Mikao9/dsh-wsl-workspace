@@ -143,6 +143,10 @@ assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant keeps the editor')
 assert(minYaml.includes("shellPath: 'wsl.exe'"), 'minimal variant re-points PTY at wsl.exe')
+assert(!/^\s*- id: tool-bash$/m.test(minYaml), 'minimal variant omits tool-bash (issue #5)')
+assert(!/^\s*- id: tool-fs$/m.test(minYaml), 'minimal variant omits tool-fs (issue #5)')
+assert(minYaml.includes('fs-wsl'), 'minimal variant keeps fs-wsl for the editor')
+assert(!minYaml.includes('shell-wsl'), 'minimal variant omits unused shell-wsl')
 
 // Stale variant cleanup: a wsl-ghost dir whose source vanished must go.
 mkdirSync(join(home, '.agent-presets', 'wsl-ghost'), { recursive: true })

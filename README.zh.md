@@ -32,6 +32,12 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问，受 DSH 文件策略约束。`workspace-write` 下读可到任意位置、写仅限会话工作区；改为 `danger-full-access` 后工作区外也可写入。用户名设置不影响文件工具。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
 
+## 更新日志
+
+### 0.2.4
+
+- **修复 #5 —— WSL 极简模式不再破坏首轮「we need/lets」思维链。** 此前极简类预设（只暴露 `persistent-bash` 与 `str-replace-editor`）的 WSL 变体还会额外注入一次性 `bash` 工具以及 `read`/`write`/`edit`/`read_image` 文件工具；重复的 `bash` 工具名与多出的 schema 会放大首轮请求的工具清单、干扰思维链。现在极简类变体只保留 `persistent-bash`、`str-replace-editor` 与 `fs-wsl` 提供者；标准类预设仍会获得完整的 shell + 文件工具执行环境。
+
 ## 许可与出处
 
 MIT，详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)，NOTICE 精确列明：

@@ -35,6 +35,12 @@ Klicke auf „Create & open", um eine neue Sitzung im Arbeitsbereich zu starten.
 - **Datei-Tools (`read`/`write`/`edit`)**: laufen über die Windows-seitige WSL-9P-Freigabe und unterliegen der DSH-Dateipolitik. Unter `workspace-write` ist Lesen überall möglich, Schreiben aber auf den Sitzungs-Arbeitsbereich beschränkt; stelle die Politik auf `danger-full-access` um, um auch außerhalb schreiben zu können. Das Benutzername-Feld betrifft die Datei-Tools nicht.
 - Das verzerrte `localhost`-Port-Forwarding-Banner, das `wsl.exe` auf stderr ausgibt, wenn die Distribution noch nicht lief, ist harmlos.
 
+## Änderungsprotokoll
+
+### 0.2.4
+
+- **#5 behoben — der WSL-Minimalmodus unterbricht die „we need/lets"-Gedankenkette der ersten Anfrage nicht mehr.** Bisher injizierte die WSL-Variante eines minimalen Presets (das nur `persistent-bash` + `str-replace-editor` bereitstellt) zusätzlich das einmalige `bash`-Werkzeug sowie die Datei-Werkzeuge `read`/`write`/`edit`/`read_image`; der doppelte `bash`-Werkzeugname und die zusätzlichen Schemas blähten den Werkzeugkatalog der ersten Anfrage auf und brachten die Gedankenkette aus dem Takt. Minimale Varianten behalten jetzt nur `persistent-bash`, `str-replace-editor` und den `fs-wsl`-Provider; Standard-Presets erhalten weiterhin die vollständige Shell- + Datei-Werkzeugwelt.
+
 ## Lizenz und Namensnennung
 
 MIT — siehe [LICENSE](LICENSE) und [NOTICE](NOTICE). Das NOTICE listet präzise auf:
