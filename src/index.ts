@@ -34,6 +34,7 @@ import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isV
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isWslVariantId, transformPresetForWsl, variantIdFor } from './host/variants.ts'
+import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
 /** The HTTP route this plugin serves (a relative, same-origin path). */
 export const DEFAULT_ROUTE = '/wsl-workspace/api'
@@ -446,6 +447,18 @@ export function apply(ctx: Context, config: Config): void {
       })
       return () => {}
     }, 'dsh-wsl-workspace: WSL preset variants')
+  }
+
+  const skills = ctx.get('skills') as unknown as WslSkillsRegistryFace | undefined
+  if (skills !== undefined) {
+    // The shipped skill-filesystem provider scans only the session cwd's
+    // project root, so WSL workspaces whose `.dsh/skills` live in nested
+    // projects would show an empty skill catalog. This provider mirrors the
+    // host's project discovery for WSL UNC workspaces, bounded to the
+    // workspace root (issue #10).
+    ctx.effect(() => skills.registerProvider(
+      control => new WslSkillsProvider(control),
+    ), 'dsh-wsl-workspace: WSL workspace skills provider')
   }
 
   const shellEnv = ctx.get('shellEnv') as unknown as ShellEnvService | undefined

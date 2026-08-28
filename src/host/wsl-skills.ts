@@ -1,0 +1,393 @@
+/**
+ * WSL workspace skill provider (host half).
+ *
+ * DSH's shipped skill-filesystem provider scans only the session cwd's
+ * project root (the nearest `.git` ancestor) for `.dsh/skills` / `.agents/skills`
+ * and never descends into nested projects. A WSL workspace whose project
+ * folders live below the registered workspace root therefore shows an empty
+ * skill catalog, even though the same layout works when the session cwd is
+ * the project folder itself (issue #10).
+ *
+ * This provider mirrors the host's discovery rules for WSL UNC session
+ * workspaces: it walks the workspace root (depth- and budget-bounded),
+ * collects every `.dsh/skills` and `.agents/skills` directory it finds —
+ * including nested projects — and publishes their skills with the same
+ * project ranks and sources the host uses, so precedence and duplicate
+ * resolution behave identically. Non-WSL lookups return nothing and leave
+ * the host's own providers untouched.
+ *
+ * All filesystem reads go through `node:fs` against the `\\wsl.localhost\…`
+ * 9P share (the same substrate `WslFileSystem` uses); an injectable IO face
+ * keeps the discovery logic unit-testable without a live distro.
+ *
+ * @module dsh-wsl-workspace/host/wsl-skills
+ */
+
+import { readdir, readFile, stat } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { join as joinWindowsPath, posix } from 'node:path'
+import { joinUnc, parseWslUnc } from '../shared/paths.ts'
+
+/** Project ranks copied from @deepseek-ai/dsh-skill-filesystem so WSL and host entries interleave identically. */
+const PROJECT_DSH_RANK = 100
+const PROJECT_AGENTS_RANK = 200
+
+/** How many directory levels below the workspace root are scanned. */
+const MAX_SCAN_DEPTH = 4
+/** Maximum distinct skill directories published per lookup. */
+const MAX_SKILL_ROOTS = 64
+/** Maximum directories visited per lookup (an absolute blast-radius cap). */
+const MAX_VISITED_DIRECTORIES = 4096
+
+/** Kebab-case skill names, matching the host grammar. */
+const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** Directory names that never contain project skill roots (safe to prune while walking). */
+const PRUNED_DIRECTORY_NAMES = new Set([
+  '.git', '.hg', '.svn', '.bzr', 'node_modules', '.venv', 'venv', '.tox',
+  '.pants.d', '.next', '.nuxt', 'dist', 'build', 'out', 'coverage',
+  '__pycache__', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.cache',
+  '.idea', '.vscode', '.serverless', '.terraform', '.yarn', '.pnpm-store',
+])
+
+/** One `name: value` frontmatter line pair the parser understands. */
+interface ParsedSkill {
+  name: string
+  description: string
+  whenToUse?: string
+  invocation: { modelInvocable: boolean; userInvocable: boolean }
+  content: string
+}
+
+/** The provider's minimal skill-candidate contract (mirrors @deepseek-ai/dsh-skill). */
+export interface WslSkillCandidate {
+  readonly name: string
+  readonly description: string
+  readonly whenToUse?: string
+  readonly invocation: { modelInvocable: boolean; userInvocable: boolean }
+  readonly source: string
+  readonly provider: string
+  readonly rank: number
+  readonly locator: { path: string; directory: string }
+  readonly path: string
+}
+
+/** The provider's minimal skill-definition contract (candidate plus body). */
+export interface WslSkillDefinition extends WslSkillCandidate {
+  readonly content: string
+}
+
+/** Lookup options the registry passes to `list`/`get`. */
+export interface WslSkillLookupOptions {
+  readonly cwd?: string
+  readonly signal?: AbortSignal
+}
+
+/** Registration-scoped lifecycle face passed to the provider constructor. */
+export interface WslSkillProviderControl {
+  readonly signal: AbortSignal
+  readonly invalidate: () => void
+}
+
+/** The `ctx.skills` registry face this provider registers on (optional service). */
+export interface WslSkillsRegistryFace {
+  registerProvider(create: (control: WslSkillProviderControl) => {
+    readonly name: string
+    list(options: WslSkillLookupOptions): Promise<unknown>
+    get(candidate: WslSkillCandidate, options: WslSkillLookupOptions): Promise<unknown>
+  }): () => void
+}
+
+/** Injectable filesystem face (defaults to node:fs/promises on the real 9P share). */
+export interface WslSkillIo {
+  readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>
+  readFile(path: string, options: { encoding: 'utf8' }): Promise<string>
+  stat(path: string): Promise<{ isDirectory(): boolean }>
+}
+
+/** The node:fs/promises implementation the provider uses in production. */
+export const nodeSkillIo: WslSkillIo = {
+  readdir: async (path, options) => readdir(path, options),
+  readFile: async (path, options) => readFile(path, options),
+  stat: async path => stat(path),
+}
+
+/** One discovered skill directory under a WSL workspace. */
+interface SkillRoot {
+  /** Absolute UNC path of the skills directory (`…\.dsh\skills`). */
+  path: string
+  /** Host source label ('project-dsh' | 'project-agents'). */
+  source: 'project-dsh' | 'project-agents'
+  /** Host project rank so same-name wins and precedence stay consistent. */
+  rank: number
+}
+
+/** Whether a skills-directory entry is a directory-bundle or a flat markdown skill. */
+interface SkillEntry {
+  name: string
+  kind: 'bundle' | 'flat'
+  path: string
+}
+
+/**
+ * Scan a WSL workspace root for nested skill directories.
+ * @param distro - the WSL distribution name.
+ * @param linuxRoot - the workspace's absolute Linux path.
+ * @param io - filesystem face.
+ * @returns discovered skill directories, bounded by depth and budget.
+ */
+async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkillIo): Promise<SkillRoot[]> {
+  const roots: SkillRoot[] = []
+  const visited = new Set<string>()
+  // BFS layers so the budget prunes the widest, most redundant levels first
+  // (shallow skill dirs matter most): [path, depth] pairs.
+  let frontier: [string, number][] = [[linuxRoot, 0]]
+  while (frontier.length > 0 && roots.length < MAX_SKILL_ROOTS) {
+    const next: [string, number][] = []
+    for (const [dir, depth] of frontier) {
+      if (visited.size >= MAX_VISITED_DIRECTORIES) return roots
+      if (visited.has(dir)) continue
+      visited.add(dir)
+      if (roots.length < MAX_SKILL_ROOTS) {
+        const directoryRoots = await skillRootsOfDirectory(distro, dir, io)
+        roots.push(...directoryRoots)
+      }
+      if (depth >= MAX_SCAN_DEPTH) continue
+      let entries: Dirent[]
+      try {
+        entries = await io.readdir(joinUnc(distro, dir), { withFileTypes: true })
+      } catch {
+        // An unreadable directory (permissions, vanished mid-walk) prunes its subtree.
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        if (PRUNED_DIRECTORY_NAMES.has(entry.name)) continue
+        if (entry.name.startsWith('.') && entry.name !== '.dsh' && entry.name !== '.agents') continue
+        if (entry.name === '.dsh' || entry.name === '.agents') continue
+        next.push([posix.join(dir, entry.name), depth + 1])
+      }
+    }
+    frontier = next
+  }
+  return roots
+}
+
+/**
+ * Publish the skill roots of one scanned directory (its `.dsh/skills` and
+ * `.agents/skills`, each with the host's project ranks).
+ * @param distro - the WSL distribution name.
+ * @param linuxDir - the scanned directory's Linux path.
+ * @param io - filesystem face.
+ * @returns the directory's skill roots that exist.
+ */
+async function skillRootsOfDirectory(distro: string, linuxDir: string, io: WslSkillIo): Promise<SkillRoot[]> {
+  const result: SkillRoot[] = []
+  for (const [marker, source, rank] of [
+    ['.dsh', 'project-dsh', PROJECT_DSH_RANK],
+    ['.agents', 'project-agents', PROJECT_AGENTS_RANK],
+  ] as const) {
+    const path = joinUnc(distro, posix.join(linuxDir, marker, 'skills'))
+    try {
+      const info = await io.stat(path)
+      if (info.isDirectory()) result.push({ path, source, rank })
+    } catch {
+      // Absent skills directory: nothing to publish.
+    }
+  }
+  return result
+}
+
+/** List one skills directory's entries (directory bundles and flat `.md` skills). */
+async function listSkillEntries(root: SkillRoot, io: WslSkillIo): Promise<SkillEntry[]> {
+  let dirents: Dirent[]
+  try {
+    dirents = await io.readdir(root.path, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const entries: SkillEntry[] = []
+  for (const entry of dirents) {
+    if (entry.isDirectory()) {
+      entries.push({ name: entry.name, kind: 'bundle', path: joinWindowsPath(root.path, entry.name, 'SKILL.md') })
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      entries.push({ name: entry.name.slice(0, -3), kind: 'flat', path: joinWindowsPath(root.path, entry.name) })
+    }
+  }
+  return entries.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Read and parse one skill file; `undefined` when missing or unparsable. */
+async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Promise<ParsedSkill | undefined> {
+  signal?.throwIfAborted()
+  let raw: string
+  try {
+    raw = await io.readFile(path, { encoding: 'utf8' })
+  } catch {
+    return undefined
+  }
+  signal?.throwIfAborted()
+  return parseSkillFrontmatter(raw, path)
+}
+
+/**
+ * Parse the frontmatter subset skill files use: `---` fenced YAML with
+ * `name` / `description` / `whenToUse` / `user-invocable` /
+ * `disable-model-invocation`. Host-incompatible files are skipped, matching
+ * the shipped provider's leniency: a bad file must not fail the catalog.
+ */
+function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefined {
+  const firstLineEnd = raw.indexOf('\n')
+  if (firstLineEnd < 0) return undefined
+  if (raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') return undefined
+  const start = firstLineEnd + 1
+  const closing = findFrontmatterEnd(raw, start)
+  if (closing === undefined) return undefined
+  const fields = new Map<string, string>()
+  for (const line of raw.slice(start, closing).split('\n')) {
+    const match = /^([A-Za-z0-9-]+):\s*(.*)$/.exec(line.replace(/\r$/, ''))
+    if (match === null) continue
+    const value = match[2]?.trim() ?? ''
+    if (value !== '') fields.set(match[1] ?? '', unquote(value))
+  }
+  const name = fields.get('name') ?? ''
+  const description = fields.get('description') ?? ''
+  if (!SKILL_NAME.test(name) || description === '') {
+    return undefined
+  }
+  const whenToUse = fields.get('whenToUse')
+  return {
+    name,
+    description,
+    ...whenToUse !== undefined && whenToUse !== '' ? { whenToUse } : {},
+    invocation: {
+      modelInvocable: !frontmatterBoolean(fields, 'disable-model-invocation'),
+      userInvocable: frontmatterBoolean(fields, 'user-invocable', true),
+    },
+    content: raw.slice(closing + 1).trim(),
+  }
+}
+
+/** Locate the closing `---` line of a frontmatter block. */
+function findFrontmatterEnd(raw: string, start: number): number | undefined {
+  let lineStart = start
+  while (lineStart <= raw.length) {
+    const nextNewline = raw.indexOf('\n', lineStart)
+    const lineEnd = nextNewline < 0 ? raw.length : nextNewline
+    if (raw.slice(lineStart, lineEnd).replace(/\r$/, '') === '---') return lineEnd + 1
+    if (nextNewline < 0) return undefined
+    lineStart = nextNewline + 1
+  }
+  return undefined
+}
+
+/** Strip one level of matching quotes from a scalar value. */
+function unquote(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0]
+    const last = value[value.length - 1]
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1)
+    }
+  }
+  return value
+}
+
+/** Boolean semantics for `user-invocable` / `disable-model-invocation` (matches the host parser). */
+function frontmatterBoolean(fields: Map<string, string>, key: string, dflt = false): boolean {
+  const value = fields.get(key)
+  if (value === undefined) return dflt
+  switch (value.toLowerCase()) {
+    case 'true':
+    case 'yes':
+    case 'on':
+    case '1':
+      return true
+    case 'false':
+    case 'no':
+    case 'off':
+    case '0':
+      return false
+    default:
+      return dflt
+  }
+}
+
+/**
+ * The WSL workspace skill provider. Registered on the host's `ctx.skills`
+ * registry; serves only lookups whose cwd is a WSL UNC workspace path.
+ */
+export class WslSkillsProvider {
+  readonly name = 'wsl-workspace'
+  private readonly control: WslSkillProviderControl
+  private readonly io: WslSkillIo
+
+  constructor(control: WslSkillProviderControl, io: WslSkillIo = nodeSkillIo) {
+    this.control = control
+    this.io = io
+  }
+
+  /**
+   * Discover nested project skills for a WSL UNC session workspace.
+   * @param options - lookup options; `cwd` selects the WSL workspace.
+   * @returns candidates for every nested `.dsh/skills` / `.agents/skills`
+   *   under the workspace root, or an empty array for non-WSL lookups.
+   */
+  async list(options: WslSkillLookupOptions): Promise<WslSkillCandidate[]> {
+    this.control.signal.throwIfAborted()
+    options.signal?.throwIfAborted()
+    const unc = options.cwd === undefined ? null : parseWslUnc(options.cwd)
+    if (unc === null) return []
+    const roots = await discoverSkillRoots(unc.distro, unc.linuxPath, this.io)
+    const candidates: WslSkillCandidate[] = []
+    for (const root of roots) {
+      const entries = await listSkillEntries(root, this.io)
+      for (const entry of entries) {
+        options.signal?.throwIfAborted()
+        const parsed = await readSkill(entry.path, this.io, options.signal)
+        if (parsed === undefined) continue
+        candidates.push({
+          name: parsed.name,
+          description: parsed.description,
+          ...parsed.whenToUse !== undefined ? { whenToUse: parsed.whenToUse } : {},
+          invocation: parsed.invocation,
+          source: root.source,
+          provider: this.name,
+          rank: root.rank,
+          locator: {
+            path: entry.path,
+            directory: entry.kind === 'bundle'
+              ? joinWindowsPath(entry.path, '..')
+              : root.path,
+          },
+          path: entry.path,
+        })
+      }
+    }
+    return candidates
+  }
+
+  /**
+   * Load a complete skill body for a previously listed candidate.
+   * @param candidate - the candidate this provider returned.
+   * @param options - lookup options whose signal cancels the read.
+   * @returns the full skill, or `undefined` if the file disappeared.
+   */
+  async get(candidate: WslSkillCandidate, options: WslSkillLookupOptions): Promise<WslSkillDefinition | undefined> {
+    this.control.signal.throwIfAborted()
+    const parsed = await readSkill(candidate.locator.path, this.io, options.signal)
+    if (parsed === undefined || parsed.name !== candidate.name) return undefined
+    return {
+      name: parsed.name,
+      description: parsed.description,
+      ...parsed.whenToUse !== undefined ? { whenToUse: parsed.whenToUse } : {},
+      invocation: parsed.invocation,
+      source: candidate.source,
+      provider: candidate.provider,
+      rank: candidate.rank,
+      locator: candidate.locator,
+      path: candidate.path,
+      content: parsed.content,
+    }
+  }
+}
