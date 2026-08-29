@@ -13,7 +13,7 @@ This document describes how to verify `dsh-wsl-workspace` after a change or befo
 Run the unit tests from the plugin directory:
 
 ```powershell
-node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts
+node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts
 ```
 
 Coverage:
@@ -24,6 +24,7 @@ Coverage:
 | `tests/fs-execution-context.test.ts` | `WslFileSystem` inherits the calling session's cwd through `AsyncLocalStorage` on `tools/execute`; agentless calls fall back to the configured distro. |
 | `tests/shell.test.ts` | The login-shell `cd` prefix preserves the resolved workdir (including single-quote escaping); non-login shells leave the command unchanged. |
 | `tests/paths.test.ts` | UNC ↔ Linux path translation, `/mnt/<drive>` mapping, canonical Windows path keys, WSL username validation. |
+| `tests/wsl-skills.test.ts` | The WSL skill provider (issue #10): non-WSL lookups return nothing, nested `.dsh/skills` / `.agents/skills` discovery with host ranks/sources, `get()` body loading, pruning of `node_modules` / dot-directories, frontmatter validation, depth and skill-root budgets, the nearest-`.git`-ancestor rule (a cwd deeper than the project root still sees the project's skills, and skills above that ancestor do not leak), and the skill-root cap. |
 
 ## Preset materialization integration test
 
@@ -59,6 +60,27 @@ The `build` script chains it after `tsdown`:
 pnpm build   # tsdown && node scripts/verify-lib.mjs
 ```
 
+## Nested skill-catalog regression (issue #10)
+
+The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested projects below a WSL workspace (and from the cwd's nearest `.git` ancestor). Regression-test it on the real 9P share:
+
+1. Rebuild the repro tree inside the distribution (`scripts/repro-setup.sh` creates `~/repro-ws-root` with nested projects, pruned traps, and an over-budget deep skill):
+
+   ```powershell
+   cp scripts/repro-setup.sh //wsl.localhost/<distro>/tmp/
+   wsl -d <distro> -- bash -c "bash /tmp/repro-setup.sh"
+   ```
+
+2. Drive the provider against the real `\\wsl.localhost` share — four assertions print (workspace-root cwd finds root + nested skills; nested-project cwd finds only that project; `get()` loads a body; non-WSL cwd returns nothing):
+
+   ```powershell
+   node scripts/repro-e2e.mjs
+   ```
+
+   The script hardcodes `\\wsl.localhost\Ubuntu\home\mille\repro-ws-root`; adjust the two paths at the top when running as another user or distro.
+3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
+4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
+
 ## End-to-end verification in the running harness
 
 After installing the plugin into a profile and restarting `dsh web`:
@@ -73,8 +95,9 @@ After installing the plugin into a profile and restarting `dsh web`:
 ## Release checklist
 
 1. `pnpm build` — rebuilds `lib/` and runs the verification gate.
-2. `node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts` — all green.
+2. `node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts` — all green.
 3. `node tests/host-materialize.mjs` — all assertions pass.
 4. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
-5. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE`.
-6. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above.
+5. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
+6. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE` (tsdown uses `clean: false`, so remove stale chunks from `lib/` before packing).
+7. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe.

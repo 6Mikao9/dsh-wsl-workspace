@@ -193,3 +193,61 @@ test('respects deep-nesting bounds and skill-root budget', async () => {
   const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   assert.deepEqual(skills.map(skill => skill.name), ['shallow'])
 })
+
+const CWD_DEEP_IN_PROJECT = '\\\\wsl.localhost\\Ubuntu\\home\\mille\\ws\\proj-a\\src'
+
+test('serves the enclosing project when the cwd sits deeper than the project root', async () => {
+  const root = tree()
+  // `.git` at `ws` makes it the nearest project root for `ws/proj-a/src`;
+  // the host would serve its skills for that cwd, nested ones join via BFS.
+  dir(root, ['home', 'mille', 'ws', '.git'])
+  dir(root, ['home', 'mille', 'ws', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'ws', '.dsh', 'skills', 'workspace-skill.md'],
+    SKILL_MD('workspace-skill', 'At the project root'))
+  dir(root, ['home', 'mille', 'ws', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'ws', 'proj-a', '.dsh', 'skills', 'nested-skill.md'],
+    SKILL_MD('nested-skill', 'Nested below the project root'))
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: CWD_DEEP_IN_PROJECT })
+  assert.deepEqual(skills.map(skill => skill.name).sort(), ['nested-skill', 'workspace-skill'])
+})
+
+test('does not leak skills above the nearest .git ancestor', async () => {
+  const root = tree()
+  // `proj-a` carries the `.git`, so a cwd inside it must see `proj-a`'s
+  // skills — and nothing from the enclosing (non-project) directory.
+  dir(root, ['home', 'mille', 'ws', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'ws', '.dsh', 'skills', 'outer.md'],
+    SKILL_MD('outer', 'Above the project root'))
+  dir(root, ['home', 'mille', 'ws', 'proj-a', '.git'])
+  dir(root, ['home', 'mille', 'ws', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'ws', 'proj-a', '.dsh', 'skills', 'inner.md'],
+    SKILL_MD('inner', 'Inside the project root'))
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: CWD_DEEP_IN_PROJECT })
+  assert.deepEqual(skills.map(skill => skill.name), ['inner'])
+})
+
+test('never publishes more than the skill-root budget', async () => {
+  const root = tree()
+  // 63 single-root projects, then one directory carrying both a `.dsh/skills`
+  // and an `.agents/skills` root: publishing both unbounded would reach 65.
+  for (let i = 0; i < 63; i += 1) {
+    dir(root, ['home', 'mille', 'repro-ws-root', `p${i}`, '.dsh', 'skills'])
+    file(root, ['home', 'mille', 'repro-ws-root', `p${i}`, '.dsh', 'skills', `s${i}.md`],
+      SKILL_MD(`s${i}`, `Skill ${i}`))
+  }
+  dir(root, ['home', 'mille', 'repro-ws-root', 'last', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'last', '.dsh', 'skills', 'dsh.md'],
+    SKILL_MD('dsh', 'Dsh root'))
+  dir(root, ['home', 'mille', 'repro-ws-root', 'last', '.agents', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'last', '.agents', 'skills', 'agents.md'],
+    SKILL_MD('agents', 'Agents root'))
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(skills.length, 64)
+  assert.ok(!skills.some(skill => skill.name === 'agents'))
+})
