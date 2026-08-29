@@ -39,6 +39,14 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+**Upgrade notes** (applies to every release): `npm install dsh-wsl-workspace` picks up the newest release immediately. `dsh plugin add` goes through pnpm, whose default supply-chain policy (`minimumReleaseAge`) skips versions published within the last 24 hours — a brand-new release can resolve to the previous one for up to a day. Profiles also pin a caret range (`^0.3.x`), which never crosses a minor boundary on `pnpm update`. To move to a specific new version explicitly, run:
+
+```powershell
+dsh plugin --profile web add dsh-wsl-workspace@<version>
+```
+
+An explicit version is exempt from the age gate, so this is also the dependable same-day upgrade path.
+
 ### 0.4.0 — 2026-08-29
 
 Follow-ups from the [#12](https://github.com/6Mikao9/dsh-wsl-workspace/issues/12) limitation list and the [#13](https://github.com/6Mikao9/dsh-wsl-workspace/issues/13) compatibility work:
