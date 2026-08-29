@@ -11,7 +11,11 @@
  * This provider mirrors the host's discovery rules for WSL UNC session
  * workspaces: it starts at the session cwd's nearest `.git` ancestor (the
  * host's project-root rule; the cwd itself when no ancestor has a `.git`
- * marker), then walks that root (depth- and budget-bounded), collects every
+ * marker), then walks that root (depth- and budget-bounded). Directory
+ * symlinks are followed when the substrate resolves them and pruned safely
+ * when it does not — the `\\wsl.localhost` 9P share cannot resolve Linux
+ * symlink targets, so linked-in projects stay undiscoverable there today.
+ * The walk collects every
  * `.dsh/skills` and `.agents/skills` directory it finds — including nested
  * projects — and publishes their skills with the same
  * project ranks and sources the host uses, so precedence and duplicate
@@ -42,6 +46,10 @@ const MAX_SKILL_ROOTS = 64
 const MAX_VISITED_DIRECTORIES = 4096
 /** How many parent levels above the session cwd are searched for a `.git` project marker. */
 const MAX_ANCESTOR_WALK = 64
+/** How long a completed lookup is served from cache before the next rescan. */
+const CACHE_TTL_MS = 10_000
+/** Maximum cached lookups (one entry per distinct scan root across sessions). */
+const CACHE_MAX_ENTRIES = 32
 
 /** Kebab-case skill names, matching the host grammar. */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -191,11 +199,26 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
         continue
       }
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue
         if (PRUNED_DIRECTORY_NAMES.has(entry.name)) continue
         if (entry.name.startsWith('.') && entry.name !== '.dsh' && entry.name !== '.agents') continue
         if (entry.name === '.dsh' || entry.name === '.agents') continue
-        next.push([posix.join(dir, entry.name), depth + 1])
+        const childPath = posix.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          next.push([childPath, depth + 1])
+          continue
+        }
+        if (entry.isSymbolicLink()) {
+          // A project may be linked into the workspace via a directory
+          // symlink; follow it when the target is a directory. Symlink
+          // cycles stay bounded: every hop increments the depth (capped by
+          // MAX_SCAN_DEPTH) and the walk as a whole by MAX_VISITED_DIRECTORIES.
+          try {
+            const target = await io.stat(joinUnc(distro, childPath))
+            if (target.isDirectory()) next.push([childPath, depth + 1])
+          } catch {
+            // Dangling symlink: nothing to traverse.
+          }
+        }
       }
     }
     frontier = next
@@ -263,8 +286,10 @@ async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Pr
 /**
  * Parse the frontmatter subset skill files use: `---` fenced YAML with
  * `name` / `description` / `whenToUse` / `user-invocable` /
- * `disable-model-invocation`. Host-incompatible files are skipped, matching
- * the shipped provider's leniency: a bad file must not fail the catalog.
+ * `disable-model-invocation`. Single-line scalars and block scalars
+ * (`|` literal, `>` folded) are understood; anything else is skipped,
+ * matching the shipped provider's leniency: a bad file must not fail
+ * the catalog.
  */
 function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefined {
   const firstLineEnd = raw.indexOf('\n')
@@ -273,9 +298,18 @@ function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefin
   const start = firstLineEnd + 1
   const closing = findFrontmatterEnd(raw, start)
   if (closing === undefined) return undefined
+  const lines = raw.slice(start, closing).split('\n')
   const fields = new Map<string, string>()
-  for (const line of raw.slice(start, closing).split('\n')) {
-    const match = /^([A-Za-z0-9-]+):\s*(.*)$/.exec(line.replace(/\r$/, ''))
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = (lines[index] ?? '').replace(/\r$/, '')
+    const block = /^([A-Za-z0-9-]+):\s*([|>])[+-]?\s*$/.exec(line)
+    if (block !== null) {
+      const value = parseBlockScalar(lines, index, block[2] === '>')
+      index = value.nextLineIndex
+      if (value.text !== '') fields.set(block[1] ?? '', value.text)
+      continue
+    }
+    const match = /^([A-Za-z0-9-]+):\s*(.*)$/.exec(line)
     if (match === null) continue
     const value = match[2]?.trim() ?? ''
     if (value !== '') fields.set(match[1] ?? '', unquote(value))
@@ -296,6 +330,40 @@ function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefin
     },
     content: raw.slice(closing + 1).trim(),
   }
+}
+
+/**
+ * Collect a YAML block scalar (`key: |` literal or `key: >` folded) starting
+ * at `startIndex`'s following lines. The block runs until the first
+ * non-indented, non-blank line; its common indentation is stripped.
+ * @returns the scalar text and the index of the last consumed line.
+ */
+function parseBlockScalar(
+  lines: string[],
+  startIndex: number,
+  folded: boolean,
+): { text: string; nextLineIndex: number } {
+  const collected: string[] = []
+  let indent: string | undefined
+  let index = startIndex
+  while (index + 1 < lines.length) {
+    index += 1
+    const next = (lines[index] ?? '').replace(/\r$/, '')
+    if (next.trim() === '') {
+      collected.push('')
+      continue
+    }
+    const indented = /^([ \t]+)(.*)$/.exec(next)
+    if (indented === null) {
+      index -= 1
+      break
+    }
+    indent ??= indented[1]
+    collected.push(indented[1]?.startsWith(indent) === true ? indented[2] : indented[1].replace(/^[ \t]+/, '') + indented[2])
+  }
+  while (collected.length > 0 && collected[collected.length - 1] === '') collected.pop()
+  const text = (folded ? collected.filter(line => line !== '').join(' ') : collected.join('\n')).trim()
+  return { text, nextLineIndex: index }
 }
 
 /** Locate the closing `---` line of a frontmatter block. */
@@ -346,15 +414,24 @@ function frontmatterBoolean(fields: Map<string, string>, key: string, dflt = fal
 /**
  * The WSL workspace skill provider. Registered on the host's `ctx.skills`
  * registry; serves only lookups whose cwd is a WSL UNC workspace path.
+ *
+ * Completed `list()` lookups are cached per scan root for CACHE_TTL_MS so
+ * repeated catalog builds over the slow 9P share do not rescan the tree;
+ * `get()` always re-reads the skill file so body edits are picked up
+ * immediately. `control.invalidate` remains reserved for host-driven
+ * invalidation; the provider self-invalidates through the TTL.
  */
 export class WslSkillsProvider {
   readonly name = 'wsl-workspace'
   private readonly control: WslSkillProviderControl
   private readonly io: WslSkillIo
+  private readonly now: () => number
+  private readonly cache = new Map<string, { expiresAt: number; candidates: WslSkillCandidate[] }>()
 
-  constructor(control: WslSkillProviderControl, io: WslSkillIo = nodeSkillIo) {
+  constructor(control: WslSkillProviderControl, io: WslSkillIo = nodeSkillIo, now: () => number = Date.now) {
     this.control = control
     this.io = io
+    this.now = now
   }
 
   /**
@@ -375,14 +452,28 @@ export class WslSkillsProvider {
     // Without a `.git` ancestor the session cwd itself is the scan root (the
     // issue #10 workspace layout).
     const scanRoot = (await nearestGitAncestor(unc.distro, unc.linuxPath, this.io)) ?? unc.linuxPath
+    const cacheKey = `${unc.distro}\u0000${scanRoot}`
+    const cached = this.cache.get(cacheKey)
+    if (cached !== undefined && cached.expiresAt > this.now()) {
+      this.cache.delete(cacheKey)
+      this.cache.set(cacheKey, cached)
+      return [...cached.candidates]
+    }
     const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
     const candidates: WslSkillCandidate[] = []
+    const seenSkills = new Set<string>()
     for (const root of roots) {
       const entries = await listSkillEntries(root, this.io)
       for (const entry of entries) {
         options.signal?.throwIfAborted()
         const parsed = await readSkill(entry.path, this.io, options.signal)
         if (parsed === undefined) continue
+        // A project reachable through both its real path and a directory
+        // symlink yields aliasing roots whose locators differ; publish each
+        // distinct (name, body) once so the catalog shows no duplicates.
+        const fingerprint = `${parsed.name}\u0000${parsed.content}`
+        if (seenSkills.has(fingerprint)) continue
+        seenSkills.add(fingerprint)
         candidates.push({
           name: parsed.name,
           description: parsed.description,
@@ -400,6 +491,12 @@ export class WslSkillsProvider {
           path: entry.path,
         })
       }
+    }
+    this.cache.set(cacheKey, { expiresAt: this.now() + CACHE_TTL_MS, candidates })
+    while (this.cache.size > CACHE_MAX_ENTRIES) {
+      const oldest = this.cache.keys().next().value
+      if (oldest === undefined) break
+      this.cache.delete(oldest)
     }
     return candidates
   }
