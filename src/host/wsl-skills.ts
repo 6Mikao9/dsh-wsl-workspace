@@ -9,9 +9,11 @@
  * the project folder itself (issue #10).
  *
  * This provider mirrors the host's discovery rules for WSL UNC session
- * workspaces: it walks the workspace root (depth- and budget-bounded),
- * collects every `.dsh/skills` and `.agents/skills` directory it finds —
- * including nested projects — and publishes their skills with the same
+ * workspaces: it starts at the session cwd's nearest `.git` ancestor (the
+ * host's project-root rule; the cwd itself when no ancestor has a `.git`
+ * marker), then walks that root (depth- and budget-bounded), collects every
+ * `.dsh/skills` and `.agents/skills` directory it finds — including nested
+ * projects — and publishes their skills with the same
  * project ranks and sources the host uses, so precedence and duplicate
  * resolution behave identically. Non-WSL lookups return nothing and leave
  * the host's own providers untouched.
@@ -38,6 +40,8 @@ const MAX_SCAN_DEPTH = 4
 const MAX_SKILL_ROOTS = 64
 /** Maximum directories visited per lookup (an absolute blast-radius cap). */
 const MAX_VISITED_DIRECTORIES = 4096
+/** How many parent levels above the session cwd are searched for a `.git` project marker. */
+const MAX_ANCESTOR_WALK = 64
 
 /** Kebab-case skill names, matching the host grammar. */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -130,6 +134,32 @@ interface SkillEntry {
 }
 
 /**
+ * Locate the nearest ancestor of `linuxDir` (the directory itself included)
+ * containing a `.git` marker, mirroring the host skill-filesystem's
+ * project-root rule. `.git` may be a directory or a worktree pointer file;
+ * existence is enough. Bounded so a pathological path cannot spin the walk.
+ * @param distro - the WSL distribution name.
+ * @param linuxDir - the session cwd's absolute Linux path.
+ * @param io - filesystem face.
+ * @returns the project root's Linux path, or `undefined` when no ancestor carries a `.git`.
+ */
+async function nearestGitAncestor(distro: string, linuxDir: string, io: WslSkillIo): Promise<string | undefined> {
+  let current = linuxDir
+  for (let levels = 0; levels <= MAX_ANCESTOR_WALK; levels += 1) {
+    try {
+      await io.stat(joinUnc(distro, posix.join(current, '.git')))
+      return current
+    } catch {
+      // No `.git` marker at this level; keep walking towards the filesystem root.
+    }
+    const parent = posix.dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+  return undefined
+}
+
+/**
  * Scan a WSL workspace root for nested skill directories.
  * @param distro - the WSL distribution name.
  * @param linuxRoot - the workspace's absolute Linux path.
@@ -150,7 +180,7 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
       visited.add(dir)
       if (roots.length < MAX_SKILL_ROOTS) {
         const directoryRoots = await skillRootsOfDirectory(distro, dir, io)
-        roots.push(...directoryRoots)
+        roots.push(...directoryRoots.slice(0, MAX_SKILL_ROOTS - roots.length))
       }
       if (depth >= MAX_SCAN_DEPTH) continue
       let entries: Dirent[]
@@ -330,15 +360,22 @@ export class WslSkillsProvider {
   /**
    * Discover nested project skills for a WSL UNC session workspace.
    * @param options - lookup options; `cwd` selects the WSL workspace.
-   * @returns candidates for every nested `.dsh/skills` / `.agents/skills`
-   *   under the workspace root, or an empty array for non-WSL lookups.
+   * @returns candidates for every `.dsh/skills` / `.agents/skills` under the
+   *   session's scan root — the nearest `.git` ancestor of the cwd, else the
+   *   cwd itself — or an empty array for non-WSL lookups.
    */
   async list(options: WslSkillLookupOptions): Promise<WslSkillCandidate[]> {
     this.control.signal.throwIfAborted()
     options.signal?.throwIfAborted()
     const unc = options.cwd === undefined ? null : parseWslUnc(options.cwd)
     if (unc === null) return []
-    const roots = await discoverSkillRoots(unc.distro, unc.linuxPath, this.io)
+    // Host parity: the session's project root is the nearest `.git` ancestor
+    // of the cwd, so lookups from inside a project subtree still see that
+    // project's skills; nested projects below it join via the bounded BFS.
+    // Without a `.git` ancestor the session cwd itself is the scan root (the
+    // issue #10 workspace layout).
+    const scanRoot = (await nearestGitAncestor(unc.distro, unc.linuxPath, this.io)) ?? unc.linuxPath
+    const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
     const candidates: WslSkillCandidate[] = []
     for (const root of roots) {
       const entries = await listSkillEntries(root, this.io)

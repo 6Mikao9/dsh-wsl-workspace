@@ -450,12 +450,14 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const skills = ctx.get('skills') as unknown as WslSkillsRegistryFace | undefined
-  if (skills !== undefined) {
+  if (skills !== undefined && typeof skills.registerProvider === 'function') {
     // The shipped skill-filesystem provider scans only the session cwd's
     // project root, so WSL workspaces whose `.dsh/skills` live in nested
     // projects would show an empty skill catalog. This provider mirrors the
     // host's project discovery for WSL UNC workspaces, bounded to the
-    // workspace root (issue #10).
+    // workspace root (issue #10). The method check keeps a host whose
+    // `skills` service exists with a different shape from breaking plugin
+    // load; the provider is an enhancement, never a load-time requirement.
     ctx.effect(() => skills.registerProvider(
       control => new WslSkillsProvider(control),
     ), 'dsh-wsl-workspace: WSL workspace skills provider')
