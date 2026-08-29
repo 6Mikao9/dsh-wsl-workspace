@@ -1,13 +1,18 @@
 // End-to-end verification of the WSL skills provider against the REAL
 // \\wsl.localhost 9P share (requires WSL + the repro tree from repro-setup.sh).
 //   node scripts/repro-e2e.mjs
+// Override the target with WSL_DISTRO / WSL_USER / REPRO_ROOT environment
+// variables when running as another user or distro.
 import { WslSkillsProvider } from '../src/host/wsl-skills.ts'
 
 const control = { signal: new AbortController().signal, invalidate: () => {} }
 const provider = new WslSkillsProvider(control)
 
-const workspaceRoot = '\\\\wsl.localhost\\Ubuntu\\home\\mille\\repro-ws-root'
-const nestedProject = '\\\\wsl.localhost\\Ubuntu\\home\\mille\\repro-ws-root\\proj-a'
+const distro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
+const user = process.env.WSL_COMPAT_USER ?? 'mille'
+const rootPath = process.env.WSL_COMPAT_ROOT ?? `/home/${user}/repro-ws-root`
+const workspaceRoot = `\\\\wsl.localhost\\${distro}\\${rootPath.replaceAll('/', '\\')}`
+const nestedProject = `${workspaceRoot}\\proj-a`
 
 console.log('== provider.list with cwd = workspace root (the bug scenario) ==')
 const fromRoot = await provider.list({ cwd: workspaceRoot })

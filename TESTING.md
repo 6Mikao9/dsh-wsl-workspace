@@ -24,7 +24,12 @@ Coverage:
 | `tests/fs-execution-context.test.ts` | `WslFileSystem` inherits the calling session's cwd through `AsyncLocalStorage` on `tools/execute`; agentless calls fall back to the configured distro. |
 | `tests/shell.test.ts` | The login-shell `cd` prefix preserves the resolved workdir (including single-quote escaping); non-login shells leave the command unchanged. |
 | `tests/paths.test.ts` | UNC ↔ Linux path translation, `/mnt/<drive>` mapping, canonical Windows path keys, WSL username validation. |
-| `tests/wsl-skills.test.ts` | The WSL skill provider (issue #10): non-WSL lookups return nothing, nested `.dsh/skills` / `.agents/skills` discovery with host ranks/sources, `get()` body loading, pruning of `node_modules` / dot-directories, frontmatter validation, depth and skill-root budgets, the nearest-`.git`-ancestor rule (a cwd deeper than the project root still sees the project's skills, and skills above that ancestor do not leak), and the skill-root cap. |
+| `tests/wsl-skills.test.ts` | The WSL skill provider (issue #10): non-WSL lookups return nothing, nested `.dsh/skills` / `.agents/skills` discovery with host ranks/sources, `get()` body loading, pruning of `node_modules` / dot-directories, frontmatter validation **including block scalars**, depth and skill-root budgets, the nearest-`.git`-ancestor rule (a cwd deeper than the project root still sees the project's skills, and skills above that ancestor do not leak), the skill-root cap, the **10-second per-scan-root lookup cache** (copy semantics, TTL expiry, `get()` staying live), **directory-symlink following** (linked projects discovered, aliasing deduplicated, dangling symlinks pruned, hops bounded by depth). |
+
+## Provider parity and compatibility checks
+
+- `node scripts/check-rank-parity.mjs` — the provider's project ranks are copied from `@deepseek-ai/dsh-skill-filesystem` (the host does not export them). This script parses the host's built lib when the package is resolvable on this machine and fails on drift. Run it before every release on a machine with the harness installed.
+- `scripts/verify-dsh-compat.sh <version>...` — disposable-Profile install/start/uninstall evidence against specific `@deepseek-ai/dsh` releases: fully isolated (`DSH_HOME` redirected to a temp tree, own port), boots the published harness version with the plugin added by name, probes `POST /wsl-workspace/api`, then removes the plugin and verifies the route disappears. Emits per-version verdict lines used for the `dsh.compatibility.dshReleases` manifest records.
 
 ## Preset materialization integration test
 
@@ -71,7 +76,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    wsl -d <distro> -- bash -c "bash /tmp/repro-setup.sh"
    ```
 
-2. Drive the provider against the real `\\wsl.localhost` share — four assertions print (workspace-root cwd finds root + nested skills; nested-project cwd finds only that project; `get()` loads a body; non-WSL cwd returns nothing):
+2. Drive the provider against the real `\\wsl.localhost` share — four assertions print (workspace-root cwd finds root + nested skills; nested-project cwd finds only that project; `get()` loads a body; non-WSL cwd returns nothing). Override the target with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` / `WSL_COMPAT_ROOT`:
 
    ```powershell
    node scripts/repro-e2e.mjs
@@ -98,6 +103,7 @@ After installing the plugin into a profile and restarting `dsh web`:
 2. `node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts` — all green.
 3. `node tests/host-materialize.mjs` — all assertions pass.
 4. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
-5. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
-6. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE` (tsdown uses `clean: false`, so remove stale chunks from `lib/` before packing).
-7. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe.
+5. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
+6. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
+7. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE` (tsdown uses `clean: false`, so remove stale chunks from `lib/` before packing).
+8. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
