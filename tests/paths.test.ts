@@ -142,3 +142,42 @@ test('isValidWslUsername rejects option-like or malformed usernames', () => {
     assert.equal(isValidWslUsername(bad), false, `expected reject for ${JSON.stringify(bad)}`)
   }
 })
+
+test('parseWslUnc collapses double separators and trailing slashes', () => {
+  assert.deepEqual(parseWslUnc('\\\\wsl.localhost\\\\Ubuntu\\home\\me'), {
+    distro: 'Ubuntu',
+    linuxPath: '/home/me',
+  })
+  assert.deepEqual(parseWslUnc('\\\\wsl.localhost\\Ubuntu\\home\\me\\'), {
+    distro: 'Ubuntu',
+    linuxPath: '/home/me',
+  })
+  assert.deepEqual(parseWslUnc('//wsl.localhost//Ubuntu//home//me/'), {
+    distro: 'Ubuntu',
+    linuxPath: '/home/me',
+  })
+})
+
+test('parseWslUnc lowercases the host but keeps distro casing', () => {
+  assert.deepEqual(parseWslUnc('\\\\WSL.LOCALHOST\\Ubuntu-22.04\\srv'), {
+    distro: 'Ubuntu-22.04',
+    linuxPath: '/srv',
+  })
+})
+
+test('parseWslUnc maps the bare distro root to /', () => {
+  assert.deepEqual(parseWslUnc('\\\\wsl.localhost\\Ubuntu'), {
+    distro: 'Ubuntu',
+    linuxPath: '/',
+  })
+  assert.deepEqual(parseWslUnc('\\\\wsl.localhost\\Ubuntu\\'), {
+    distro: 'Ubuntu',
+    linuxPath: '/',
+  })
+})
+
+test('parseWslUnc rejects non-WSL UNC shares', () => {
+  assert.equal(parseWslUnc('\\\\server\\share\\folder'), null)
+  assert.equal(parseWslUnc('\\\\wsl.invalid\\Ubuntu\\home'), null)
+  assert.equal(parseWslUnc('\\\\wsl.localhost'), null)
+})

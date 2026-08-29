@@ -50,7 +50,6 @@ const MAX_ANCESTOR_WALK = 64
 const CACHE_TTL_MS = 10_000
 /** Maximum cached lookups (one entry per distinct scan root across sessions). */
 const CACHE_MAX_ENTRIES = 32
-
 /** Kebab-case skill names, matching the host grammar. */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -292,6 +291,9 @@ async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Pr
  * the catalog.
  */
 function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefined {
+  // Windows editors save UTF-8 with a BOM; a leading BOM must not make the
+  // opening `---` line unmatchable and silently drop the skill.
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1)
   const firstLineEnd = raw.indexOf('\n')
   if (firstLineEnd < 0) return undefined
   if (raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') return undefined
@@ -427,6 +429,7 @@ export class WslSkillsProvider {
   private readonly io: WslSkillIo
   private readonly now: () => number
   private readonly cache = new Map<string, { expiresAt: number; candidates: WslSkillCandidate[] }>()
+  private readonly refreshing = new Set<string>()
 
   constructor(control: WslSkillProviderControl, io: WslSkillIo = nodeSkillIo, now: () => number = Date.now) {
     this.control = control
@@ -454,24 +457,46 @@ export class WslSkillsProvider {
     const scanRoot = (await nearestGitAncestor(unc.distro, unc.linuxPath, this.io)) ?? unc.linuxPath
     const cacheKey = `${unc.distro}\u0000${scanRoot}`
     const cached = this.cache.get(cacheKey)
-    if (cached !== undefined && cached.expiresAt > this.now()) {
-      this.cache.delete(cacheKey)
-      this.cache.set(cacheKey, cached)
+    if (cached !== undefined) {
+      if (cached.expiresAt > this.now()) {
+        this.cache.delete(cacheKey)
+        this.cache.set(cacheKey, cached)
+        return [...cached.candidates]
+      }
+      // Expired: serve the stale copy immediately and refresh in the
+      // background, so a slow scan (e.g. a distro-root workspace) never
+      // blocks the caller. A failed refresh keeps the stale entry and is
+      // retried on the next lookup.
+      if (!this.refreshing.has(cacheKey)) {
+        this.refreshing.add(cacheKey)
+        void this.scan(cacheKey, unc.distro, scanRoot, options.signal)
+          .catch(() => { /* keep the stale entry; retried on the next lookup */ })
+          .finally(() => { this.refreshing.delete(cacheKey) })
+      }
       return [...cached.candidates]
     }
-    const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
+    return this.scan(cacheKey, unc.distro, scanRoot, options.signal)
+  }
+
+  /**
+   * Run one discovery pass for a scan root and publish it into the cache.
+   * @returns the fresh candidates.
+   */
+  private async scan(cacheKey: string, distro: string, scanRoot: string, signal?: AbortSignal): Promise<WslSkillCandidate[]> {
+    const roots = await discoverSkillRoots(distro, scanRoot, this.io)
     const candidates: WslSkillCandidate[] = []
     const seenSkills = new Set<string>()
     for (const root of roots) {
       const entries = await listSkillEntries(root, this.io)
       for (const entry of entries) {
-        options.signal?.throwIfAborted()
-        const parsed = await readSkill(entry.path, this.io, options.signal)
+        signal?.throwIfAborted()
+        const parsed = await readSkill(entry.path, this.io, signal)
         if (parsed === undefined) continue
         // A project reachable through both its real path and a directory
         // symlink yields aliasing roots whose locators differ; publish each
-        // distinct (name, body) once so the catalog shows no duplicates.
-        const fingerprint = `${parsed.name}\u0000${parsed.content}`
+        // distinct (name, description, body) once so the catalog shows no
+        // duplicates.
+        const fingerprint = `${parsed.name}\u0000${parsed.description}\u0000${parsed.content}`
         if (seenSkills.has(fingerprint)) continue
         seenSkills.add(fingerprint)
         candidates.push({

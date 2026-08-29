@@ -18,6 +18,7 @@ interface FakeNode {
   directory: boolean
   content?: string
   symlink?: boolean
+  unreadable?: boolean
   children?: Map<string, FakeNode>
 }
 
@@ -81,6 +82,7 @@ function createIo(root: FakeNode, options: { resolveSymlinks?: boolean } = {}): 
     readdir: async (path) => {
       const node = resolve(path)
       if (node === undefined || !node.directory) throw new Error(`ENOENT: ${path}`)
+      if (node.unreadable === true) throw new Error(`EACCES: ${path}`)
       return [...(node.children?.entries() ?? [])].map(([name, child]) => ({
         name,
         isDirectory: () => child.directory && child.symlink !== true,
@@ -307,13 +309,60 @@ test('caches a completed lookup and serves it until the TTL expires', async () =
   const third = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   assert.deepEqual(third.map(skill => skill.name), ['brainstorming'])
 
-  // After the TTL the provider rescans and sees new content.
+  // After the TTL the stale copy is served immediately while a background
+  // refresh runs; the following lookup sees the refreshed content.
   file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'late.md'],
     SKILL_MD('late', 'Added after caching'))
   clock += 10_001
-  const fourth = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
-  assert.ok(readdirCalls > readsAfterFirst)
-  assert.deepEqual(fourth.map(skill => skill.name).sort(), ['brainstorming', 'late'])
+  const stale = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(stale.map(skill => skill.name), ['brainstorming'])
+
+  await new Promise(resolve => setTimeout(resolve, 20)) // let the refresh land
+  const refreshedCalls = readdirCalls
+  assert.ok(refreshedCalls > readsAfterFirst)
+  const fresh = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(fresh.map(skill => skill.name).sort(), ['brainstorming', 'late'])
+  // The refreshed entry is cached again: no further filesystem traffic.
+  const again = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(readdirCalls, refreshedCalls)
+  assert.deepEqual(again.map(skill => skill.name).sort(), ['brainstorming', 'late'])
+})
+
+test('expired lookups share a single background refresh', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'brainstorming', 'SKILL.md'],
+    SKILL_MD('brainstorming', 'Structured brainstorming'))
+  let readdirCalls = 0
+  const io = createIo(root)
+  const countingIo: WslSkillIo = {
+    readdir: async (path, options) => {
+      readdirCalls += 1
+      return io.readdir(path, options)
+    },
+    readFile: io.readFile,
+    stat: io.stat,
+  }
+  let clock = 1_000_000
+  const provider = new WslSkillsProvider(control(), countingIo, () => clock)
+
+  const first = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  const readsAfterFirst = readdirCalls
+  assert.equal(first.length, 1)
+
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'late.md'],
+    SKILL_MD('late', 'Added after caching'))
+  clock += 10_001
+  // Overlapping expired lookups both serve the same stale copy while a
+  // single background refresh runs; afterwards the refreshed content wins.
+  const staleA = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  const staleB = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(staleA.map(skill => skill.name), ['brainstorming'])
+  assert.deepEqual(staleB.map(skill => skill.name), ['brainstorming'])
+
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const fresh = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(fresh.map(skill => skill.name).sort(), ['brainstorming', 'late'])
 })
 
 test('get() re-reads the body instead of serving a cached one', async () => {
@@ -393,4 +442,90 @@ test('parses block scalars in frontmatter', async () => {
   assert.equal(folded?.description, 'A folded description on two source lines.')
   const mixed = skills.find(skill => skill.name === 'mixed')
   assert.equal(mixed?.whenToUse, 'Multi-line\nwhen to use')
+})
+
+test('accepts every UNC spelling of the same workspace', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'brainstorming', 'SKILL.md'],
+    SKILL_MD('brainstorming', 'Structured brainstorming'))
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  for (const cwd of [
+    CWD_WORKSPACE_ROOT,
+    '\\\\wsl$\\Ubuntu\\home\\mille\\repro-ws-root',
+    '\\\\WSL.LOCALHOST\\Ubuntu\\home\\mille\\repro-ws-root',
+    '\\\\wsl.localhost\\Ubuntu\\home\\mille\\repro-ws-root\\',
+    '//wsl.localhost/Ubuntu/home/mille/repro-ws-root',
+  ]) {
+    const skills = await provider.list({ cwd })
+    assert.deepEqual(skills.map(skill => skill.name), ['brainstorming'], `cwd spelling: ${cwd}`)
+  }
+})
+
+test('a distro-root cwd scans from / and still honors the depth budget', async () => {
+  const root = tree()
+  // proj-a sits 4 levels below the filesystem root: within MAX_SCAN_DEPTH.
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'brainstorming', 'SKILL.md'],
+    SKILL_MD('brainstorming', 'Structured brainstorming'))
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: '\\\\wsl.localhost\\Ubuntu' })
+  assert.deepEqual(skills.map(skill => skill.name), ['brainstorming'])
+})
+
+test('an unreadable directory is pruned while siblings keep scanning', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'locked', 'secret', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'locked', 'secret', '.dsh', 'skills', 'hidden.md'],
+    SKILL_MD('hidden', 'Behind an unreadable directory'))
+  dir(root, ['home', 'mille', 'repro-ws-root', 'locked']).unreadable = true
+  dir(root, ['home', 'mille', 'repro-ws-root', 'open', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'open', '.dsh', 'skills', 'visible.md'],
+    SKILL_MD('visible', 'Normal sibling'))
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['visible'])
+})
+
+test('parses CRLF skill files including CRLF block scalars', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'windows.md'],
+    '---\r\nname: windows\r\ndescription: Saved by a Windows editor\r\nwhenToUse: |\r\n  Folded across\r\n  two CRLF lines\r\n---\r\n\r\nCRLF body.\r\n')
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['windows'])
+  assert.equal(skills[0]?.description, 'Saved by a Windows editor')
+  assert.equal(skills[0]?.whenToUse, 'Folded across\ntwo CRLF lines')
+})
+
+test('parses UTF-8 BOM skill files', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'bommy.md'],
+    '\uFEFF---\nname: bommy\ndescription: Saved with a BOM\n---\n\nBOM body.\n')
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['bommy'])
+})
+
+test('get() refuses a candidate whose file changed identity', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  const skillPath = ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'brainstorming', 'SKILL.md']
+  file(root, skillPath, SKILL_MD('brainstorming', 'Structured brainstorming'))
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const [candidate] = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.ok(candidate !== undefined)
+  file(root, skillPath, SKILL_MD('renamed-away', 'The frontmatter name changed'))
+  const definition = await provider.get(candidate, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition, undefined)
+})
+
+test('network UNC shares that are not WSL stay untouched', async () => {
+  const provider = new WslSkillsProvider(control(), createIo(tree()))
+  assert.deepEqual(await provider.list({ cwd: '\\\\fileserver\\projects\\app' }), [])
 })

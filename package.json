@@ -9,7 +9,7 @@
   },
   "main": "lib/index.js",
   "scripts": {
-    "build": "tsdown && node scripts/verify-lib.mjs",
+    "build": "tsdown && node scripts/prune-lib.mjs && node scripts/verify-lib.mjs",
     "verify": "node scripts/verify-lib.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

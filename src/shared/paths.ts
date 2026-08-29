@@ -32,10 +32,13 @@ export function parseWslUnc(raw: string): WslUncTarget | null {
   const segments = normalized.slice(2).split('/')
   const host = (segments[0] ?? '').toLowerCase()
   if (!UNC_HOSTS.includes(host)) return null
-  const distro = segments[1] ?? ''
+  // Empty segments (double separators anywhere after the host) are
+  // collapsed: `\\wsl.localhost\\Ubuntu\home` and trailing slashes must
+  // parse the same as their single-separator spelling.
+  const parts = segments.filter(segment => segment.length > 0)
+  const distro = parts[1] ?? ''
   if (distro === '') return null
-  const rest = segments.slice(2).filter(segment => segment.length > 0)
-  return { distro, linuxPath: `/${rest.join('/')}` }
+  return { distro, linuxPath: `/${parts.slice(2).join('/')}` }
 }
 
 /**
