@@ -11,10 +11,6 @@
  * hero picker) converges on the WSL-backed composition automatically.
  */
 
-import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
-// Type-only: pulls the locale plugin's Context merge (ctx.locale), the
-// runtime's ClientContext, and the ui-sidebar SlotMap merge (the
-// 'sidebar.footer.action' entry) into this program.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -25,7 +21,7 @@ import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
 
 /** Required services (cordis fiber inject). */
-export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces']
+export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces', 'uiWorkspace']
 
 /** The legacy standalone WSL preset id (folded into the mode variants). */
 const LEGACY_WSL_PRESET_ID = 'wsl'
@@ -47,7 +43,49 @@ interface WslSessionsFace {
 /** Minimal workspaces-service face (create + start-session only). */
 interface WslWorkspacesFace {
   create(input: { path: string }): Promise<{ workspaceId: string }>
+  /** @deprecated since DSH 0.1.2-alpha — moved to uiWorkspace.startSession */
+  startSession?(workspaceId?: string): void
+}
+
+/** Minimal uiWorkspace-service face (DSH >= 0.1.2-alpha). */
+interface WslUiWorkspaceFace {
   startSession(workspaceId?: string): void
+}
+
+/**
+ * Connection handle adapter that works across DSH versions.
+ * - DSH <= 0.1.1-rc.2: connection.api.agentPresets.{list,select}()
+ * - DSH >= 0.1.2-alpha: connection.rpc.call(channel, endpoint, payload)
+ */
+interface AgentPresetsApi {
+  list(args: Record<string, never>): Promise<{ result: { ok: boolean; value: { presets: { id: string; broken?: string; isDefault?: boolean }[] }; error?: { message: string } } }>
+  select(args: { sessionId: string; agentPreset: string }): Promise<{ result: { ok: boolean } }>
+}
+
+function resolveAgentPresetsApi(connection: unknown): AgentPresetsApi {
+  const conn = connection as Record<string, unknown> | undefined
+  // DSH >= 0.1.2-alpha: generic RPC channel
+  const rpc = conn?.rpc as { call(channel: string, endpoint: string, payload: unknown): Promise<unknown> } | undefined
+  if (rpc) {
+    return {
+      list: async (args) => {
+        const result = await rpc.call('/agentPresets', 'list', args) as AgentPresetsApi['list'] extends (...a: unknown[]) => Promise<infer R> ? R : never
+        return { result }
+      },
+      select: async (args) => {
+        const result = await rpc.call('/agentPresets', 'select', args) as { ok: boolean }
+        return { result }
+      },
+    }
+  }
+  // DSH <= 0.1.1-rc.2: namespaced api object
+  const api = conn?.api as { agentPresets: AgentPresetsApi } | undefined
+  if (api?.agentPresets) return api.agentPresets
+  // Fallback: no-op so the plugin doesn't crash
+  return {
+    list: async () => ({ result: { ok: false, value: { presets: [] }, error: { message: 'agentPresets API unavailable' } } }),
+    select: async () => ({ result: { ok: false } }),
+  }
 }
 
 /**
@@ -55,9 +93,19 @@ interface WslWorkspacesFace {
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx: ClientContext): void {
-  const { api } = ctx.get('connection') as ConnectionHandle
+  const agentPresets = resolveAgentPresetsApi(ctx.get('connection'))
   const workspaces = ctx.get('workspaces') as unknown as WslWorkspacesFace
+  const uiWorkspace = ctx.get('uiWorkspace') as unknown as WslUiWorkspaceFace | undefined
   const sessions = ctx.get('sessions') as unknown as WslSessionsFace
+
+  /** Start a session in a workspace, compatible with both DSH API versions. */
+  const startSession = (workspaceId?: string): void => {
+    if (typeof workspaces.startSession === 'function') {
+      workspaces.startSession(workspaceId)
+    } else if (uiWorkspace?.startSession) {
+      uiWorkspace.startSession(workspaceId)
+    }
+  }
 
   ensureStyles()
 
@@ -80,7 +128,7 @@ export function apply(ctx: ClientContext): void {
     checkPreset: async (): Promise<string | undefined> => {
       let roster
       try {
-        const response = await api.agentPresets.list({})
+        const response = await agentPresets.list({})
         roster = response.result
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -106,13 +154,13 @@ export function apply(ctx: ClientContext): void {
           await registerWindowsApi(linuxPath, distro, username)
           const canonical = canonicalWindowsPath(winPath)
           if (canonical !== null) wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
-          workspaces.startSession(view.workspaceId)
+          startSession(view.workspaceId)
           return undefined
         }
         const uncPath = joinUnc(distro, linuxPath)
         const view = await workspaces.create({ path: uncPath })
         await setWorkspaceUserApi(uncPath, username)
-        workspaces.startSession(view.workspaceId)
+        startSession(view.workspaceId)
         return undefined
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -147,7 +195,7 @@ export function apply(ctx: ClientContext): void {
     let variants = new Set<string>()
     let defaultPreset: string | undefined
     const refreshRoster = (): void => {
-      void api.agentPresets.list({}).then((response: {
+      void agentPresets.list({}).then((response: {
         result: { ok: boolean; value: { presets: { id: string; broken?: string; isDefault?: boolean }[] } }
       }) => {
         const result = response.result
@@ -204,7 +252,7 @@ export function apply(ctx: ClientContext): void {
         if (!variants.has(target)) continue
         if (inFlight.has(id) || (attempts.get(id) ?? 0) >= MAX_ATTEMPTS) continue
         inFlight.add(id)
-        void api.agentPresets.select({ sessionId: id, agentPreset: target })
+        void agentPresets.select({ sessionId: id, agentPreset: target })
           .then((response: { result: { ok: boolean } }) => {
             if (response.result.ok) sessions.noteAgentPreset(id, target)
           })
