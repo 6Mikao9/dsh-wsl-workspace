@@ -24,6 +24,7 @@ fi
 BASE="${TEMP:-/tmp}/dsh-compat-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BASE"
 PORT="${COMPAT_PORT:-3091}"
+PLUGIN_SPEC="${DSH_COMPAT_PLUGIN:-dsh-wsl-workspace}"
 PLUGIN_API="http://127.0.0.1:${PORT}/wsl-workspace/api"
 WEB_URL="http://127.0.0.1:${PORT}/"
 
@@ -33,6 +34,24 @@ wait_http() { # wait_http <url> <expected-substring> <tries>
     local body
     body="$(curl -s --max-time 2 "$url" 2>/dev/null || true)"
     if [ -n "$body" ] && printf '%s' "$body" | grep -q "$expect"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+wait_web() { # wait_web <boot-log> <tries>
+  local log="$1" tries="${2:-60}"
+  local cookie_jar="${log}.cookies"
+  for _ in $(seq 1 "$tries"); do
+    # Token-auth releases print the only authorized browser URL at boot;
+    # older releases serve the untokened root.
+    local url body
+    url="$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/[^[:space:]]*' "$log" 2>/dev/null | tail -n 1)"
+    [ -n "$url" ] || url="$WEB_URL"
+    body="$(curl -sL -c "$cookie_jar" -b "$cookie_jar" --max-time 2 "$url" 2>/dev/null || true)"
+    if [ -n "$body" ] && printf '%s' "$body" | grep -qi '<!doctype html\|<html'; then
       return 0
     fi
     sleep 2
@@ -55,18 +74,21 @@ for VERSION in "$@"; do
   DSH_HOME="$(cygpath -w "$WORK/dsh-home")"
   export DSH_HOME
 
-  echo "[install] npm i @deepseek-ai/dsh@$VERSION"
+  echo "[install] pnpm add @deepseek-ai/dsh@$VERSION"
   if ! (cd "$WORK/pkg" \
         && npm init -y >/dev/null 2>&1 \
-        && npm i "@deepseek-ai/dsh@$VERSION" --no-audit --no-fund >/dev/null 2>&1); then
+        && pnpm add "@deepseek-ai/dsh@$VERSION" \
+          --config.auto-install-peers=true \
+          --config.strict-peer-dependencies=false \
+          --config.dangerously-allow-all-builds=true >/dev/null 2>&1); then
     echo "  ✖ harness installation failed"
-    echo "$Version INSTALL_FAIL unknown" >> "$BASE/verdicts.txt"
+    echo "$VERSION INSTALL_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
   BIN="$WORK/pkg/node_modules/@deepseek-ai/dsh/lib/bin.js"
 
-  echo "[install] dsh plugin --profile web add dsh-wsl-workspace"
-  if ! node "$BIN" plugin --profile web add dsh-wsl-workspace > "$WORK/plugin-add.log" 2>&1; then
+  echo "[install] dsh plugin --profile web add $PLUGIN_SPEC"
+  if ! node "$BIN" plugin --profile web add "$PLUGIN_SPEC" > "$WORK/plugin-add.log" 2>&1; then
     echo "  ✖ plugin add failed (see $WORK/plugin-add.log)"
     echo "$VERSION PLUGIN_ADD_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
@@ -77,7 +99,7 @@ for VERSION in "$@"; do
   echo "[start] booting web on :$PORT"
   node "$BIN" web --port "$PORT" > "$WORK/boot-with-plugin.log" 2>&1 &
   SERVER_PID=$!
-  if ! wait_http "$WEB_URL" '<!DOCTYPE html\|<!doctype html\|html' 60; then
+  if ! wait_web "$WORK/boot-with-plugin.log" 60; then
     echo "  ✖ server did not serve the web UI"
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION BOOT_FAIL unknown" >> "$BASE/verdicts.txt"
@@ -110,7 +132,7 @@ for VERSION in "$@"; do
   echo "  ✔ removed"
   node "$BIN" web --port "$PORT" > "$WORK/boot-without-plugin.log" 2>&1 &
   SERVER_PID=$!
-  if ! wait_http "$WEB_URL" '<!DOCTYPE html\|<!doctype html\|html' 60; then
+  if ! wait_web "$WORK/boot-without-plugin.log" 60; then
     echo "  ✖ server did not come back after removal"
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION REBOOT_FAIL unknown" >> "$BASE/verdicts.txt"

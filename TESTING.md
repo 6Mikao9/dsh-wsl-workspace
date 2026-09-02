@@ -13,7 +13,7 @@ This document describes how to verify `dsh-wsl-workspace` after a change or befo
 Run the unit tests from the plugin directory:
 
 ```powershell
-node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts
+node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts tests/client-compat.test.ts
 ```
 
 Coverage:
@@ -25,11 +25,12 @@ Coverage:
 | `tests/shell.test.ts` | The login-shell `cd` prefix preserves the resolved workdir (including single-quote escaping); non-login shells leave the command unchanged. |
 | `tests/paths.test.ts` | UNC ↔ Linux path translation, `/mnt/<drive>` mapping, canonical Windows path keys, WSL username validation. |
 | `tests/wsl-skills.test.ts` | The WSL skill provider (issue #10): non-WSL lookups return nothing, nested `.dsh/skills` / `.agents/skills` discovery with host ranks/sources, `get()` body loading, pruning of `node_modules` / dot-directories and unreadable directories, frontmatter validation **including block scalars, CRLF files and UTF-8 BOMs**, depth and skill-root budgets, the nearest-`.git`-ancestor rule (a cwd deeper than the project root still sees the project's skills, and skills above that ancestor do not leak), the skill-root cap, the **per-scan-root lookup cache with stale-while-revalidate** (copy semantics, TTL expiry serving stale + background refresh, overlapping lookups sharing one refresh, `get()` staying live), **UNC spelling forms** (legacy `\\wsl$`, uppercase hosts, trailing slashes, distro-root cwds) and **directory-symlink handling** (unresolvable links pruned per the 9P substrate, aliasing deduplicated, hops bounded by depth). |
+| `tests/client-compat.test.ts` | Browser-service compatibility across DSH releases: old `connection.api` wins even when `rpc` also exists, alpha Typert RPC calls use `/api` plus named wire arguments, unavailable services fail safely, and session startup falls back from legacy `workspaces` to `uiWorkspace`. |
 
 ## Provider parity and compatibility checks
 
 - `node scripts/check-rank-parity.mjs` — the provider's project ranks are copied from `@deepseek-ai/dsh-skill-filesystem` (the host does not export them). This script parses the host's built lib when the package is resolvable on this machine and fails on drift. Run it before every release on a machine with the harness installed.
-- `scripts/verify-dsh-compat.sh <version>...` — disposable-Profile install/start/uninstall evidence against specific `@deepseek-ai/dsh` releases: fully isolated (`DSH_HOME` redirected to a temp tree, own port), boots the published harness version with the plugin added by name, probes `POST /wsl-workspace/api`, then removes the plugin and verifies the route disappears. Emits per-version verdict lines used for the `dsh.compatibility.dshReleases` manifest records.
+- `scripts/verify-dsh-compat.sh <version>...` — disposable-Profile install/start/uninstall evidence against specific `@deepseek-ai/dsh` releases: fully isolated (`DSH_HOME` redirected to a temp tree, own port), boots the published harness version with the plugin added from `DSH_COMPAT_PLUGIN` (or by package name when unset), probes `POST /wsl-workspace/api`, then removes the plugin and verifies the route disappears. Point `DSH_COMPAT_PLUGIN` at the candidate tarball before declaring a new release compatible. Emits per-version verdict lines used for the `dsh.compatibility.dshReleases` manifest records.
 
 ## Preset materialization integration test
 
@@ -100,7 +101,7 @@ After installing the plugin into a profile and restarting `dsh web`:
 ## Release checklist
 
 1. `pnpm build` — rebuilds `lib/` and runs the verification gate.
-2. `node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts` — all green.
+2. `node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts tests/client-compat.test.ts` — all green.
 3. `node tests/host-materialize.mjs` — all assertions pass.
 4. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
 5. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
