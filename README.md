@@ -39,6 +39,16 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.4.2 — 2026-09-02
+
+- **Alpha session-preset sync**: blank WSL sessions now read the selected preset from both the legacy top-level field and the `0.1.2-alpha` projection, tolerate the alpha session store's removal of `noteAgentPreset`, and retry binding after asynchronous workspace/roster refreshes.
+- **Creator-mode switching**: WSL Creator variants use a namespaced, reference-counted Cordis inspection adapter, avoiding duplicate global-provider registration while the host atomically replaces the base Creator preset.
+- **Compatibility proof**: expanded client/materialization tests and recorded isolated install/start/uninstall plus visible browser-click acceptance for every declared DSH release from `0.1.0-rc.7` through `0.1.2-alpha.4`; the final alpha.4 run also verified all four base modes automatically map to their WSL variants with no browser warnings or errors.
+
+### 0.4.1 — 2026-09-02
+
+- **Cross-release client APIs** ([#17](https://github.com/6Mikao9/dsh-wsl-workspace/pull/17)): prefer the legacy namespaced API when it exists, use the alpha Typert RPC channel and named arguments otherwise, and fall back from the legacy workspace session service to `uiWorkspace` on newer releases.
+
 ### 0.4.0 — 2026-08-29
 
 Follow-ups from the [#12](https://github.com/6Mikao9/dsh-wsl-workspace/issues/12) limitation list and the [#13](https://github.com/6Mikao9/dsh-wsl-workspace/issues/13) compatibility work:
