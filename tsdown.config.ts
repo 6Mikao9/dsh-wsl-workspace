@@ -4,8 +4,8 @@ import { builtinModules } from 'node:module'
 /**
  * Standalone build for the dsh-wsl-workspace third-party plugin.
  *
- * Node half: three ESM entries (`lib/index.js` host plugin, `lib/shell.js` and
- * `lib/fs.js` service providers) with every `@deepseek-ai/*` and node builtin
+ * Node half: four ESM entries (`lib/index.js` host plugin, `lib/shell.js`,
+ * `lib/fs.js`, and the WSL-safe Creator adapter) with every `@deepseek-ai/*` and node builtin
  * external — at runtime they resolve from the harness's own dependency tree.
  * The preset installer references `lib/shell.js`/`lib/fs.js` by absolute path,
  * so those entry file names are load-bearing.
@@ -39,6 +39,7 @@ export default defineConfig([
       index: 'src/index.ts',
       shell: 'src/shell.ts',
       fs: 'src/fs.ts',
+      'tool-cordis-wsl': 'src/tool-cordis-wsl.ts',
     },
     outDir: 'lib',
     format: ['esm'],

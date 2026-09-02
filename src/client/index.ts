@@ -22,7 +22,12 @@ import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
-import { resolveAgentPresetsApi, startWorkspaceSession } from './compat.ts'
+import {
+  agentPresetOf,
+  resolveAgentPresetsApi,
+  selectWslAgentPreset,
+  startWorkspaceSession,
+} from './compat.ts'
 
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces']
@@ -38,10 +43,18 @@ const LEGACY_WSL_PRESET_ID = 'wsl'
  */
 interface WslSessionsFace {
   list: {
-    getSnapshot(): { ids: string[]; byId: Record<string, { blank: boolean; cwd?: string; agentPreset?: string }> }
+    getSnapshot(): {
+      ids: string[]
+      byId: Record<string, {
+        blank: boolean
+        cwd?: string
+        agentPreset?: string
+        projectionValues?: { agentPreset?: string }
+      }>
+    }
     subscribe(fn: () => void): () => void
   }
-  noteAgentPreset(sessionId: string, agentPreset: string): void
+  noteAgentPreset?(sessionId: string, agentPreset: string): void
 }
 
 /** Minimal workspaces-service face (create + start-session only). */
@@ -163,6 +176,7 @@ export function apply(ctx: ClientContext): void {
         defaultPreset = result.value.presets.find(
           (entry: { id: string; isDefault?: boolean }) => entry.isDefault === true,
         )?.id
+        maybeBind()
       }).catch(() => {
         // A failed roster read leaves the previous mapping; sessions stay on
         // their current composition until the next refresh.
@@ -177,6 +191,7 @@ export function apply(ctx: ClientContext): void {
           if (canonical !== null) next.add(canonical)
         }
         wslWindowsPaths = next
+        maybeBind()
       }).catch(() => {
         // A failed store read leaves the previous set; sessions stay on
         // their current composition until the next refresh.
@@ -195,7 +210,7 @@ export function apply(ctx: ClientContext): void {
         const isWsl = isWslUnc(summary.cwd)
           || (canonical !== null && wslWindowsPaths.has(canonical))
         if (!isWsl) continue
-        const current = summary.agentPreset
+        const current = agentPresetOf(summary)
         if (current !== undefined && current.startsWith('wsl-')) continue
         // Legacy standalone `wsl` (now folded into the variants): remap it to
         // the default mode's variant, since the standalone preset no longer
@@ -208,9 +223,9 @@ export function apply(ctx: ClientContext): void {
         if (!variants.has(target)) continue
         if (inFlight.has(id) || (attempts.get(id) ?? 0) >= MAX_ATTEMPTS) continue
         inFlight.add(id)
-        void agentPresets.select({ sessionId: id, agentPreset: target })
-          .then((response: { result: { ok: boolean } }) => {
-            if (response.result.ok) sessions.noteAgentPreset(id, target)
+        void selectWslAgentPreset(agentPresets, sessions, id, target)
+          .then((selected: boolean) => {
+            if (!selected) attempts.set(id, (attempts.get(id) ?? 0) + 1)
           })
           .catch(() => {
             // A refused or aborted swap (session already produced output,

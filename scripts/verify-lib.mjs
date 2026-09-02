@@ -240,12 +240,14 @@ function verifyEntry(filePath) {
   // Authoritative gate: every node:* import must be referenced in the code.
   // A symbol imported but never used means tsdown tree-shook it away — the
   // source's import list is then stale and a future edit may rely on it.
-  const clean = stripCommentsAndStrings(code)
   for (const [name, moduleName] of nodeImports) {
     // The import statement itself contains the name; count real references
     // beyond the import line.
-    const refRe = new RegExp(`(?<![\\w$.])${name}(?![\\w$])`, 'g')
-    const refs = clean.match(refRe) ?? []
+    // Namespace imports are commonly consumed as `posix.join(...)`; a dot
+    // before the identifier is still a real reference here (unlike the bare
+    // call-site scan above).
+    const refRe = new RegExp(`(?<![\\w$])${name}(?![\\w$])`, 'g')
+    const refs = code.match(refRe) ?? []
     if (refs.length <= 1) {
       problems.push(`  imported ${name} from ${moduleName} but never used (tree-shaken)`)
     }

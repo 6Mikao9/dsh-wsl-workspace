@@ -19,6 +19,38 @@ export interface AgentPresetsApi {
   select(args: { sessionId: string; agentPreset: string }): Promise<{ result: AgentPresetResult<unknown> }>
 }
 
+/** Session fields moved under `projectionValues` in DSH 0.1.2-alpha. */
+export function agentPresetOf(summary: unknown): string | undefined {
+  if (!isRecord(summary)) return undefined
+  if (typeof summary.agentPreset === 'string') return summary.agentPreset
+  return isRecord(summary.projectionValues) && typeof summary.projectionValues.agentPreset === 'string'
+    ? summary.projectionValues.agentPreset
+    : undefined
+}
+
+/** Older session stores need an optimistic note; alpha stores update from Remote events. */
+export function noteAgentPresetIfAvailable(
+  sessions: unknown,
+  sessionId: string,
+  agentPreset: string,
+): void {
+  if (!isRecord(sessions) || typeof sessions.noteAgentPreset !== 'function') return
+  Reflect.apply(sessions.noteAgentPreset, sessions, [sessionId, agentPreset])
+}
+
+/** Select a WSL variant and update legacy session stores optimistically. */
+export async function selectWslAgentPreset(
+  api: AgentPresetsApi,
+  sessions: unknown,
+  sessionId: string,
+  target: string,
+): Promise<boolean> {
+  const selected = await api.select({ sessionId, agentPreset: target })
+  if (!selected.result.ok) return false
+  noteAgentPresetIfAvailable(sessions, sessionId, target)
+  return true
+}
+
 interface RpcConnection {
   call(channel: string, endpoint: string, payload: unknown): Promise<unknown>
 }

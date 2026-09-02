@@ -349,6 +349,7 @@ async function materializeVariants(
   dshHome: string,
   shellPath: string,
   fsPath: string,
+  cordisToolPath: string,
 ): Promise<void> {
   const presets = await agentPresets.list()
   const userRoot = join(dshHome, '.agent-presets')
@@ -358,7 +359,7 @@ async function materializeVariants(
     if (isWslVariantId(preset.id)) continue
     const variantId = variantIdFor(preset.id)
     const source = await agentPresets.read(preset.id)
-    const transformed = transformPresetForWsl(source, shellPath, fsPath)
+    const transformed = transformPresetForWsl(source, shellPath, fsPath, cordisToolPath)
     const dir = join(userRoot, variantId)
     const staging = `${dir}.staging`
     rmSync(staging, { recursive: true, force: true })
@@ -435,11 +436,12 @@ export function apply(ctx: Context, config: Config): void {
   const packageRoot = fileURLToPath(new URL('..', import.meta.url))
   const shellPath = join(packageRoot, 'lib', 'shell.js').replace(/\\/g, '/')
   const fsPath = join(packageRoot, 'lib', 'fs.js').replace(/\\/g, '/')
+  const cordisToolPath = join(packageRoot, 'lib', 'tool-cordis-wsl.js').replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
   if (agentPresets !== undefined) {
     ctx.effect(() => {
-      void materializeVariants(agentPresets, dshHome, shellPath, fsPath).catch((error) => {
+      void materializeVariants(agentPresets, dshHome, shellPath, fsPath, cordisToolPath).catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or
         // unreadable source preset must not take the whole plugin down, but
         // the failure is surfaced loudly rather than hidden.

@@ -109,6 +109,20 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
   return updated
 }
 
+/** Point the Creator tool row at the WSL-safe adapter entry. */
+function replaceRowName(
+  lines: readonly string[],
+  span: { start: number; end: number },
+  modulePath: string,
+): string[] {
+  const block = lines.slice(span.start, span.end)
+  const nameIndex = block.findIndex(line => /^\s+name:\s+/.test(line))
+  const nameLine = `  name: '${modulePath.replace(/'/g, "''")}'`
+  if (nameIndex < 0) block.splice(1, 0, nameLine)
+  else block[nameIndex] = nameLine
+  return block
+}
+
 /**
  * Transform one source preset composition into its WSL variant: drop the
  * execution-world rows, keep everything else verbatim, and append the WSL
@@ -123,9 +137,15 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  * @param source - the source composition text.
  * @param shellPath - absolute path of the plugin's built WSL shell provider.
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
+ * @param cordisToolPath - optional WSL-safe Creator tool adapter entry.
  * @returns the variant composition text.
  */
-export function transformPresetForWsl(source: string, shellPath: string, fsPath: string): string {
+export function transformPresetForWsl(
+  source: string,
+  shellPath: string,
+  fsPath: string,
+  cordisToolPath?: string,
+): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
   const kept: string[] = []
@@ -141,6 +161,10 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
     if (id === 'persona' && !personaAppended && appendablePersona(lines, span)) {
       kept.push(...appendPersona(lines, span))
       personaAppended = true
+      continue
+    }
+    if (id === 'tool-cordis' && cordisToolPath !== undefined) {
+      kept.push(...replaceRowName(lines, span, cordisToolPath))
       continue
     }
     kept.push(...lines.slice(span.start, span.end))

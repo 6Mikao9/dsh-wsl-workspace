@@ -10,6 +10,7 @@ import { isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host
 
 const SHELL = 'D:/plugin/lib/shell.js'
 const FS = 'D:/plugin/lib/fs.js'
+const CORDIS_TOOL = 'D:/plugin/lib/tool-cordis-wsl.js'
 
 /** A standard-like composition (the shape standard/code/cordis share). */
 const STANDARD_LIKE = `# identity
@@ -177,6 +178,14 @@ test('a top-level editor is replaced instead of registered twice', () => {
 test('transform preserves unknown rows verbatim', () => {
   const out = transformPresetForWsl(`${STANDARD_LIKE}\n- id: my-custom-tool\n  name: '@me/dsh-custom'\n`, SHELL, FS)
   assert.ok(out.includes("- id: my-custom-tool\n  name: '@me/dsh-custom'"), 'unknown row kept')
+})
+
+test('Creator variants use the WSL-safe Cordis tool adapter', () => {
+  const out = transformPresetForWsl(`- id: tool-cordis
+  name: '@deepseek-ai/dsh-tool-cordis'
+`, SHELL, FS, CORDIS_TOOL)
+  assert.ok(out.includes(`- id: tool-cordis\n  name: '${CORDIS_TOOL}'`))
+  assert.ok(!out.includes("name: '@deepseek-ai/dsh-tool-cordis'"))
 })
 
 test('transform handles an empty source', () => {

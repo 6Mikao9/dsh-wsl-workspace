@@ -4,7 +4,7 @@
 // behind whenever a chunk's content hash changes. Shipping those stale
 // chunks is dead weight at best and has repeatedly tripped releases
 // (0.2.3 shipped an old inlined-schemastery chunk that dsh.so's static scan
-// flagged). This script walks the import graph from the four entries and
+// flagged). This script walks the import graph from the five entries and
 // deletes every lib/*.js / *.js.map nothing references:
 //   node scripts/prune-lib.mjs
 import { readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -16,7 +16,7 @@ function dirname0() {
   return new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 }
 
-const ENTRIES = ['index.js', 'shell.js', 'fs.js', 'client.js']
+const ENTRIES = ['index.js', 'shell.js', 'fs.js', 'tool-cordis-wsl.js', 'client.js']
 
 function chunkImports(file) {
   const source = readFileSync(join(libDir, file), 'utf8')

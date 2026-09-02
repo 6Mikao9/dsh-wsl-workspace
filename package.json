@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl-workspace",
   "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "repository": {
     "type": "git",
@@ -17,6 +17,7 @@
     ".": "./lib/index.js",
     "./shell": "./lib/shell.js",
     "./fs": "./lib/fs.js",
+    "./tool-cordis-wsl": "./lib/tool-cordis-wsl.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
@@ -58,11 +59,18 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/schemastery": "*",
     "@deepseek-ai/dsh-fs": "*",
     "@deepseek-ai/dsh-fs-local": "*",
     "@deepseek-ai/dsh-shell": "*",
     "@deepseek-ai/dsh-subprocess": "*",
+    "@deepseek-ai/dsh-tool-cordis": "*",
     "@deepseek-ai/dsh-timeout": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tool-cordis": {
+      "optional": true
+    }
   },
   "files": [
     "lib",

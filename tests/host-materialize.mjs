@@ -98,17 +98,24 @@ const PREFAB_SRC = `# prefab-like source preset (win32-only custom bash + local 
       config:
         maxOutputChars: 16000
 `
+const CORDIS_SRC = `${STANDARD_SRC}
+- id: tool-cordis
+  name: '@deepseek-ai/dsh-tool-cordis'
+`
 const sources = {
   standard: { path: join(home, 'src-standard', 'agent.cordis.yml'), text: STANDARD_SRC },
   minimal: { path: join(home, 'src-minimal', 'agent.cordis.yml'), text: MINIMAL_SRC },
+  cordis: { path: join(home, 'src-cordis', 'agent.cordis.yml'), text: CORDIS_SRC },
   'third-party-local': { path: join(home, 'src-third-party', 'agent.cordis.yml'), text: PREFAB_SRC },
 }
 // Source display metadata with declared roster order (the shipped layout).
 mkdirSync(join(home, 'src-standard'), { recursive: true })
 mkdirSync(join(home, 'src-minimal'), { recursive: true })
+mkdirSync(join(home, 'src-cordis'), { recursive: true })
 mkdirSync(join(home, 'src-third-party'), { recursive: true })
 writeFileSync(join(home, 'src-standard', 'preset.yml'), 'name: 标准模式\norder: 1\n', 'utf8')
 writeFileSync(join(home, 'src-minimal', 'preset.yml'), 'name: 极简模式\norder: 3\n', 'utf8')
+writeFileSync(join(home, 'src-cordis', 'preset.yml'), 'name: 创造模式\norder: 4\n', 'utf8')
 writeFileSync(join(home, 'src-third-party', 'preset.yml'), 'name: Third Party Local\norder: 8\n', 'utf8')
 // A source preset is an opaque, self-contained unit. Assets must travel
 // without the WSL plugin knowing their names, extensions, or consumers.
@@ -178,6 +185,13 @@ assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
 assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the PTY group (duplicate bash registration + unsupported win32 PTY)')
 assert(!minYaml.includes('persistent-bash'), 'minimal variant drops persistent-bash')
+
+const cordisVariant = join(home, '.agent-presets', 'wsl-cordis')
+const cordisYaml = readFileSync(join(cordisVariant, 'agent.cordis.yml'), 'utf8')
+assert(existsSync(cordisVariant), 'wsl-cordis variant generated')
+const cordisToolRow = /- id: tool-cordis\n  name: '(.+tool-cordis-wsl\.js)'/.exec(cordisYaml)
+assert(cordisToolRow !== null && existsSync(cordisToolRow[1]), 'Creator variant points at the real WSL-safe adapter')
+assert(!cordisYaml.includes("name: '@deepseek-ai/dsh-tool-cordis'"), 'Creator variant does not double-register upstream inspect providers')
 
 const prefabVariant = join(home, '.agent-presets', 'wsl-third-party-local')
 const prefabYaml = readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8')

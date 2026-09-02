@@ -1,11 +1,59 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  agentPresetOf,
+  noteAgentPresetIfAvailable,
   resolveAgentPresetsApi,
+  selectWslAgentPreset,
   startWorkspaceSession,
+  type AgentPresetsApi,
   type AgentPresetResult,
   type AgentPresetRoster,
 } from '../src/client/compat.ts'
+
+test('reads legacy and alpha session preset projections', () => {
+  assert.equal(agentPresetOf({ agentPreset: 'standard' }), 'standard')
+  assert.equal(agentPresetOf({ projectionValues: { agentPreset: 'code' } }), 'code')
+  assert.equal(agentPresetOf({}), undefined)
+})
+
+test('notes a selected preset only on legacy session stores', () => {
+  const calls: string[] = []
+  const legacy = {
+    prefix: 'legacy',
+    noteAgentPreset(this: { prefix: string }, id: string, preset: string) {
+      calls.push(`${this.prefix}:${id}:${preset}`)
+    },
+  }
+  noteAgentPresetIfAvailable(legacy, 'session-1', 'wsl-standard')
+  noteAgentPresetIfAvailable({}, 'session-2', 'wsl-code')
+  assert.deepEqual(calls, ['legacy:session-1:wsl-standard'])
+})
+
+test('selects a WSL variant and updates legacy session stores', async () => {
+  const calls: string[] = []
+  const api: AgentPresetsApi = {
+    list: async () => ({ result: { ok: true, value: { presets: [] } } }),
+    select: async ({ agentPreset }: { sessionId: string; agentPreset: string }) => {
+      calls.push(`select:${agentPreset}`)
+      return { result: { ok: true, value: agentPreset } } as const
+    },
+  }
+  const sessions = {
+    noteAgentPreset: (_id: string, preset: string) => calls.push(`note:${preset}`),
+  }
+
+  assert.equal(await selectWslAgentPreset(
+    api,
+    sessions,
+    'session-creator',
+    'wsl-cordis',
+  ), true)
+  assert.deepEqual(calls, [
+    'select:wsl-cordis',
+    'note:wsl-cordis',
+  ])
+})
 
 test('prefers the legacy namespaced API when old DSH also exposes rpc', async () => {
   const calls: string[] = []

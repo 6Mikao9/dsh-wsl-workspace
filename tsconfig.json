@@ -32,6 +32,7 @@
       "@deepseek-ai/dsh-fs-local": ["../../packages/fs/fs-local/lib/types"],
       "@deepseek-ai/dsh-shell": ["../../packages/shell/shell/lib/types"],
       "@deepseek-ai/dsh-subprocess": ["../../packages/subprocess/subprocess/lib/types"],
+      "@deepseek-ai/dsh-tool-cordis": ["../../packages/extensions/tool-cordis/lib/types"],
       "@deepseek-ai/dsh-timeout": ["../../packages/util/timeout/lib/types"],
       "@deepseek-ai/dsh-client-runtime/client": ["../../packages/client/runtime/lib/types/client"],
       "@deepseek-ai/dsh-api-remotes/client": ["../../packages/api/remotes/lib/types/client/index.d.ts"],
