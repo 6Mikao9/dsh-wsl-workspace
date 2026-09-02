@@ -11,7 +11,6 @@
  * hero picker) converges on the WSL-backed composition automatically.
  */
 
-import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale), the
 // runtime's ClientContext, and the ui-sidebar SlotMap merge (the
 // 'sidebar.footer.action' entry) into this program.
@@ -23,6 +22,7 @@ import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
+import { resolveAgentPresetsApi, startWorkspaceSession } from './compat.ts'
 
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces']
@@ -47,7 +47,7 @@ interface WslSessionsFace {
 /** Minimal workspaces-service face (create + start-session only). */
 interface WslWorkspacesFace {
   create(input: { path: string }): Promise<{ workspaceId: string }>
-  startSession(workspaceId?: string): void
+  startSession?(workspaceId?: string): void
 }
 
 /**
@@ -55,9 +55,15 @@ interface WslWorkspacesFace {
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx: ClientContext): void {
-  const { api } = ctx.get('connection') as ConnectionHandle
+  const agentPresets = resolveAgentPresetsApi(ctx.get('connection'))
   const workspaces = ctx.get('workspaces') as unknown as WslWorkspacesFace
   const sessions = ctx.get('sessions') as unknown as WslSessionsFace
+
+  // `uiWorkspace` is absent before DSH 0.1.2-alpha, so it must remain an
+  // optional, late lookup rather than a hard Cordis injection dependency.
+  const startSession = (workspaceId?: string): void => {
+    startWorkspaceSession(workspaces, ctx.get('uiWorkspace'), workspaceId)
+  }
 
   ensureStyles()
 
@@ -80,7 +86,7 @@ export function apply(ctx: ClientContext): void {
     checkPreset: async (): Promise<string | undefined> => {
       let roster
       try {
-        const response = await api.agentPresets.list({})
+        const response = await agentPresets.list({})
         roster = response.result
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -106,13 +112,13 @@ export function apply(ctx: ClientContext): void {
           await registerWindowsApi(linuxPath, distro, username)
           const canonical = canonicalWindowsPath(winPath)
           if (canonical !== null) wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
-          workspaces.startSession(view.workspaceId)
+          startSession(view.workspaceId)
           return undefined
         }
         const uncPath = joinUnc(distro, linuxPath)
         const view = await workspaces.create({ path: uncPath })
         await setWorkspaceUserApi(uncPath, username)
-        workspaces.startSession(view.workspaceId)
+        startSession(view.workspaceId)
         return undefined
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -147,9 +153,7 @@ export function apply(ctx: ClientContext): void {
     let variants = new Set<string>()
     let defaultPreset: string | undefined
     const refreshRoster = (): void => {
-      void api.agentPresets.list({}).then((response: {
-        result: { ok: boolean; value: { presets: { id: string; broken?: string; isDefault?: boolean }[] } }
-      }) => {
+      void agentPresets.list({}).then((response) => {
         const result = response.result
         if (!result.ok) return
         variants = new Set(result.value.presets
@@ -204,7 +208,7 @@ export function apply(ctx: ClientContext): void {
         if (!variants.has(target)) continue
         if (inFlight.has(id) || (attempts.get(id) ?? 0) >= MAX_ATTEMPTS) continue
         inFlight.add(id)
-        void api.agentPresets.select({ sessionId: id, agentPreset: target })
+        void agentPresets.select({ sessionId: id, agentPreset: target })
           .then((response: { result: { ok: boolean } }) => {
             if (response.result.ok) sessions.noteAgentPreset(id, target)
           })
