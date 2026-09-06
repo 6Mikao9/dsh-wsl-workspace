@@ -4,3 +4,6 @@
 # Keep the local dev junction (`node_modules` → DSH profile fallback) out of
 # version control.
 node_modules/
+
+pnpm-lock.yaml
+package-lock.json
