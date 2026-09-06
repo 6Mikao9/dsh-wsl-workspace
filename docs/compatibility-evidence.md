@@ -4,10 +4,7 @@ The `dsh.compatibility.dshReleases` records in `package.json` are backed by the
 reproducible procedure in `scripts/verify-dsh-compat.sh`. Re-run it before
 changing any declaration:
 
-```powershell
-scripts/verify-dsh-compat.sh 0.1.0-rc.7 0.1.0-rc.8 0.1.1-rc.1 0.1.1-rc.2
-```
-
+scripts/verify-dsh-compat.sh 0.1.0-rc.7 0.1.0-rc.8 0.1.1-rc.1 0.1.1-rc.2 0.1.2-rc.1
 ## Method
 
 For every declared release the script:
@@ -27,16 +24,15 @@ For every declared release the script:
 A release is declared `compatible` only when install, start, and uninstall all
 hold. Any failure would be declared `unknown` together with the failing step.
 
-## Results (2026-08-29, plugin 0.4.0, Windows 11 + WSL2 Ubuntu)
-
+## Results (2026-09-03, plugin 0.4.1, Windows 11 + WSL2 Ubuntu)
 | DSH release | install | start (route 200, no plugin errors) | uninstall (route gone) | verdict |
 |---|---|---|---|---|
 | 0.1.0-rc.7 | ✔ | ✔ | ✔ (route 405) | compatible |
 | 0.1.0-rc.8 | ✔ | ✔ | ✔ (route gone) | compatible |
 | 0.1.1-rc.1 | ✔ | ✔ | ✔ | compatible |
 | 0.1.1-rc.2 | ✔ | ✔ | ✔ | compatible |
-
-All four boots produced logs without a single `dsh-wsl-workspace` error line;
+| 0.1.2-rc.1 | ✔ | ✔ | ✔ | compatible |
+All five boots produced logs without a single `dsh-wsl-workspace` error line;
 the verification transcript (per-version `boot-with-plugin.log`,
 `boot-without-plugin.log`, `plugin-add.log`, `plugin-remove.log`) is retained
 in the runner's temp directory by the script and printed as a summary table of
