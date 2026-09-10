@@ -292,6 +292,9 @@ async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Pr
  * the catalog.
  */
 function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefined {
+  // Windows editors save UTF-8 with a BOM; a leading BOM must not make the
+  // opening `---` line unmatchable and silently drop the skill.
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1)
   const firstLineEnd = raw.indexOf('\n')
   if (firstLineEnd < 0) return undefined
   if (raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') return undefined
@@ -328,7 +331,11 @@ function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefin
       modelInvocable: !frontmatterBoolean(fields, 'disable-model-invocation'),
       userInvocable: frontmatterBoolean(fields, 'user-invocable', true),
     },
-    content: raw.slice(closing + 1).trim(),
+    // `findFrontmatterEnd` returns the index of the body's FIRST character
+    // (the newline after the closing `---` plus one), so slicing at `closing`
+    // is what keeps it: `closing + 1` dropped the body's first character and
+    // made the byte after the delimiter look like the body.
+    content: raw.slice(closing).trim(),
   }
 }
 

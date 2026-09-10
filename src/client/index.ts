@@ -90,27 +90,31 @@ interface WslLegacyConnection {
 export function apply(ctx: ClientContext): void {
   const workspaces = ctx.get('workspaces') as unknown as WslWorkspacesFace
   const sessions = ctx.get('sessions') as unknown as WslSessionsFace
-  // Version-dependent services read dynamically (never in `inject`), so both
-  // DSH v0.1.1-rc.2 and v0.1.2-rc.1+ can load this plugin.
-  const agentPresets = ctx.get('remote.agentPresets') as unknown as WslAgentPresetsNamespace | undefined
-  const connection = ctx.get('connection') as unknown as WslLegacyConnection | undefined
-  const uiWorkspace = ctx.get('uiWorkspace') as unknown as WslUiWorkspaceFace | undefined
-
-  // Feature-detection flags for DSH version compatibility.
-  const hasUiWorkspace = uiWorkspace !== undefined
+  // Version-dependent services are resolved ON USE - never through `inject`
+  // (a release without the service would refuse to mount the plugin at all)
+  // and never once at apply time. This plugin applies before the UI domain
+  // that publishes `uiWorkspace` registers its service, so a one-shot read
+  // caches `undefined` for the whole page life: on v0.1.2-rc.1+ that silently
+  // disabled session creation (see resolveSessionStarter).
+  const legacyApi = (): WslLegacyConnection['api'] =>
+    (ctx.get('connection') as unknown as WslLegacyConnection | undefined)?.api
+  const remoteAgentPresets = (): WslAgentPresetsNamespace | undefined =>
+    ctx.get('remote.agentPresets') as unknown as WslAgentPresetsNamespace | undefined
+  const uiWorkspaceService = (): WslUiWorkspaceFace | undefined =>
+    ctx.get('uiWorkspace') as unknown as WslUiWorkspaceFace | undefined
   const hasNoteAgentPreset = typeof sessions.noteAgentPreset === 'function'
-  const hasRemoteNamespace = agentPresets !== undefined
-  const hasLegacyApi = connection?.api !== undefined
 
   /** Unified agent-preset list: new `remote.agentPresets` namespace (v0.1.2-rc.1+) or legacy `connection.api` (v0.1.1-rc.2). */
   const listAgentPresets = async (): Promise<{ ok: boolean; presets: { id: string; broken?: string; isDefault?: boolean }[]; error?: string }> => {
-    if (hasRemoteNamespace && agentPresets) {
+    const agentPresets = remoteAgentPresets()
+    if (agentPresets !== undefined) {
       const r = await agentPresets.list()
       if (!r.ok) return { ok: false, presets: [], error: r.error?.message ?? 'list failed' }
       return { ok: true, presets: r.value?.presets ?? [] }
     }
-    if (hasLegacyApi && connection?.api) {
-      const r = await connection.api.agentPresets.list({})
+    const api = legacyApi()
+    if (api !== undefined) {
+      const r = await api.agentPresets.list({})
       if (!r.result.ok) return { ok: false, presets: [], error: r.result.error?.message ?? 'list failed' }
       return { ok: true, presets: r.result.value?.presets ?? [] }
     }
@@ -119,23 +123,40 @@ export function apply(ctx: ClientContext): void {
 
   /** Unified agent-preset select: new `agentPresets.select(id, preset)` or legacy `connection.api.select({...})`. */
   const selectAgentPreset = async (sessionId: string, presetId: string): Promise<{ ok: boolean }> => {
-    if (hasRemoteNamespace && agentPresets) {
+    const agentPresets = remoteAgentPresets()
+    if (agentPresets !== undefined) {
       return agentPresets.select(sessionId, presetId)
     }
-    if (hasLegacyApi && connection?.api) {
-      const r = await connection.api.agentPresets.select({ sessionId, agentPreset: presetId })
+    const api = legacyApi()
+    if (api !== undefined) {
+      const r = await api.agentPresets.select({ sessionId, agentPreset: presetId })
       return { ok: r.result.ok }
     }
     return { ok: false }
   }
 
-  /** Start a session in a workspace — v0.1.2-rc.1+ uses uiWorkspace; v0.1.1-rc.2 uses workspaces. */
-  const startSessionCompat = (workspaceId: string): void => {
-    if (hasUiWorkspace && uiWorkspace) {
-      uiWorkspace.startSession(workspaceId)
-    } else if (typeof workspaces.startSession === 'function') {
-      workspaces.startSession(workspaceId)
+  /**
+   * Resolve how this release opens a session for a workspace - v0.1.2-rc.1+
+   * exposes `uiWorkspace.startSession`, v0.1.1-rc.2 keeps it on `workspaces`.
+   *
+   * Resolved BEFORE the workspace is written. A release that offers neither
+   * cannot open a session, and a silent fall-through would leave the workspace
+   * behind with an empty `sessionIds` while the dialog still reports success;
+   * failing here names the missing capability instead.
+   * @returns the starter for the service this release actually exposes.
+   * @throws Error naming both candidates when neither service is available.
+   */
+  const resolveSessionStarter = (): (workspaceId: string) => void | Promise<void> => {
+    const ui = uiWorkspaceService()
+    if (ui !== undefined) return (workspaceId) => { ui.startSession(workspaceId) }
+    const legacyStart = workspaces.startSession
+    if (typeof legacyStart === 'function') {
+      return (workspaceId) => { Reflect.apply(legacyStart, workspaces, [workspaceId]) }
     }
+    throw new Error(
+      'workspace session API unavailable: this DSH release exposes neither '
+      + 'uiWorkspace.startSession nor workspaces.startSession',
+    )
   }
 
   /** Read agent preset — v0.1.2-rc.1+ uses projectionValues; v0.1.1-rc.2 uses direct field. */
@@ -190,6 +211,9 @@ export function apply(ctx: ClientContext): void {
     check: (distro, path) => checkApi(distro, path),
     createWorkspace: async (linuxPath, username, distro): Promise<string | undefined> => {
       try {
+        // Before any write: without a session starter the workspace below
+        // would be created and never opened.
+        const startSession = resolveSessionStarter()
         const winPath = mntToWindowsPath(linuxPath)
         if (winPath !== null) {
           // `/mnt/<drive>` workspace: the workspace registry realpath/stats
@@ -200,13 +224,13 @@ export function apply(ctx: ClientContext): void {
           await registerWindowsApi(linuxPath, distro, username)
           const canonical = canonicalWindowsPath(winPath)
           if (canonical !== null) wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
-          startSessionCompat(view.workspaceId)
+          await startSession(view.workspaceId)
           return undefined
         }
         const uncPath = joinUnc(distro, linuxPath)
         const view = await workspaces.create({ path: uncPath })
         await setWorkspaceUserApi(uncPath, username)
-        startSessionCompat(view.workspaceId)
+        await startSession(view.workspaceId)
         return undefined
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -252,6 +276,11 @@ export function apply(ctx: ClientContext): void {
         defaultPreset = result.presets.find(
           (entry: { id: string; isDefault?: boolean }) => entry.isDefault === true,
         )?.id
+        // The roster is an INPUT to binding. It can land after the first pass
+        // (and after apply()), and nothing else would re-run that pass: the
+        // session store only emits when a session changes, so a blank session
+        // that was already there would stay unbound until the user acted.
+        maybeBind()
       }).catch(() => {
         // A failed roster read leaves the previous mapping; sessions stay on
         // their current composition until the next refresh.
@@ -266,6 +295,9 @@ export function apply(ctx: ClientContext): void {
           if (canonical !== null) next.add(canonical)
         }
         wslWindowsPaths = next
+        // Same late-input rule as the roster: the `/mnt/<drive>` key set
+        // decides binding for drive-cwd sessions.
+        maybeBind()
       }).catch(() => {
         // A failed store read leaves the previous set; sessions stay on
         // their current composition until the next refresh.
