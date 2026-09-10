@@ -39,6 +39,19 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.4.1 — 2026-09-03
+
+- **DSH v0.1.2-rc.1 compatibility**: Added backward compatibility support for DSH v0.1.2-rc.1 and later versions through feature detection and compatibility wrappers. The plugin now automatically detects the DSH version at runtime and uses the appropriate API:
+  - `uiWorkspace.startSession()` for v0.1.2-rc.1+
+  - `workspaces.startSession()` for v0.1.1-rc.2 and earlier
+  - `summary.projectionValues?.agentPreset` for v0.1.2-rc.1+
+  - `summary.agentPreset` for v0.1.1-rc.2 and earlier
+  - Projection-based auto-sync for v0.1.2-rc.1+
+  - `sessions.noteAgentPreset()` for v0.1.1-rc.2 and earlier
+- **Updated compatibility manifest**: Added v0.1.2-rc.1 to the `dsh.compatibility.dshReleases` declaration.
+- **Fixed `without inject` crash on v0.1.2-rc.1+**: the agent-preset roster is read through the `remote.agentPresets` namespace service via `ctx.get('remote.agentPresets')` (topology-free store lookup) instead of the `remote` aggregate's `agentPresets` property, which Cordis' associate proxy rejects when the dotted property is not declared in `inject`. `inject` stays limited to the services both DSH generations share (`slots`, `locale`, `sessions`, `workspaces`).
+- **Compatibility manifest**: declared v0.1.3-alpha.1 compatible (its plugin-facing API surface matches v0.1.2-rc.1). Final adaptation notes consolidated in `docs/COMPATIBILITY_SUMMARY.md` (supersedes the root-level draft plans).
+
 ### 0.4.0 — 2026-08-29
 
 Follow-ups from the [#12](https://github.com/6Mikao9/dsh-wsl-workspace/issues/12) limitation list and the [#13](https://github.com/6Mikao9/dsh-wsl-workspace/issues/13) compatibility work:

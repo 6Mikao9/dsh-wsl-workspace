@@ -11,10 +11,11 @@
  * hero picker) converges on the WSL-backed composition automatically.
  */
 
-import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
-// Type-only: pulls the locale plugin's Context merge (ctx.locale), the
-// runtime's ClientContext, and the ui-sidebar SlotMap merge (the
-// 'sidebar.footer.action' entry) into this program.
+// Type-only: pulls the locale plugin's Context merge (ctx.locale) and the
+// ui-sidebar SlotMap merge (the 'sidebar.footer.action' entry) into this
+// program. Version-dependent services (`remote`, `connection.api`,
+// `uiWorkspace`) are read dynamically via ctx.get() so both DSH v0.1.1-rc.2
+// and v0.1.2-rc.1+ can load this plugin.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -25,7 +26,7 @@ import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
 
 /** Required services (cordis fiber inject). */
-export const inject = ['slots', 'locale', 'connection', 'sessions', 'workspaces']
+export const inject = ['slots', 'locale', 'sessions', 'workspaces']
 
 /** The legacy standalone WSL preset id (folded into the mode variants). */
 const LEGACY_WSL_PRESET_ID = 'wsl'
@@ -38,26 +39,120 @@ const LEGACY_WSL_PRESET_ID = 'wsl'
  */
 interface WslSessionsFace {
   list: {
-    getSnapshot(): { ids: string[]; byId: Record<string, { blank: boolean; cwd?: string; agentPreset?: string }> }
+    getSnapshot(): {
+      ids: string[]
+      byId: Record<string, {
+        blank: boolean
+        cwd?: string
+        /** v0.1.1-rc.2 direct field */
+        agentPreset?: string
+        /** v0.1.2-rc.1+ projection value */
+        projectionValues?: Readonly<{ agentPreset?: string | null }>
+      }>
+    }
     subscribe(fn: () => void): () => void
   }
-  noteAgentPreset(sessionId: string, agentPreset: string): void
+  /** v0.1.1-rc.2 only — absent in v0.1.2-rc.1+ (projection auto-syncs). */
+  noteAgentPreset?(sessionId: string, agentPreset: string): void
 }
 
-/** Minimal workspaces-service face (create + start-session only). */
+/** Minimal workspaces-service face (create only; startSession moved out in v0.1.2-rc.1+). */
 interface WslWorkspacesFace {
   create(input: { path: string }): Promise<{ workspaceId: string }>
+  /** v0.1.1-rc.2 only — removed in v0.1.2-rc.1+. */
+  startSession?(workspaceId?: string): void
+}
+
+/** v0.1.2-rc.1+ only — replaces `workspaces.startSession`. */
+interface WslUiWorkspaceFace {
   startSession(workspaceId?: string): void
 }
 
+/** v0.1.2-rc.1+ agentPresets 命名空间服务（经 ctx.get('remote.agentPresets') 动态取，免 inject、无 associate 陷阱）。 */
+interface WslAgentPresetsNamespace {
+  list(): Promise<{ ok: boolean; value?: { presets: { id: string; broken?: string; isDefault?: boolean }[] }; error?: { message: string } }>
+  select(sessionId: string, presetId: string): Promise<{ ok: boolean }>
+}
+
+/** 旧版 connection 服务最小接口（v0.1.1-rc.2 及更早），api 属性承载远程调用。 */
+interface WslLegacyConnection {
+  api?: {
+    agentPresets: {
+      list(input: Record<string, never>): Promise<{ result: { ok: boolean; value?: { presets: { id: string; broken?: string; isDefault?: boolean }[] }; error?: { message: string } } }>
+      select(input: { sessionId: string; agentPreset: string }): Promise<{ result: { ok: boolean } }>
+    }
+  }
+}
 /**
  * Mount the sidebar action and the auto-binding effect.
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx: ClientContext): void {
-  const { api } = ctx.get('connection') as ConnectionHandle
   const workspaces = ctx.get('workspaces') as unknown as WslWorkspacesFace
   const sessions = ctx.get('sessions') as unknown as WslSessionsFace
+  // Version-dependent services read dynamically (never in `inject`), so both
+  // DSH v0.1.1-rc.2 and v0.1.2-rc.1+ can load this plugin.
+  const agentPresets = ctx.get('remote.agentPresets') as unknown as WslAgentPresetsNamespace | undefined
+  const connection = ctx.get('connection') as unknown as WslLegacyConnection | undefined
+  const uiWorkspace = ctx.get('uiWorkspace') as unknown as WslUiWorkspaceFace | undefined
+
+  // Feature-detection flags for DSH version compatibility.
+  const hasUiWorkspace = uiWorkspace !== undefined
+  const hasNoteAgentPreset = typeof sessions.noteAgentPreset === 'function'
+  const hasRemoteNamespace = agentPresets !== undefined
+  const hasLegacyApi = connection?.api !== undefined
+
+  /** Unified agent-preset list: new `remote.agentPresets` namespace (v0.1.2-rc.1+) or legacy `connection.api` (v0.1.1-rc.2). */
+  const listAgentPresets = async (): Promise<{ ok: boolean; presets: { id: string; broken?: string; isDefault?: boolean }[]; error?: string }> => {
+    if (hasRemoteNamespace && agentPresets) {
+      const r = await agentPresets.list()
+      if (!r.ok) return { ok: false, presets: [], error: r.error?.message ?? 'list failed' }
+      return { ok: true, presets: r.value?.presets ?? [] }
+    }
+    if (hasLegacyApi && connection?.api) {
+      const r = await connection.api.agentPresets.list({})
+      if (!r.result.ok) return { ok: false, presets: [], error: r.result.error?.message ?? 'list failed' }
+      return { ok: true, presets: r.result.value?.presets ?? [] }
+    }
+    return { ok: false, presets: [], error: 'no remote api available' }
+  }
+
+  /** Unified agent-preset select: new `agentPresets.select(id, preset)` or legacy `connection.api.select({...})`. */
+  const selectAgentPreset = async (sessionId: string, presetId: string): Promise<{ ok: boolean }> => {
+    if (hasRemoteNamespace && agentPresets) {
+      return agentPresets.select(sessionId, presetId)
+    }
+    if (hasLegacyApi && connection?.api) {
+      const r = await connection.api.agentPresets.select({ sessionId, agentPreset: presetId })
+      return { ok: r.result.ok }
+    }
+    return { ok: false }
+  }
+
+  /** Start a session in a workspace — v0.1.2-rc.1+ uses uiWorkspace; v0.1.1-rc.2 uses workspaces. */
+  const startSessionCompat = (workspaceId: string): void => {
+    if (hasUiWorkspace && uiWorkspace) {
+      uiWorkspace.startSession(workspaceId)
+    } else if (typeof workspaces.startSession === 'function') {
+      workspaces.startSession(workspaceId)
+    }
+  }
+
+  /** Read agent preset — v0.1.2-rc.1+ uses projectionValues; v0.1.1-rc.2 uses direct field. */
+  const getAgentPreset = (summary: { agentPreset?: string; projectionValues?: { agentPreset?: string | null } }): string | undefined => {
+    if (summary.projectionValues?.agentPreset !== undefined) {
+      const v = summary.projectionValues.agentPreset
+      return v === null ? undefined : v
+    }
+    return summary.agentPreset
+  }
+
+  /** Note preset change — v0.1.1-rc.2 calls noteAgentPreset; v0.1.2-rc.1+ is auto-synced via projection. */
+  const noteAgentPresetCompat = (sessionId: string, presetId: string): void => {
+    if (hasNoteAgentPreset && sessions.noteAgentPreset) {
+      sessions.noteAgentPreset(sessionId, presetId)
+    }
+  }
 
   ensureStyles()
 
@@ -80,13 +175,12 @@ export function apply(ctx: ClientContext): void {
     checkPreset: async (): Promise<string | undefined> => {
       let roster
       try {
-        const response = await api.agentPresets.list({})
-        roster = response.result
+        roster = await listAgentPresets()
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
       }
-      if (!roster.ok) return roster.error.message
-      const healthy = roster.value.presets.find((entry: { id: string; broken?: string }) =>
+      if (!roster.ok) return roster.error
+      const healthy = roster.presets.find((entry: { id: string; broken?: string }) =>
         entry.id.startsWith('wsl-') && entry.broken === undefined)
       if (healthy === undefined) return t('error.presetMissing')
       return undefined
@@ -106,13 +200,13 @@ export function apply(ctx: ClientContext): void {
           await registerWindowsApi(linuxPath, distro, username)
           const canonical = canonicalWindowsPath(winPath)
           if (canonical !== null) wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
-          workspaces.startSession(view.workspaceId)
+          startSessionCompat(view.workspaceId)
           return undefined
         }
         const uncPath = joinUnc(distro, linuxPath)
         const view = await workspaces.create({ path: uncPath })
         await setWorkspaceUserApi(uncPath, username)
-        workspaces.startSession(view.workspaceId)
+        startSessionCompat(view.workspaceId)
         return undefined
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -147,16 +241,15 @@ export function apply(ctx: ClientContext): void {
     let variants = new Set<string>()
     let defaultPreset: string | undefined
     const refreshRoster = (): void => {
-      void api.agentPresets.list({}).then((response: {
-        result: { ok: boolean; value: { presets: { id: string; broken?: string; isDefault?: boolean }[] } }
+      void listAgentPresets().then((result: {
+        ok: boolean; presets: { id: string; broken?: string; isDefault?: boolean }[]
       }) => {
-        const result = response.result
         if (!result.ok) return
-        variants = new Set(result.value.presets
+        variants = new Set(result.presets
           .filter((entry: { id: string; broken?: string }) =>
             entry.broken === undefined && entry.id.startsWith('wsl-'))
           .map((entry: { id: string }) => entry.id))
-        defaultPreset = result.value.presets.find(
+        defaultPreset = result.presets.find(
           (entry: { id: string; isDefault?: boolean }) => entry.isDefault === true,
         )?.id
       }).catch(() => {
@@ -191,7 +284,7 @@ export function apply(ctx: ClientContext): void {
         const isWsl = isWslUnc(summary.cwd)
           || (canonical !== null && wslWindowsPaths.has(canonical))
         if (!isWsl) continue
-        const current = summary.agentPreset
+        const current = getAgentPreset(summary)
         if (current !== undefined && current.startsWith('wsl-')) continue
         // Legacy standalone `wsl` (now folded into the variants): remap it to
         // the default mode's variant, since the standalone preset no longer
@@ -204,9 +297,9 @@ export function apply(ctx: ClientContext): void {
         if (!variants.has(target)) continue
         if (inFlight.has(id) || (attempts.get(id) ?? 0) >= MAX_ATTEMPTS) continue
         inFlight.add(id)
-        void api.agentPresets.select({ sessionId: id, agentPreset: target })
-          .then((response: { result: { ok: boolean } }) => {
-            if (response.result.ok) sessions.noteAgentPreset(id, target)
+        void selectAgentPreset(id, target)
+          .then((result: { ok: boolean }) => {
+            if (result.ok) noteAgentPresetCompat(id, target)
           })
           .catch(() => {
             // A refused or aborted swap (session already produced output,
