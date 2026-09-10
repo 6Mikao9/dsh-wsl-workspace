@@ -1,0 +1,13 @@
+# Line endings. The repository stores LF for every text file; these rules make
+# every checkout reproduce those bytes.
+#
+# Why this matters here: `core.autocrlf=true` used to rewrite text files to CRLF
+# on checkout, and `lib/` is committed and published verbatim, so the SAME
+# commit produced two different npm tarballs depending on which machine packed
+# it (LF after a build, CRLF after a fresh checkout). With these rules a clean
+# checkout, a build, and `npm publish` all agree byte for byte.
+* text=auto eol=lf
+
+# Built bundles (lib/) are generated artifacts shipped byte-for-byte: never
+# normalise them, in either direction.
+lib/** -text
