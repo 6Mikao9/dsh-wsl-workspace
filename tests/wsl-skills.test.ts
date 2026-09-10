@@ -164,6 +164,34 @@ test('get() returns the parsed body', async () => {
   assert.equal(definition?.name, 'brainstorming')
 })
 
+test("get() keeps the body's first character when it starts right after the delimiter", async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  // No blank line between the closing `---` and the body: the existing
+  // SKILL_MD fixture always inserts one, and that blank line is exactly what
+  // hides an off-by-one in the body slice.
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'tight', 'SKILL.md'],
+    '---\nname: tight\ndescription: Body starts immediately\n---\nBody starts immediately.\nSecond line.\n')
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const [candidate] = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.ok(candidate !== undefined)
+  const definition = await provider.get(candidate, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition?.content, 'Body starts immediately.\nSecond line.')
+})
+
+test('get() keeps the whole body of a CRLF skill with no blank line after the delimiter', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'crlf', 'SKILL.md'],
+    '---\r\nname: crlf\r\ndescription: CRLF tight body\r\n---\r\nCRLF body first line.\r\n')
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const [candidate] = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.ok(candidate !== undefined)
+  const definition = await provider.get(candidate, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition?.content, 'CRLF body first line.')
+})
 test('skips pruned heavy directories and dot-directories while walking', async () => {
   const root = tree()
   // Skills deep inside node_modules or a dot-dir must NOT be discovered.

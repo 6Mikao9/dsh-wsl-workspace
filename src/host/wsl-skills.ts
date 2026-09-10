@@ -328,7 +328,11 @@ function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefin
       modelInvocable: !frontmatterBoolean(fields, 'disable-model-invocation'),
       userInvocable: frontmatterBoolean(fields, 'user-invocable', true),
     },
-    content: raw.slice(closing + 1).trim(),
+    // `findFrontmatterEnd` returns the index of the body's FIRST character
+    // (the newline after the closing `---` plus one), so slicing at `closing`
+    // is what keeps it: `closing + 1` dropped the body's first character and
+    // made the byte after the delimiter look like the body.
+    content: raw.slice(closing).trim(),
   }
 }
 
