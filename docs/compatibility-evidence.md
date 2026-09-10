@@ -88,3 +88,28 @@ immediately after the closing `---`) and a no-BOM control:
   `/home/mille/fu-rc1`;
 - `write` + `read` round-tripped `notes/probe.txt` as `WSL-WRITE-OK`, and an
   independent `stat` from inside the distribution reported `644 mille`.
+
+### The published artifact (2026-09-10, plugin 0.4.2)
+
+Every check above installs the plugin from the working tree. The artifact users
+actually receive was verified on its own: `npm pack` was extracted into a fresh
+case whose plugin payload is exactly the tarball's `files` set (`lib`, `src`,
+`cordis.patch.yml`, `package.json`, READMEs, LICENSE, NOTICE, images - no
+`tests/`, no `scripts/`), keeping only the harness's junctioned `node_modules`.
+
+| step | result |
+|---|---|
+| all three fixes present in the packed `lib` | BOM strip, lazy session starter, fail-loud message |
+| `dsh plugin --profile web add <tarball payload>` | ok |
+| check suite on that payload | 9/10 (`skills-real`, `host-api` exit 0; `typecheck` at baseline) |
+| browser Create & open on `0.1.2-rc.1` | workspace `sessionIds` non-empty, session `wsl-standard` |
+| uninstall (`dsh plugin remove`, boot again) | ok, route gone (405) |
+
+### Model turn on the legacy line (0.1.1-rc.2, final build)
+
+The same prompt on the legacy service shape (`connection.api.agentPresets` +
+`workspaces.startSession`) returned the same results: the `skill` tool delivered
+`<skill_instructions>\nOFFBYONE-MARKER-Z9Q7\nsecond line\n</skill_instructions>`,
+`bash uname -sr; pwd` answered `Linux 6.18.33.2-microsoft-standard-WSL2` and
+`/home/mille/fu-legacy`, and `write` + `read` round-tripped `WSL-WRITE-OK` with
+an in-distribution `stat` of `644 mille`.
