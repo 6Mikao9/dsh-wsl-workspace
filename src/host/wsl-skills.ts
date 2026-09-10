@@ -292,6 +292,9 @@ async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Pr
  * the catalog.
  */
 function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefined {
+  // Windows editors save UTF-8 with a BOM; a leading BOM must not make the
+  // opening `---` line unmatchable and silently drop the skill.
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1)
   const firstLineEnd = raw.indexOf('\n')
   if (firstLineEnd < 0) return undefined
   if (raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') return undefined

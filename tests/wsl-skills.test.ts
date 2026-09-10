@@ -192,6 +192,36 @@ test('get() keeps the whole body of a CRLF skill with no blank line after the de
   const definition = await provider.get(candidate, { cwd: CWD_WORKSPACE_ROOT })
   assert.equal(definition?.content, 'CRLF body first line.')
 })
+test('parses a skill saved with a UTF-8 BOM', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  // Notepad, VS Code's "UTF-8 with BOM" and PowerShell redirection all write
+  // this prefix; without BOM handling the opening `---` never matches and the
+  // skill disappears from the catalog entirely.
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'bom.md'],
+    '\uFEFF---\nname: bom\ndescription: Saved with a BOM\n---\nBody after the BOM.\n')
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const [candidate] = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.ok(candidate !== undefined)
+  assert.equal(candidate.name, 'bom')
+  assert.equal(candidate.description, 'Saved with a BOM')
+  const definition = await provider.get(candidate, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition?.content, 'Body after the BOM.')
+})
+
+test('parses a BOM skill whose body follows the delimiter directly', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'bom-tight', 'SKILL.md'],
+    '\uFEFF---\r\nname: bom-tight\r\ndescription: BOM and a tight body\r\n---\r\nBOM body first character.\r\n')
+
+  const provider = new WslSkillsProvider(control(), createIo(root))
+  const [candidate] = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.ok(candidate !== undefined)
+  const definition = await provider.get(candidate, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition?.content, 'BOM body first character.')
+})
 test('skips pruned heavy directories and dot-directories while walking', async () => {
   const root = tree()
   // Skills deep inside node_modules or a dot-dir must NOT be discovered.
