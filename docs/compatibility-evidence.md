@@ -113,3 +113,65 @@ The same prompt on the legacy service shape (`connection.api.agentPresets` +
 `bash uname -sr; pwd` answered `Linux 6.18.33.2-microsoft-standard-WSL2` and
 `/home/mille/fu-legacy`, and `write` + `read` round-tripped `WSL-WRITE-OK` with
 an in-distribution `stat` of `644 mille`.
+
+## Persona-format change and the dialog help panel (2026-09-11, plugin 0.4.3)
+
+### The defect (issue #22)
+
+`dsh-persona` moved its model-facing scalar in `0.1.3-alpha.2`: `text` became an
+inline `suffix` plus a folded `prefix`. `appendablePersona()` matched `text: >-`
+only, so from that release on the variant generator appended nothing and the
+model was never told its working directory was a Linux path - silently, with the
+WSL execution world itself unaffected (`bash`, the file tools and the skills all
+kept working, which is why no earlier check noticed).
+
+The generated preset proves it, and needs no boot: an isolated case keeps
+`.agent-presets/<variant>/agent.cordis.yml`.
+
+| DSH release | generated persona shape | WSL sentence before 0.4.3 | after 0.4.3 |
+|---|---|---|---|
+| 0.1.0-rc.7, 0.1.0-rc.8, 0.1.1-rc.1, 0.1.1-rc.2, 0.1.2-rc.1 | `text: >-` | present | present, byte-identical to the previous build |
+| 0.1.3-alpha.2 | `suffix:` + `prefix: >-` | **missing** | present |
+| 0.1.5-rc.1, 0.1.5-rc.2 | `suffix:` + `prefix: >-` | **missing** | present |
+
+End-to-end on `0.1.5-rc.2`: the session log carries a `system/message` event
+whose text includes `is inside a WSL (Windows Subsystem for Linux) distribution:
+the bash tool and the file read/write/edit tools use Linux paths`.
+
+### Full matrix with the final build
+
+| DSH release | boot | `POST /wsl-workspace/api` | checks exit 0 | generated persona |
+|---|---|---|---|---|
+| 0.1.0-rc.7 | ok | `listDistros` | 9/10 | amended |
+| 0.1.0-rc.8 | ok | `listDistros` | 9/10 | amended |
+| 0.1.1-rc.1 | ok | `listDistros` | 9/10 | amended |
+| 0.1.1-rc.2 | ok | `listDistros` | 9/10 | amended |
+| 0.1.2-rc.1 | ok | `listDistros` | 9/10 | amended |
+| 0.1.3-alpha.2 | ok | `listDistros` | 9/10 | amended |
+| 0.1.5-rc.1 | ok | `listDistros` | 9/10 | amended |
+| 0.1.5-rc.2 | ok | `listDistros` | 9/10 | amended |
+
+`typecheck` is again the only non-zero check, at its pre-existing baseline.
+Only `typecheck` failed anywhere: no `unit`, `lib`, `materialize`, `rank`,
+`smoke-*`, `shell-extra`, `skills-real` or `host-api` regression on any release.
+
+### The two gates that let it through
+
+- `tests/host-materialize.mjs` drove only the legacy `text` shape, so the
+  matcher looked correct. It now also drives a source preset in the new shape
+  and one that opts out with `complete: true`, and asserts the sentence lands in
+  the `suffix` rather than the `prefix`.
+- `verify-lib`'s comment/string stripper could pair a lone apostrophe inside a
+  comment with a later one and swallow the rest of the bundle; every `node:*`
+  import then looked tree-shaken. Its quote rules now stop at a newline, as a
+  JavaScript string does, so an innocent comment edit can no longer fail it.
+
+### Dialog help panel
+
+The W dialog gained a "?" button: the panel shows the plugin version and the
+declared release matrix, read from the package's own `package.json` through the
+host `describe` method (so the list cannot drift from the manifest), plus how the
+plugin is used, what it does, and the limitations it cannot fix. Verified in the
+browser on both client API lines - `0.1.5-rc.2` (current) and `0.1.1-rc.2`
+(legacy): the panel opens and closes in place, renders the version line, the
+release chips and three sections, and fits the card without overflow.

@@ -28,7 +28,7 @@ After restarting `dsh web`, a W button appears beside Settings at the sidebar fo
 
 Click the W button beside Settings at the sidebar foot to open the "Add WSL workspace" dialog. Pick a distribution from the list, then browse the directory tree or type an absolute Linux path (for example `/home/me/proj`) — use the Check button to verify the path exists before creating the workspace. The dialog follows the DeepSeek Harness UI language. The username field is optional: leave it empty to run commands as the distribution's default user, or name a Linux user of that distribution to run the session as that user instead (equivalent to `wsl.exe -u <username>`). The username only changes the bash tool's run identity — the file tools go through the Windows-side WSL share and are unaffected. Each workspace's username is kept in `<dshHome>/wsl-workspaces.json`; delete the entry (or recreate the workspace from the dialog) to return to the default user.
 
-Click "Create & open" to start a new session in the workspace. In the new session the bash tool executes commands inside the chosen distribution and `read`/`write`/`edit` operate on WSL files, so every path the model sees is a Linux path. The mode picker keeps working as usual: Standard, PTC, Minimal and Creative each land on their WSL variant automatically (the WSL variant entries in the picker are bilingual, e.g. `WSL · Standard mode（标准模式）`), and Windows files stay reachable from inside the session under `/mnt/<drive>` (for example `/mnt/c/Users/...`).
+Click "Create & open" to start a new session in the workspace. In the new session the bash tool executes commands inside the chosen distribution and `read`/`write`/`edit` operate on WSL files, so every path the model sees is a Linux path. The mode picker keeps working as usual: Standard, PTC, Minimal and Creative each land on their WSL variant automatically (the WSL variant entries in the picker are bilingual, e.g. `WSL · Standard mode（标准模式）`), and Windows files stay reachable from inside the session under `/mnt/<drive>` (for example `/mnt/c/Users/...`). The dialog's "?" button opens a panel with the DSH releases this build declares, how the plugin is used, and the limitations it cannot fix.
 ![alt text](image-2.png)
 ## Behavior notes
 
@@ -38,6 +38,12 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 - The garbled `localhost` port-forwarding banner `wsl.exe` prints to stderr when the distro was not running yet is harmless.
 
 ## Changelog
+
+### 0.4.3 — 2026-09-11
+
+- **The persona text moved in `0.1.3-alpha.2`** ([#22](https://github.com/6Mikao9/dsh-wsl-workspace/issues/22)): DSH renamed the persona's model-facing scalar from `text` to an inline `suffix` plus a folded `prefix`, and the variant generator only recognised `text: >-`. On that line the WSL environment sentence was never appended - the session still ran inside the distribution, but the model was never told that its working directory is a Linux path reachable from Windows as `/mnt/<drive>`. The generator now amends `suffix`, `text` or `prefix` (folding an inline scalar into a block scalar when needed, so the sentence joins the working-directory line exactly where the legacy `text` block put it), and a persona carrying `complete: true` is still left alone. Verified on seven releases: the five older ones produce byte-identical presets, and the two newer ones now carry the sentence into the model's system message.
+- **Help panel**: the dialog gained a "?" button that opens an in-place panel - the DSH releases this build declares (read from `package.json` through the host route, so the list can never drift from the manifest), how the plugin is used, its features, and the limitations it cannot fix.
+- **`verify-lib` hardening**: its comment/string stripper could pair a lone apostrophe inside a comment with a later one and swallow the rest of the bundle, which made every `node:*` import look tree-shaken. The quote rules now stop at a newline, exactly as a JavaScript string does.
 
 ### 0.4.2 — 2026-09-10
 

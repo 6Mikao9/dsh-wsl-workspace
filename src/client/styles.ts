@@ -266,6 +266,71 @@ const STYLES = `
 }
 .dww-btn--primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
 .dww-btn:disabled { cursor: default; opacity: 0.6; }
+/* Help panel behind the dialog's "?" button. */
+.dww-help-btn {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.dww-help-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dww-help-btn[aria-pressed='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.dww-help {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.dww-help-section { display: flex; flex-direction: column; gap: 6px; }
+.dww-help-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+.dww-help-meta { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.dww-help-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dww-help-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dww-help-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-secondary);
+}
+.dww-help-list--known { color: var(--dsw-alias-label-primary); }
+.dww-help-footer {
+  display: flex;
+  gap: 14px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.dww-help-link { font-size: 12px; color: var(--dsw-alias-label-tertiary); text-decoration: underline; }
+.dww-help-link:hover { color: var(--dsw-alias-label-primary); }
 `
 
 /**

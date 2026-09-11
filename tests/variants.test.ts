@@ -183,3 +183,71 @@ test('transform handles an empty source', () => {
   const out = transformPresetForWsl('', SHELL, FS)
   assert.ok(out.includes('- id: wsl-world'), 'realm still injected')
 })
+
+/** The v0.1.3-alpha.2+ persona shape: an inline `suffix` plus a folded `prefix`. */
+const SUFFIX_PREFIX_LIKE = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent powered by the {{model}} model.
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+`
+
+test('v0.1.3+ persona shape: the note joins the inline suffix sentence', () => {
+  const out = transformPresetForWsl(SUFFIX_PREFIX_LIKE, SHELL, FS)
+  assert.match(
+    out,
+    /suffix: >-\n {6}Your working directory is \{\{cwd\}\}\.\n {6}Your working directory \{\{cwd\}\} is inside a WSL/,
+    'inline suffix folded into a block scalar carrying the note',
+  )
+  assert.ok(out.includes('prefix: >-\n      You are a coding agent'), 'prefix left untouched')
+  assert.ok(out.indexOf('inside a WSL') < out.indexOf('prefix: >-'), 'note landed in the suffix, not the prefix')
+})
+
+test('v0.1.3+ persona shape: a folded suffix block takes the note as a sibling line', () => {
+  const out = transformPresetForWsl(`- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: >-
+      Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent.
+`, SHELL, FS)
+  assert.match(
+    out,
+    /suffix: >-\n {6}Your working directory is \{\{cwd\}\}\.\n {7}Your working directory \{\{cwd\}\} is inside a WSL/,
+    'note appended inside the folded suffix',
+  )
+  assert.equal(out.match(/suffix:/g)?.length, 1, 'suffix header not duplicated')
+})
+
+test('a persona opted out of runtime context is never amended', () => {
+  const out = transformPresetForWsl(`- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: Your working directory is {{cwd}}.
+    complete: true
+`, SHELL, FS)
+  assert.ok(!out.includes('inside a WSL'), 'complete: true leaves the persona alone')
+  assert.ok(out.includes('suffix: Your working directory is {{cwd}}.'), 'suffix left verbatim')
+})
+
+test('a prefix-only persona is still amended', () => {
+  const out = transformPresetForWsl(`- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: >-
+      You are a coding agent.
+`, SHELL, FS)
+  assert.match(out, /prefix: >-\n {6}You are a coding agent\.\n {7}Your working directory \{\{cwd\}\} is inside a WSL/, 'note appended to the folded prefix')
+})
+
+test('legacy text personas keep the exact appended line they always had', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS)
+  // Byte-for-byte what the pre-0.1.3 path produced: the block's own indentation
+  // plus the fragment's leading space.
+  assert.match(out, /\n {7}Your working directory \{\{cwd\}\} is inside a WSL/, 'legacy append unchanged')
+})

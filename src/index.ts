@@ -254,6 +254,35 @@ function listWslDir(distro: string, linuxPath: string): WslDirListingWire {
   return { path: linuxPath, parent, entries }
 }
 
+/** Cached self-description for the dialog's help panel. */
+let selfDescription: { version: string; releases: { id: string; status: string }[] } | undefined
+
+/**
+ * Read this plugin's own `package.json` for the dialog's help panel: the
+ * published version and the declared `dsh.compatibility.dshReleases` matrix.
+ * A plugin directory that cannot be read reports empty values rather than
+ * failing the dialog, and the result is cached for the process lifetime.
+ * @returns the self-description served by the `describe` method.
+ */
+function describeSelf(): { version: string; releases: { id: string; status: string }[] } {
+  if (selfDescription !== undefined) return selfDescription
+  try {
+    const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+    const parsed = JSON.parse(raw) as {
+      version?: unknown
+      dsh?: { compatibility?: { dshReleases?: Record<string, unknown> } }
+    }
+    selfDescription = {
+      version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
+      releases: Object.entries(parsed.dsh?.compatibility?.dshReleases ?? {})
+        .map(([id, status]) => ({ id, status: String(status) })),
+    }
+  } catch {
+    selfDescription = { version: 'unknown', releases: [] }
+  }
+  return selfDescription
+}
+
 /** Route one method dispatch. */
 async function dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
@@ -299,6 +328,11 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       // Every registered WSL workspace key (UNC and Windows drive spellings):
       // the client uses the drive keys to recognize `/mnt` workspaces.
       return listWorkspaceKeys()
+    }
+    case 'describe': {
+      // The dialog's help panel reports what this build declares, so the
+      // compatibility list can never drift from package.json.
+      return describeSelf()
     }
     case 'setUser': {
       const path = requireWslUnc(params.path)

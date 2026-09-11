@@ -19,7 +19,7 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaces as listWorkspacesApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi } from './api.ts'
+import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaces as listWorkspacesApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi } from './api.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
@@ -207,6 +207,9 @@ export function apply(ctx: ClientContext): void {
       return undefined
     },
     listDistros: () => listDistrosApi(),
+    // Advisory data for the help panel: a host that cannot answer reports an
+    // unavailable description instead of breaking the dialog.
+    describe: () => describeApi(),
     listDir: (distro, path) => listDirApi(distro, path),
     check: (distro, path) => checkApi(distro, path),
     createWorkspace: async (linuxPath, username, distro): Promise<string | undefined> => {

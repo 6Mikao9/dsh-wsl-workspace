@@ -11,7 +11,8 @@
 import type * as React from 'react'
 import { useEffect, useRef, useState, type UIEventHandler } from 'react'
 import { isAbsoluteLinuxPath, isValidWslUsername, normalizeLinuxPath } from '../shared/paths.ts'
-import type { WslDirListing, WslPathCheck } from './api.ts'
+import type { WslDirListing, WslPathCheck, WslSelfDescription } from './api.ts'
+import { WslHelp } from './help.tsx'
 
 /** Result-level shape of a browse/check/list call we surface uniformly. */
 interface ApiCall<T> {
@@ -25,6 +26,12 @@ export interface AddWslWorkspaceInjected {
    * @returns undefined when healthy, else a Chinese/English message to show.
    */
   checkPreset(): Promise<string | undefined>
+  /**
+   * Read this build's version and its declared DSH compatibility matrix,
+   * for the help panel. A host that cannot answer resolves to a fallback
+   * description rather than failing the dialog.
+   */
+  describe(): Promise<WslSelfDescription>
   /** List the WSL distros installed on the host. */
   listDistros(): Promise<string[]>
   /** List one Linux directory level inside a distro. */
@@ -77,7 +84,7 @@ function WslGlyph({ size = 16 }: { size?: number }): React.ReactElement {
  * The "Add WSL workspace…" footer action and its dialog.
  * @param props - owner share + injected face.
  */
-export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, check, createWorkspace }: AddWslWorkspaceProps): React.ReactElement | null {
+export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, listDir, check, createWorkspace }: AddWslWorkspaceProps): React.ReactElement | null {
   const [open, setOpen] = useState(false)
   const [opening, setOpening] = useState(false)
   const [distros, setDistros] = useState<string[]>([])
@@ -89,6 +96,9 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
   const [browsing, setBrowsing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // The "?" panel: help text plus the compatibility list the host reports.
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [selfDescription, setSelfDescription] = useState<WslSelfDescription | null>(null)
   // Monotone browse-request sequence: stale responses for a superseded browse are dropped.
   const browseSeq = useRef(0)
 
@@ -114,6 +124,8 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
     if (!open) return
     let cancelled = false
     setError(null)
+    // Advisory data for the help panel: never fatal, never blocking the form.
+    void describe().then(value => { if (!cancelled) setSelfDescription(value) }).catch(() => { if (!cancelled) setSelfDescription(null) })
     setOpening(true)
     void (async () => {
       let presetIssue: string | undefined
@@ -257,11 +269,24 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
       <div className="dww-card" role="dialog" aria-modal="true" aria-label={t('dialog.title')}>
         <div className="dww-header">
           <h2 className="dww-title">{t('dialog.title')}</h2>
+          <button
+            type="button"
+            className="dww-help-btn"
+            title={t('help.button')}
+            aria-label={t('help.button')}
+            aria-pressed={helpOpen}
+            onClick={() => setHelpOpen(value => !value)}
+          >
+            ?
+          </button>
           <button type="button" className="dww-close" aria-label={t('dialog.cancel')} onClick={maskClick}>
             ✕
           </button>
         </div>
         <div className="dww-body">
+          {helpOpen ? (
+            <WslHelp t={t} description={selfDescription} />
+          ) : (<>
           {error !== null ? (
             <div className="dww-error">
               {error}
@@ -334,6 +359,7 @@ export function AddWslWorkspace({ wide, t, checkPreset, listDistros, listDir, ch
                 ))}
             </div>
           </div>
+          </>)}
         </div>
         <div className="dww-actions">
           <button type="button" className="dww-btn" disabled={busy} onClick={maskClick}>{t('dialog.cancel')}</button>

@@ -98,10 +98,40 @@ const PREFAB_SRC = `# prefab-like source preset (win32-only custom bash + local 
       config:
         maxOutputChars: 16000
 `
+// DSH v0.1.3-alpha.2 renamed the persona's model-facing scalar: `text` became
+// an inline `suffix` plus a folded `prefix`. A source in that shape must be
+// amended too - the pre-0.4.3 matcher only looked for `text: >-` and silently
+// dropped the WSL sentence (issue #22).
+const SUFFIX_PREFIX_SRC = `# v0.1.3-alpha.2+ persona shape
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent powered by the {{model}} model.
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+`
+// The new shape with the runtime-context opt-out: never amended.
+const SUFFIX_COMPLETE_SRC = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent.
+    complete: true
+`
+
 const sources = {
   standard: { path: join(home, 'src-standard', 'agent.cordis.yml'), text: STANDARD_SRC },
   minimal: { path: join(home, 'src-minimal', 'agent.cordis.yml'), text: MINIMAL_SRC },
   'third-party-local': { path: join(home, 'src-third-party', 'agent.cordis.yml'), text: PREFAB_SRC },
+  'standard-new': { path: join(home, 'src-standard-new', 'agent.cordis.yml'), text: SUFFIX_PREFIX_SRC },
+  'standard-new-complete': { path: join(home, 'src-standard-new-complete', 'agent.cordis.yml'), text: SUFFIX_COMPLETE_SRC },
 }
 // Source display metadata with declared roster order (the shipped layout).
 mkdirSync(join(home, 'src-standard'), { recursive: true })
@@ -110,6 +140,10 @@ mkdirSync(join(home, 'src-third-party'), { recursive: true })
 writeFileSync(join(home, 'src-standard', 'preset.yml'), 'name: 标准模式\norder: 1\n', 'utf8')
 writeFileSync(join(home, 'src-minimal', 'preset.yml'), 'name: 极简模式\norder: 3\n', 'utf8')
 writeFileSync(join(home, 'src-third-party', 'preset.yml'), 'name: Third Party Local\norder: 8\n', 'utf8')
+mkdirSync(join(home, 'src-standard-new'), { recursive: true })
+mkdirSync(join(home, 'src-standard-new-complete'), { recursive: true })
+writeFileSync(join(home, 'src-standard-new', 'preset.yml'), 'name: New Shape\norder: 9\n', 'utf8')
+writeFileSync(join(home, 'src-standard-new-complete', 'preset.yml'), 'name: New Shape Complete\norder: 10\n', 'utf8')
 // A source preset is an opaque, self-contained unit. Assets must travel
 // without the WSL plugin knowing their names, extensions, or consumers.
 mkdirSync(join(home, 'src-third-party', 'plugin-data'), { recursive: true })
@@ -171,6 +205,21 @@ assert(stdYaml.includes('inside a WSL'), 'variant persona amended')
 const shellRow = /name: '(.+shell\.js)'/.exec(stdYaml)
 assert(shellRow !== null && existsSync(shellRow[1]), 'variant shell row points at a real lib file')
 
+const newVariant = join(home, '.agent-presets', 'wsl-standard-new')
+assert(existsSync(newVariant), 'v0.1.3+ persona-shape variant generated')
+const newYaml = readFileSync(join(newVariant, 'agent.cordis.yml'), 'utf8')
+assert(newYaml.includes('inside a WSL'), 'v0.1.3+ persona shape is amended (issue #22 guard)')
+assert(
+  /suffix: >-\n\s+Your working directory is \{\{cwd\}\}\.\n\s+Your working directory \{\{cwd\}\} is inside a WSL/.test(newYaml),
+  'the note joins the suffix sentence it belongs to',
+)
+assert(newYaml.indexOf('inside a WSL') < newYaml.indexOf('prefix: >-'), 'the note stays in the suffix block, not the prefix')
+
+const newCompleteVariant = join(home, '.agent-presets', 'wsl-standard-new-complete')
+assert(existsSync(newCompleteVariant), 'v0.1.3+ opt-out variant generated')
+const newCompleteYaml = readFileSync(join(newCompleteVariant, 'agent.cordis.yml'), 'utf8')
+assert(!newCompleteYaml.includes('inside a WSL'), 'a v0.1.3+ persona with complete: true is left alone')
+assert(newCompleteYaml.includes('suffix: Your working directory is {{cwd}}.'), 'its suffix stays a plain inline scalar')
 const minVariant = join(home, '.agent-presets', 'wsl-minimal')
 const minYaml = readFileSync(join(minVariant, 'agent.cordis.yml'), 'utf8')
 assert(existsSync(minVariant), 'wsl-minimal variant generated')

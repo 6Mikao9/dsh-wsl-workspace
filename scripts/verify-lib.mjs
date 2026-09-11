@@ -79,9 +79,13 @@ function stripCommentsAndStrings(code) {
   let out = code
     .replace(/\/\*[\s\S]*?\*\//g, ' ')          // block comments
     .replace(/\/\/[^\n]*/g, ' ')                 // line comments
-  // Replace string literals (single, double, template) with spaces.
-  out = out.replace(/'(?:[^'\\]|\\.)*'/g, ' ')
-    .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+  // Replace string literals (single, double, template) with spaces. A plain
+  // string cannot span a newline, so the quote rules stop at one: without
+  // that, a lone apostrophe inside a comment opens a "string" that swallows
+  // the rest of the file, and then every node:* import looks tree-shaken.
+  // (Bundlers emit no regex literals into lib/, so only quotes matter here.)
+  out = out.replace(/'(?:[^'\\\n]|\\.)*'/g, ' ')
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, ' ')
     .replace(/`(?:[^`\\]|\\.)*`/g, ' ')
   return out
 }

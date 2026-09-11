@@ -122,3 +122,24 @@ export async function registerWindows(linuxPath: string, distro: string, usernam
 export async function listWorkspaces(): Promise<string[]> {
   return call<string[]>('listWorkspaces', {})
 }
+
+/** One declared DSH release and its declared status. */
+export interface WslDeclaredRelease {
+  id: string
+  status: string
+}
+
+/** Self-description of the running plugin build (shown by the help panel). */
+export interface WslSelfDescription {
+  version: string
+  releases: WslDeclaredRelease[]
+}
+
+/**
+ * Read the plugin build version and its declared DSH compatibility matrix,
+ * for the dialog help panel.
+ * @returns the self-description reported by the host plugin.
+ */
+export async function describe(): Promise<WslSelfDescription> {
+  return call<WslSelfDescription>('describe', {})
+}
