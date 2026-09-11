@@ -233,3 +233,26 @@ generated variants inspected. `typecheck` is the only non-zero check on all
 eight (its pre-existing baseline); every case's `wsl-standard`, `wsl-cordis`
 (and the `0.1.0` line's `wsl-code`, the `0.1.5` line's `wsl-ptc`) row carries
 `watch: false`, and no variant is left with the watcher enabled.
+
+### Final-build browser pass (2026-09-11)
+
+The multi-release browser matrix above was captured before the skill-watch fix,
+and the two real-model catalog proofs above ran on an intermediate build, so the
+shipped tree was put through the browser once more. Each target was verified to
+run a `lib/client.js` byte-identical to the extracted tarball
+(`sha256 D99E6B11DB304F2C…`), so this pass covers exactly the bytes that would be
+published:
+
+| Target | Build | Dialog + help panel | Create & open | Real model turn |
+|---|---|---|---|---|
+| `0.1.5-rc.2` (current line) | **the packed `npm pack` tarball installed as the plugin payload** | 3 sections, 8 release chips, 4 known-issue bullets (incl. the 0.4.3 fix note), panel scrolls inside the card | workspace `mtx6-pub`, draft chip `WSL · Standard mode（标准模式）` | catalog names (`browser4agent`, `offbyone-skill`, `tight-nobom`); `write`→`read` `PUB-ARTIFACT-OK`; `Linux 6.18.33.2-microsoft-standard-WSL2`, `/home/mille/mtx6-pub`, `644 mille notes/pub.txt`; skill body `OFFBYONE-MARKER-Z9Q7` |
+| `0.1.0-rc.7` (oldest declared) | final source build | same panel, same 8 chips / 4 bullets | workspace `mtx5-rc7`, WSL draft chip correct | catalog injection chip + the same three names; `RC7-OK`; `644 mille notes/rc7.txt`; skill body intact |
+| `0.1.1-rc.2` (legacy client line) | final source build | same panel, same 8 chips / 4 bullets | workspace `mtx5-rc112`, WSL draft chip correct | visible `skill-catalog` injection + the same three names; `LEGACY-OK`; `644 mille notes/legacy.txt`; skill body intact |
+
+Scope of this pass, stated exactly: the three targets above were driven through
+the browser on the final build; the remaining five declared releases were
+re-gated (ten checks, generated-preset inspection) on the same build without a
+browser pass. Between that browser pass and the published bytes the only
+difference is the help panel's known-issue wording, which the `0.1.5-rc.2` target
+(the packed artifact) exercises directly.
+
