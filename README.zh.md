@@ -33,7 +33,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 - **bash 工具**：以配置的用户名在 WSL 发行版内运行（留空 = 发行版默认用户，通常为 root），可对发行版内任意路径读写。Windows 的 ACL 沙箱无法包裹 `wsl.exe`（子进程运行在 Linux 内核侧），WSL 自身即隔离边界，DSH 文件策略不作用于 bash。
 - **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问，受 DSH 文件策略约束。`workspace-write` 下读可到任意位置、写仅限会话工作区；改为 `danger-full-access` 后工作区外也可写入。用户名设置不影响文件工具。
-- **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录；结果按扫描根缓存 10 秒，技能正文始终实时读取。两个底层限制都不是本插件能修的：一是 Windows 侧的 `\\wsl.localhost` 共享**无法解析 Linux 符号链接**（用 `ln -s` 链进来的项目发现不了，扫描会跳过而不报错，请把工作区注册在真实项目目录所在的层级）；二是 **UNC 工作区下模型收不到技能目录**——宿主技能提供者用 `fs.watch` 监视该共享，对 `\\wsl.localhost\...` 会抛 `EISDIR`，该次观测被判为不完整，而 `dsh-tool-skill` 在快照不完整时会丢弃整条目录消息。技能本身仍可按名加载（`skill {name: "..."}`），同一实例上 Windows 工作区的会话能正常收到目录。
+- **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录；结果按扫描根缓存 10 秒，技能正文始终实时读取。一个底层限制不是本插件能修的：Windows 侧的 `\\wsl.localhost` 共享**无法解析 Linux 符号链接**（用 `ln -s` 链进来的项目发现不了，扫描会跳过而不报错，请把工作区注册在真实项目目录所在的层级）。**0.4.3 已修复**：UNC 工作区原先**收不到技能目录**——宿主技能提供者用 `fs.watch` 监视该共享，对 `\\wsl.localhost\...` 会抛 `EISDIR`，该次观测被判为不完整，而 `dsh-tool-skill` 在快照不完整时会丢弃整条目录消息。现在生成预设时会把 `skill-filesystem` 行的 `watch` 固定为 `false`，目录在会话启动时扫描一次并照常注入。唯一代价是不再实时刷新：会话运行中途新加入的技能要等下一个会话才出现在目录里（技能正文仍由 `get` 实时读取）。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
 
 ## 许可与出处

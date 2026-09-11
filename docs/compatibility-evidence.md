@@ -175,3 +175,61 @@ plugin is used, what it does, and the limitations it cannot fix. Verified in the
 browser on both client API lines - `0.1.5-rc.2` (current) and `0.1.1-rc.2`
 (legacy): the panel opens and closes in place, renders the version line, the
 release chips and three sections, and fits the card without overflow.
+
+### The skill catalog over a UNC workspace
+
+A session registered at `\\wsl.localhost\...` received **no** skill catalog: the
+host's `dsh-skill-filesystem` starts a `chokidar` watcher on the workspace, that
+watcher fails on the 9P share, the observation is reported with
+`complete: false`, and `dsh-tool-skill` withholds the whole catalog line while a
+snapshot is incomplete (`if (!snapshot.complete) return decision`). Since the
+plugin controls the generated preset YAML, the fix needs no upstream change: the
+materializer pins `watch: false` on the `skill-filesystem` row.
+
+Evidence (2026-09-11, real model turns, browser, one case per client-API line):
+
+| Probe | Before | After |
+|---|---|---|
+| generated `wsl-standard` row | `- id: skill-filesystem` (no config) | same row + `config:` / `watch: false` |
+| generated `wsl-cordis` row | `config:` already held `customSkillDirs` | `watch: false` merged as the first child, `customSkillDirs` intact |
+| model context, `0.1.5-rc.2` (current line) | no catalog | catalog injects the fixture skills |
+| model answer, `0.1.5-rc.2` | no skills visible | names all three fixture skills |
+| model answer, `0.1.1-rc.2` (legacy line) | *"There's no skill catalog shown in this context… I don't see an available skills list"* (the model's own reasoning, screenshot in the session at 19:06) | same case, workspace re-registered at 19:32: the prompt names the injection (`上下文注入 skill-catalog`) and the model answers *"共有 3 个 skill：browser4agent、offbyone-skill、tight-nobom"* |
+
+The legacy-line session created after the fix was then driven through the whole
+feature surface again (`0.1.1-rc.2`, `mtx3-cat`): `write` →
+`/home/mille/mtx3-cat/notes/probe2.txt`, `read` back `WSL-WRITE-OK-112`, bash
+`uname -sr` → `Linux 6.18.33.2-microsoft-standard-WSL2`, `pwd` →
+`/home/mille/mtx3-cat`, `stat -c '%a %U %n'` → `644 mille notes/probe2.txt`, and
+`skill offbyone-skill` delivered `<skill_instructions>\nOFFBYONE-MARKER-Z9Q7\n…`
+with the body's first character intact.
+
+`watch: false` is also the documented shape in the host schema
+(`watch: z.boolean().default(true)`), and it is accepted on all eight declared
+releases. A source preset that sets `watch` itself is left untouched. Regressions
+are locked by three unit tests plus a `skill-filesystem` row in both
+`tests/host-materialize.mjs` fixtures (with and without a pre-existing `config:`
+block).
+
+Why `watch: false` is the right key, read off the host source rather than guessed:
+
+- `list()` flips `complete` to `false` **only** when `watchManager.observeRoots()`
+  throws; every other path returns a plain candidate array.
+- `observeRoots()` → `retainRoot()` calls `ensureWatcher()` only
+  `if (this.config.enabled)`, and `resolveWatchConfig` computes
+  `enabled: config.watch ?? true`.
+- So with `watch: false` no watcher is ever opened, nothing throws, `complete`
+  stays `true` and the catalog is injected. The `unhealthy` flag that starts as
+  `true` is only ever consulted by watcher management, never by completeness.
+
+The provider bundle is byte-identical on every declared release —
+`@deepseek-ai/dsh-skill-filesystem/lib/index.js`, sha256 `1AEA87781BA5B4D4…`,
+29591 bytes, the same in all eight case runtimes — so the behaviour above holds
+wherever the plugin is installed, not just on `0.1.5-rc.2`.
+
+Every declared release was then re-gated with this build: each case was
+restarted (which regenerates its presets), the ten checks were re-run, and the
+generated variants inspected. `typecheck` is the only non-zero check on all
+eight (its pre-existing baseline); every case's `wsl-standard`, `wsl-cordis`
+(and the `0.1.0` line's `wsl-code`, the `0.1.5` line's `wsl-ptc`) row carries
+`watch: false`, and no variant is left with the watcher enabled.

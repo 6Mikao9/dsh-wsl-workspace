@@ -57,6 +57,42 @@ function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean
 /** The sentence appended to a standard-like persona when the variant runs in WSL. */
 const PERSONA_APPEND = ' Your working directory {{cwd}} is inside a WSL (Windows Subsystem for Linux) distribution: the bash tool and the file read/write/edit tools use Linux paths, and the Windows filesystem is reachable as /mnt/<drive> for file migration.'
 
+/** The upstream local-skill provider row, whose watcher cannot watch a UNC share. */
+const SKILL_FILESYSTEM_ROW = 'skill-filesystem'
+
+/**
+ * Turn the local skill provider's watcher off inside a WSL variant.
+ *
+ * `@deepseek-ai/dsh-skill-filesystem` reports an INCOMPLETE observation when
+ * its watcher fails to start, and `dsh-tool-skill` withholds the whole catalog
+ * while a snapshot is incomplete. chokidar cannot watch
+ * `\\wsl.localhost\<distro>\...`, so in a WSL session the model never sees the
+ * catalog at all - `skill` still loads one by name, but nothing tells the model
+ * which skills exist. With the watcher off the discovery completes (the
+ * plugin's own provider rescans the share on demand, and the next session gets
+ * a fresh catalog); the price is no live refresh inside one running session,
+ * which never worked on this substrate anyway.
+ * @param block - the row's lines.
+ * @returns the row's lines with `watch: false` merged into its config.
+ */
+function disableSkillWatch(block: readonly string[]): string[] {
+  const lines = [...block]
+  // An explicit `watch:` from the author wins.
+  if (lines.some(line => /^\s*watch:/.test(line))) return lines
+  const configIndex = lines.findIndex(line => /^\s*config:\s*$/.test(line))
+  if (configIndex >= 0) {
+    const childIndent = `${/^(\s*)/.exec(lines[configIndex] ?? '')?.[1] ?? '  '}  `
+    lines.splice(configIndex + 1, 0, `${childIndent}watch: false`)
+    return lines
+  }
+  const rowIndent = /^(\s*)/.exec(lines[0] ?? '')?.[1] ?? ''
+  // Insert before the row block's trailing blank line, not after it.
+  let insertAt = lines.length
+  while (insertAt > 0 && (lines[insertAt - 1] ?? '').trim() === '') insertAt -= 1
+  lines.splice(insertAt, 0, `${rowIndent}  config:`, `${rowIndent}    watch: false`)
+  return lines
+}
+
 /** The top-level rows of one composition, as (startLine, endLineExclusive) spans. */
 function topLevelSpans(lines: readonly string[]): { start: number; end: number }[] {
   const spans: { start: number; end: number }[] = []
@@ -226,6 +262,10 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
       continue
     }
     if (WORLD_ROWS.has(id)) continue
+    if (id === SKILL_FILESYSTEM_ROW) {
+      kept.push(...disableSkillWatch(lines.slice(span.start, span.end)))
+      continue
+    }
     if (id === 'persona' && !personaAppended && appendablePersona(lines, span)) {
       kept.push(...appendPersona(lines, span))
       personaAppended = true

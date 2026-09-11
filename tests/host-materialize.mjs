@@ -34,6 +34,12 @@ const STANDARD_SRC = `# standard
 
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    directories:
+      - .agents/skills
 `
 const MINIMAL_SRC = `- id: persona
   name: '@deepseek-ai/dsh-persona'
@@ -70,6 +76,9 @@ const MINIMAL_SRC = `- id: persona
       name: '@deepseek-ai/dsh-tool-str-replace-editor'
       config:
         maxOutputChars: 16000
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
 `
 const PREFAB_SRC = `# prefab-like source preset (win32-only custom bash + local fs group)
 - id: persona
@@ -205,6 +214,18 @@ assert(stdYaml.includes('inside a WSL'), 'variant persona amended')
 const shellRow = /name: '(.+shell\.js)'/.exec(stdYaml)
 assert(shellRow !== null && existsSync(shellRow[1]), 'variant shell row points at a real lib file')
 
+// ── skill catalog over UNC: the watcher must be off ───────────────────────
+// A //wsl.localhost/... workspace cannot be watched by chokidar; the failed
+// watcher makes the observation incomplete and withholds the whole catalog.
+// The materializer therefore pins `watch: false` on the skill-filesystem row.
+assert(stdYaml.includes('- id: skill-filesystem'), 'variant keeps the skill-filesystem row')
+assert(
+  /- id: skill-filesystem\n(?:.*\n)*?\s+config:\n\s+watch: false\n/.test(stdYaml),
+  'skill watch is disabled as the first config child of a row that already had config',
+)
+assert(stdYaml.includes('directories:\n      - .agents/skills'), 'the row\'s pre-existing config survives the merge')
+assert(!/watch: true/.test(stdYaml), 'no variant leaves the skill watcher enabled')
+
 const newVariant = join(home, '.agent-presets', 'wsl-standard-new')
 assert(existsSync(newVariant), 'v0.1.3+ persona-shape variant generated')
 const newYaml = readFileSync(join(newVariant, 'agent.cordis.yml'), 'utf8')
@@ -227,6 +248,10 @@ assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
 assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the PTY group (duplicate bash registration + unsupported win32 PTY)')
 assert(!minYaml.includes('persistent-bash'), 'minimal variant drops persistent-bash')
+assert(
+  /- id: skill-filesystem\n  name: '[^']+'\n  config:\n    watch: false\n/.test(minYaml),
+  'a skill-filesystem row with no config gets one carrying watch: false',
+)
 
 const prefabVariant = join(home, '.agent-presets', 'wsl-third-party-local')
 const prefabYaml = readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8')

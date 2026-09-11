@@ -251,3 +251,53 @@ test('legacy text personas keep the exact appended line they always had', () => 
   // plus the fragment's leading space.
   assert.match(out, /\n {7}Your working directory \{\{cwd\}\} is inside a WSL/, 'legacy append unchanged')
 })
+
+/** A composition carrying the upstream local-skill provider row. */
+const SKILL_FILESYSTEM_LIKE = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent.
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+`
+
+test('a WSL variant turns the local skill watcher off', () => {
+  // chokidar cannot watch \\wsl.localhost\...; the provider then reports an
+  // incomplete observation and dsh-tool-skill withholds the whole catalog, so
+  // the model never learns which skills exist (issue #22 follow-up).
+  const out = transformPresetForWsl(SKILL_FILESYSTEM_LIKE, SHELL, FS)
+  assert.ok(
+    out.includes("- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n  config:\n    watch: false\n"),
+    'watcher disabled on the provider row',
+  )
+  assert.ok(out.includes('- id: tool-jobs'), 'other rows kept')
+})
+
+test('the disabled watcher merges into an existing config block', () => {
+  const out = transformPresetForWsl(`- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "x"
+`, SHELL, FS)
+  assert.ok(out.includes('config:\n    watch: false\n    customSkillDirs:\n'), 'watch merged first, author config kept')
+  const rows = out.split('- id: ').filter(row => row.startsWith('skill-filesystem'))
+  assert.equal(rows.length, 1, 'exactly one skill-filesystem row')
+  assert.ok(rows[0]?.includes('config:\n    watch: false\n    customSkillDirs:\n'), 'single merged config key')
+})
+
+test('an explicit watch setting wins', () => {
+  const out = transformPresetForWsl(`- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    watch: true
+`, SHELL, FS)
+  assert.ok(out.includes('watch: true'), 'author value kept')
+  assert.ok(!out.includes('watch: false'), 'not overridden')
+})
