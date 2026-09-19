@@ -52,6 +52,12 @@ export function WslHelp({ t, description }: WslHelpProps): React.ReactElement {
     : `${t('help.compat.versionLabel')} v${description.version}`
   return (
     <div className="dww-help" role="region" aria-label={t('help.button')}>
+      <p className="dww-help-greeting">
+        {t('help.greeting')}{' '}
+        <a className="dww-help-link" href="https://github.com/6Mikao9/dsh-wsl-workspace" target="_blank" rel="noreferrer">
+          {t('help.greeting.repo')}
+        </a>
+      </p>
       <Section title={t('help.compat.title')}>
         <div className="dww-help-meta">{version}</div>
         {releases.length > 0
@@ -63,6 +69,11 @@ export function WslHelp({ t, description }: WslHelpProps): React.ReactElement {
           : null}
         <ul className="dww-help-list">
           {bullets(t('help.compat.body')).map(line => <li key={line}>{line}</li>)}
+        </ul>
+      </Section>
+      <Section title={t('help.news.title')}>
+        <ul className="dww-help-list">
+          {bullets(t('help.news.body')).map(line => <li key={line}>{line}</li>)}
         </ul>
       </Section>
       <Section title={t('help.usage.title')}>

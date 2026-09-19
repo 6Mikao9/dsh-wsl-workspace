@@ -303,3 +303,31 @@ providers; the 0.4.4 build answers identically).
 - Browser + real model (`DeepSeek-V4-Flash`, `0.1.0-rc.7`, oldest declared): dialog →
   `WSL · Standard mode`, skill-catalog injection with 3 names, `write`→`read`
   `FIXWORLD-RC7-OK`, `644 mille`, `6.18.33.2-microsoft-standard-WSL2`.
+## Per-mode matrix and help-panel pass (2026-09-19, plugin 0.4.4)
+
+Every WSL variant was driven on four releases with a real model, asking for the
+three capabilities that matter in a WSL workspace: a file written with the file
+tool, a bash command executed inside the distribution whose output is redirected
+into the workspace, and the file read back.
+
+| release | modes | evidence left in `/home/mille/<ws>/notes/` | loader errors |
+|---|---|---|---|
+| `0.1.0-rc.7` (oldest declared) | Standard, PTC, Minimal, Creator | `MODE-<mode>-OK` plus `uname -r` = `6.18.33.2-microsoft-standard-WSL2`, `pwd` = the Linux workspace, `whoami` = `mille` | 0 |
+| `0.1.1-rc.2` (legacy client line) | same four | same | 0 |
+| `0.1.3-alpha.2` (persona split) | same four | same | 0 |
+| `0.1.5-rc.2` (current line) | same four | same | 0 |
+| `0.1.2-rc.1`, `0.1.5-rc.1` | same four | mode selected and a real turn answered (no file/bash assertions) | 0 |
+
+In every mode the follow-up bash call lands back in the workspace, i.e. the shell
+is per call: the source PTY group stays dropped, because it double-registers
+`bash` and its win32 backend cannot spawn a terminal.
+
+Help panel, verified in the browser on `0.1.5-rc.2`: the greeting line and the
+repository link render first, a "What's new" section carries this release, and the
+known-issue list is down to the three limitations that still hold — the historical
+"fixed in 0.4.3" note and the per-generation API paragraph are gone. Those three
+were re-checked and kept on purpose: the 9P share still cannot resolve Linux
+symlinks (upstream substrate, would need a WSL-side resolver in the discovery
+walk), the watcher stays off for UNC workspaces (the deliberate trade-off behind
+the catalog fix), and only plugin-registered workspaces default to a WSL variant
+(by design, not a defect).
