@@ -341,6 +341,129 @@ dead end:
   new feature (loop/depth accounting, real-path dedupe, one WSL round-trip per
   candidate link, cross-release re-testing), not a one-line fix; the file tools
   would need the same fallback inside `WslFileSystem`'s resolution, which is a
-  larger change.
+  larger change. **Done for the scan in 0.4.5** (see the next section); the file
+  tools are still open, and the panel now says exactly that.
 - **No live catalog refresh** for UNC workspaces: the deliberate trade-off behind
   the catalog fix, as the panel says.
+
+## Skill-scan symlink fallback (2026-09-19, plugin 0.4.5)
+
+### The defect
+
+A project linked into a workspace with `ln -s` was invisible to the skill
+catalog — not a crash, a silent skip. Reproduced on the real share before the
+fix (`node .test-runs/symlink/probe.mjs`, workspace `/home/mille/symprobe/ws`):
+
+```text
+linked-project   dir=false link=true stat: THROWS ENOENT
+chain-a          dir=false link=true stat: THROWS ENOENT
+notes-link       dir=false link=true stat: THROWS ENOENT
+broken           dir=false link=true stat: THROWS ENOENT
+```
+
+`readdir` reports the entry as a symlink (`S_IFLNK`), and every Windows-side
+`stat` on it fails, so the walk's follow branch never fires. The distribution
+resolves the same paths trivially: `wsl.exe -d Ubuntu -- readlink -f /home/mille/symprobe/ws/chain-b`
+→ `/home/mille/symprobe/deep/target`.
+
+### The fix
+
+`WslSkillIo` gained an optional `resolveLinks(uncPaths)` face; the production
+face (`nodeSkillIo`) asks the distribution, and `discoverSkillRoots` collects the
+symlink entries the share could not follow in each BFS layer, resolves them, and
+pushes the **real** path into the frontier. Consequences that were checked, not
+assumed:
+
+- the walk continues where this share can actually read, so `readdir`/`stat`/
+  `get()` all work again below a link;
+- a project reachable both directly and through a link collapses onto one visit
+  (the resolved path is the visited key, and the `(name, body)` fingerprint
+  dedupe still backs it up);
+- a link pointing back at the workspace root is absorbed by the visited set;
+- a link to a file, and a link the distribution cannot resolve (dangling,
+  missing intermediate component) are skipped exactly as before;
+- a substrate that follows links itself never triggers a distribution call, and
+  neither does a workspace without links (asserted, not observed).
+
+Bounds: at most 32 links per lookup, four `wsl.exe` calls in flight, 10 s per
+call, and the pre-existing depth / visited-directory / skill-directory budgets
+are unchanged. One process per link is deliberate — see below.
+
+### Why not one batched call
+
+Measured against this WSL build (`wsl.exe` 2.7.10.0, Ubuntu):
+
+| shape | result |
+|---|---|
+| `sh -c 'echo ARGC:$# ARG1:$1' sh a b c` | `ARGC:0 ARG1:` — arguments after the command are dropped |
+| `sh -c 'for p in "$@"; do readlink -f "$p"; done' sh /path` | loop never sees the path (same cause) |
+| any `sh -c` script containing a `"` | truncated at that quote by `wsl.exe`'s parser, silently |
+| `readlink -f good missing/component good` | prints the first line and exits 1 — the rest of the batch is lost |
+| `readlink -f '/path with spaces' "/path/with'quote"` | correct: a process argument carries any path |
+| 6 links, one call each, concurrency 1 | 656 ms |
+| 6 links, one call each, concurrency 4 | 208 ms |
+| 6 links in one batched `sh` call (quote-free script) | 111 ms |
+
+The batched form is faster but needs shell quoting that survives a parser which
+truncates on double quotes; a quote character in a directory name would either
+break the batch or need escaping that the same parser rewrites. One short call
+per link keeps the path a *process argument* — no quoting anywhere — and costs
+about 35 ms warm. On the full fixture: 6 links resolved in 179 ms inside a
+`list()`, and a link-free workspace scans in 12–20 ms without starting a
+distribution process at all.
+
+### Gates
+
+- **Real 9P** (`scripts/compatibility/skills-real.mjs`, part of the ten-check
+  harness): builds a workspace whose only path in is a symlink to a second
+  fixture **outside** the scan root, plus a nested project below the link target,
+  a file link, a dangling link and a loop back to the root. Asserts the linked
+  project and its nested project are published, that `get()` reads their bodies
+  through the real path, and — in the same run — that the identical walk with the
+  `resolveLinks` face removed finds neither. Passes.
+- **Live WSL fixture** (`/home/mille/symprobe/ws`, `node .test-runs/symlink/probe.mjs`):
+  catalog `["plain-skill","root-skill"]` before the fix → `["deep-skill","linked-skill",
+  "nested-skill","plain-skill","root-skill"]` after it; `linked-skill` is served at
+  `\\wsl.localhost\Ubuntu\home\mille\symprobe\elsewhere\linked-project\.dsh\skills\linked-skill\SKILL.md`
+  (outside the workspace, i.e. only reachable through the link) and every body
+  reads back.
+- **Unit** (`tests/wsl-skills.test.ts`): seven new cases — linked-in project
+  through the distribution, nested walk + no double publish, file/dangling links
+  ignored, ancestor loop bounded, no distribution call when the share resolves
+  links, per-lookup link budget, and no call at all in a link-free workspace.
+  26/26 in the file, and the harness's `unit` check passes on every release.
+- **Ten-check harness on the eight declared releases** (`0.1.0-rc.7` … `0.1.5-rc.2`,
+  run `symlink-01`): 8/10 each, the same two documented baseline failures
+  (`typecheck` exit 2 and `host-api`, which needs a live server). `skills-real`
+  passes on all eight — the first run of `0.1.1-rc.1` failed because a manual
+  fixture cleanup deleted `/tmp/dsh-wsl-compat` while that check was running; it
+  passed when re-run, and `0.1.1-rc.2` passed immediately afterwards in the same
+  sweep.
+- **Real model on `0.1.5-rc.2`** (browser, `WSL · Standard mode`, workspace
+  `/home/mille/symprobe/ws`): the model was asked to run `uname -r; pwd; whoami`
+  in bash and redirect the output into the linked project, to write a marker with
+  the file tool into the linked project's real path, and to list the skills it
+  can see. It reported the catalog as `browser4agent`, `deep-skill`,
+  `linked-skill`, `nested-skill`, `plain-skill`, `root-skill` — i.e. the three
+  skills that are only reachable through a symlink (one of them through a chain)
+  are in the injected catalog, interleaved with the host's own skills. On disk:
+  `elsewhere/linked-project/notes/agent.txt` = `SKILL-LINK-OK` (file tool, real
+  path outside the workspace) and `notes/bash.txt` =
+  `6.18.33.2-microsoft-standard-WSL2` / `/home/mille/symprobe/ws` / `mille`
+  (bash inside the distribution, redirect landed). The same session read the
+  file back through `ws/linked-project/...` as well.
+
+### Observation outside this change (not fixed here)
+
+The same session probed the access mode and found it is **not enforced for the
+file tools in a WSL session**: with the session set to `workspace-write`
+("工作区内修改"), `write` to `/home/mille/symprobe/policy-probe.txt` (outside the
+workspace, no symlink involved) and to `D:\ProgramData\dsh-policy-probe.txt`
+succeeded, with no denial. This is independent of the symlink change — no code
+touched by 0.4.5 is in that path — and it was only observed on `0.1.5-rc.2`; the
+likely mechanism is that a WSL variant mounts its own `fs` provider
+(`lib/fs.js`) while the sandbox layer decorates the host's `fs` service. It is
+recorded here because the help panel currently claims the opposite, and because
+confirming it across the declared releases (and deciding between wiring the
+policy in and correcting the text) is its own piece of work.
+
