@@ -256,3 +256,91 @@ browser pass. Between that browser pass and the published bytes the only
 difference is the help panel's known-issue wording, which the `0.1.5-rc.2` target
 (the packed artifact) exercises directly.
 
+
+## Copied-variant world duplication (2026-09-19, plugin 0.4.4)
+
+### The defect
+The variant generator recognises its own output by id prefix (`isWslVariantId`), and
+`transformPresetForWsl` appended its world group unconditionally. A user preset that
+began as a copy of a generated variant (`wsl-standard` renamed to a custom "data
+mode", carrying the old world group with whatever install path it was copied from)
+was therefore processed as a plain source preset and received a **second**
+`wsl-world` row. DSH refuses such a composition, so the mode could not be entered
+at all.
+
+Reproduced on `0.1.5-rc.2` with both builds, source preset = a copy of the generated
+`wsl-standard`:
+
+| build | generated rows | runtime |
+|---|---|---|
+| 0.4.3 (`main`) | `wsl-world` x2 | picker: `duplicate loader entry id: wsl-world` |
+| #24 (`6e8558a`) | `wsl-world` x2 | picker: `duplicate loader entry id: wsl-world` |
+| 0.4.4 (this fix) | `wsl-world` x1, this install's paths | mode selected; session mounted; real model answered and `pwd` = `/home/mille/fixworld-rc215` |
+
+### The fix
+The world group is now *replaced* rather than appended: the row is matched by the
+provider ids it mounts (`shell-wsl` / `fs-wsl`), so a copy whose group was renamed is
+still recognised, and a top-level row id repeated in a source is reduced to its first
+occurrence (DSH rejects the whole preset on a duplicate id). `tool-str-replace-editor`
+joined `WORLD_ROWS` like its `str-replace-editor` predecessor, and the variant's
+display name is unquoted before it is re-emitted.
+
+`tool-cordis` was deliberately **not** disabled: a `disabled` row never applies, which
+removed `cordis_inspect_list` / `cordis_inspect_query` from the WSL variant of Creator
+mode (0.4.3 answers with host `Service`/`Event`/`Builtin`/`Tool` plus five client
+providers; the 0.4.4 build answers identically).
+
+### Gates run
+- Transform invariants over every shipped preset of the 17 installed runtimes, both
+  builds: **136 transforms, 0 failures**, and **68/68** simulated copied-variant
+  sources resolving to a single fresh world group with no stale install path.
+- Ten-check harness on all eight declared releases (`0.1.0-rc.7` … `0.1.5-rc.2`):
+  8/10 each — only the documented `typecheck` baseline and `host-api` (which requires
+  a live server) fail, matching the 0.4.3 baseline.
+- Browser + real model (`DeepSeek-V41-Flash`, `0.1.5-rc.2`): the copied-variant mode
+  switches, mounts and answers (`pwd` = `/home/mille/fixworld-rc215`); Creator mode
+  still exposes `cordis_inspect_list`.
+- Browser + real model (`DeepSeek-V4-Flash`, `0.1.0-rc.7`, oldest declared): dialog →
+  `WSL · Standard mode`, skill-catalog injection with 3 names, `write`→`read`
+  `FIXWORLD-RC7-OK`, `644 mille`, `6.18.33.2-microsoft-standard-WSL2`.
+## Per-mode matrix and help-panel pass (2026-09-19, plugin 0.4.4)
+
+Every WSL variant was driven on four releases with a real model, asking for the
+three capabilities that matter in a WSL workspace: a file written with the file
+tool, a bash command executed inside the distribution whose output is redirected
+into the workspace, and the file read back.
+
+| release | modes | evidence left in `/home/mille/<ws>/notes/` | loader errors |
+|---|---|---|---|
+| `0.1.0-rc.7` (oldest declared) | Standard, PTC, Minimal, Creator | `MODE-<mode>-OK` plus `uname -r` = `6.18.33.2-microsoft-standard-WSL2`, `pwd` = the Linux workspace, `whoami` = `mille` | 0 |
+| `0.1.1-rc.2` (legacy client line) | same four | same | 0 |
+| `0.1.3-alpha.2` (persona split) | same four | same | 0 |
+| `0.1.5-rc.2` (current line) | same four | same | 0 |
+| `0.1.2-rc.1`, `0.1.5-rc.1` | same four | mode selected and a real turn answered (no file/bash assertions) | 0 |
+
+In every mode the follow-up bash call lands back in the workspace, i.e. the shell
+is per call: the source PTY group stays dropped, because it double-registers
+`bash` and its win32 backend cannot spawn a terminal.
+
+Help panel, verified in the browser on `0.1.5-rc.2`: the greeting line and the
+repository link render first, a "What's new" section carries this release, and the
+known-issue list is down to the two limitations that still hold — the historical
+"fixed in 0.4.3" note, the per-generation API paragraph and the "only
+plugin-registered workspaces default to a WSL variant" note are gone.
+
+Both remaining limitations were re-checked and kept on purpose, and neither is a
+dead end:
+
+- **Linux symlinks are not resolvable over the share.** The discovery walk is this
+  plugin's own provider, and its symlink branch (`src/host/wsl-skills.ts`:
+  `entry.isSymbolicLink()` → `io.stat(joinUnc(...))`) already tries to follow a
+  linked directory; it gives up only because 9P answers `EISDIR`/`ENOENT` for
+  those entries. A `wsl.exe -d <distro> -- readlink -f <linux path>` fallback on
+  that branch — the plugin already owns the UNC↔Linux helpers and the WSL
+  execution channel — resolves the target and lets the walk continue. That is a
+  new feature (loop/depth accounting, real-path dedupe, one WSL round-trip per
+  candidate link, cross-release re-testing), not a one-line fix; the file tools
+  would need the same fallback inside `WslFileSystem`'s resolution, which is a
+  larger change.
+- **No live catalog refresh** for UNC workspaces: the deliberate trade-off behind
+  the catalog fix, as the panel says.

@@ -13,7 +13,29 @@
  */
 
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
-const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
+const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
+
+/** Execution-world rows that register the model-facing editor tool. */
+const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
+
+/** The row ids this generator mounts inside its own world group. */
+const WSL_WORLD_PROVIDER_IDS = ['shell-wsl', 'fs-wsl']
+
+/**
+ * Whether a top-level row is this generator's own WSL world group.
+ *
+ * A preset copied from a generated variant (a user renaming `wsl-standard` to
+ * their own mode, say) carries the group under whatever id the copy kept, so
+ * the mounted provider ids identify it even when the row id changed. Without
+ * that check the variant would carry two world groups and the loader refuses
+ * the whole preset with `duplicate loader entry id: wsl-world`.
+ * @param block - the row's lines.
+ * @returns true when the row mounts this generator's WSL providers.
+ */
+function isWslWorldGroup(block: readonly string[]): boolean {
+  const text = block.join('\n')
+  return WSL_WORLD_PROVIDER_IDS.some((id) => new RegExp(`^\\s+- id: ${id}$`, 'm').test(text))
+}
 
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
 function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean): string {
@@ -130,7 +152,7 @@ interface PersonaTarget {
 }
 
 /** Strip one layer of YAML quoting so a value can move into a block scalar. */
-function unquoteScalar(value: string): string {
+export function unquoteScalar(value: string): string {
   const single = /^'(.*)'$/s.exec(value)
   if (single !== null) return (single[1] ?? '').replace(/''/g, "'")
   const double = /^"(.*)"$/s.exec(value)
@@ -236,7 +258,12 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
 /**
  * Transform one source preset composition into its WSL variant: drop the
  * execution-world rows, keep everything else verbatim, and append the WSL
- * world group. The persistent-shell group is NOT re-added: it registers the
+ * world group. A row id that appears twice in the source is kept once, and a
+ * world group the source already carries (a preset copied from a generated
+ * variant) is replaced rather than duplicated, so the variant always mounts
+ * exactly one world pointing at this installation's providers.
+ *
+ * The persistent-shell group is NOT re-added: it registers the
  * same `bash` tool name as the WSL world's `dsh-tool-bash`, and the tools
  * registry rejects duplicates within one preset layer — the whole variant
  * fails to mount and the session falls back to another preset. Its PTY
@@ -253,6 +280,7 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
   const kept: string[] = []
+  const seen = new Set<string>()
   let sawEditor = false
   let personaAppended = false
   for (const span of spans) {
@@ -261,9 +289,18 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
       kept.push(...lines.slice(span.start, span.end))
       continue
     }
-    if (WORLD_ROWS.has(id)) continue
+    // Two top-level rows with one id are a loader error ("duplicate loader
+    // entry id: <id>"), which makes the whole variant unmountable, so the first
+    // occurrence wins and a copied later one is dropped.
+    if (seen.has(id)) continue
+    seen.add(id)
+    const block = lines.slice(span.start, span.end)
+    if (WORLD_ROWS.has(id) || isWslWorldGroup(block)) {
+      if (EDITOR_ROWS.has(id)) sawEditor = true
+      continue
+    }
     if (id === SKILL_FILESYSTEM_ROW) {
-      kept.push(...disableSkillWatch(lines.slice(span.start, span.end)))
+      kept.push(...disableSkillWatch(block))
       continue
     }
     if (id === 'persona' && !personaAppended && appendablePersona(lines, span)) {
@@ -271,9 +308,10 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
       personaAppended = true
       continue
     }
-    kept.push(...lines.slice(span.start, span.end))
-    if (id === 'str-replace-editor') sawEditor = true
+    kept.push(...block)
   }
+  // An editor mounted inside a source group (a copied variant, say) also means
+  // the composition expects one, so the injected world keeps its editor row.
   if (source.includes('str-replace-editor')) sawEditor = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')

@@ -297,6 +297,15 @@ const STYLES = `
   padding-right: 4px;
 }
 .dww-help-section { display: flex; flex-direction: column; gap: 6px; }
+.dww-help-greeting {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+}
 .dww-help-title {
   margin: 0;
   font-size: 13px;

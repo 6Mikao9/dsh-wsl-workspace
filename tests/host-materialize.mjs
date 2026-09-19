@@ -134,6 +134,53 @@ const SUFFIX_COMPLETE_SRC = `- id: persona
       You are a coding agent.
     complete: true
 `
+// A user preset a person copied out of a generated variant and then edited: it
+// already carries this plugin's world group (with the install path of whatever
+// copy it came from) and a row id that got duplicated while editing. Generating
+// its variant must REPLACE that world instead of appending a second group - two
+// `wsl-world` rows make the loader refuse the preset with
+// `duplicate loader entry id: wsl-world`, so the mode cannot be picked at all.
+const COPIED_VARIANT_SRC = `# user preset copied from a generated WSL variant
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a data-mode agent.
+
+- id: wsl-world
+  name: cordis:group
+  group: true
+  isolate:
+    shell: true
+    fs: true
+  config:
+    - id: shell-wsl
+      name: 'C:/stale-install/lib/shell.js'
+
+    - id: fs-wsl
+      name: 'C:/stale-install/lib/fs.js'
+
+    - id: tool-bash
+      name: '@deepseek-ai/dsh-tool-bash'
+
+    - id: tool-fs
+      name: '@deepseek-ai/dsh-tool-fs'
+
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+
+- id: tool-str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+  config:
+    maxOutputChars: 16000
+
+- id: data-export
+  name: '@me/dsh-data-export'
+
+- id: data-export
+  name: '@me/dsh-data-export'
+`
 
 const sources = {
   standard: { path: join(home, 'src-standard', 'agent.cordis.yml'), text: STANDARD_SRC },
@@ -141,6 +188,7 @@ const sources = {
   'third-party-local': { path: join(home, 'src-third-party', 'agent.cordis.yml'), text: PREFAB_SRC },
   'standard-new': { path: join(home, 'src-standard-new', 'agent.cordis.yml'), text: SUFFIX_PREFIX_SRC },
   'standard-new-complete': { path: join(home, 'src-standard-new-complete', 'agent.cordis.yml'), text: SUFFIX_COMPLETE_SRC },
+  'copied-variant': { path: join(home, 'src-copied-variant', 'agent.cordis.yml'), text: COPIED_VARIANT_SRC },
 }
 // Source display metadata with declared roster order (the shipped layout).
 mkdirSync(join(home, 'src-standard'), { recursive: true })
@@ -153,6 +201,10 @@ mkdirSync(join(home, 'src-standard-new'), { recursive: true })
 mkdirSync(join(home, 'src-standard-new-complete'), { recursive: true })
 writeFileSync(join(home, 'src-standard-new', 'preset.yml'), 'name: New Shape\norder: 9\n', 'utf8')
 writeFileSync(join(home, 'src-standard-new-complete', 'preset.yml'), 'name: New Shape Complete\norder: 10\n', 'utf8')
+// A quoted display name: the generator copies the scalar out of this file, so it
+// must unquote it rather than hand the quotes to the picker twice over.
+mkdirSync(join(home, 'src-copied-variant'), { recursive: true })
+writeFileSync(join(home, 'src-copied-variant', 'preset.yml'), "name: 'Data mode（数据模式）'\norder: 8\n", 'utf8')
 // A source preset is an opaque, self-contained unit. Assets must travel
 // without the WSL plugin knowing their names, extensions, or consumers.
 mkdirSync(join(home, 'src-third-party', 'plugin-data'), { recursive: true })
@@ -262,6 +314,22 @@ assert(prefabYaml.includes('- id: wsl-world'), 'third-party variant injects wsl 
 assert((prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'third-party variant registers bash exactly once')
 assert(prefabYaml.includes('str-replace-editor'), 'third-party variant re-injects the editor over the WSL fs')
 assert(existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'third-party opaque asset directory is mirrored')
+
+// ── a preset copied out of a generated variant ────────────────────────────
+const copiedVariant = join(home, '.agent-presets', 'wsl-copied-variant')
+const copiedYaml = readFileSync(join(copiedVariant, 'agent.cordis.yml'), 'utf8')
+const copiedMeta = readFileSync(join(copiedVariant, 'preset.yml'), 'utf8')
+assert(existsSync(copiedVariant), 'copied-variant WSL variant generated')
+assert((copiedYaml.match(/^- id: wsl-world$/gm) ?? []).length === 1, 'a copied variant carries exactly one world group')
+assert(!copiedYaml.includes('C:/stale-install'), 'the copied world group is replaced, not duplicated')
+const copiedShellRow = /name: '(.+shell\.js)'/.exec(copiedYaml)
+assert(copiedShellRow !== null && existsSync(copiedShellRow[1]), "the copied variant mounts this install's shell provider")
+const copiedIds = [...copiedYaml.matchAll(/^- id: ([A-Za-z0-9_.-]+)$/gm)].map(match => match[1])
+assert(copiedIds.length === new Set(copiedIds).size, 'no duplicate top-level row id survives the transform')
+assert((copiedYaml.match(/name: '@deepseek-ai\/dsh-tool-str-replace-editor'/g) ?? []).length === 1, 'the copied variant mounts the editor once')
+assert(copiedYaml.includes('- id: data-export'), 'the user row survives')
+const copiedParsed = yaml.load(copiedMeta)
+assert(copiedParsed.name === 'WSL · Data mode（数据模式）', 'a quoted source display name loses its quotes')
 
 // Stale variant cleanup: a wsl-ghost dir whose source vanished must go.
 mkdirSync(join(home, '.agent-presets', 'wsl-ghost'), { recursive: true })

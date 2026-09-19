@@ -33,7 +33,7 @@ import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
-import { isWslVariantId, transformPresetForWsl, variantIdFor } from './host/variants.ts'
+import { isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
 /** The HTTP route this plugin serves (a relative, same-origin path). */
@@ -411,7 +411,10 @@ async function materializeVariants(
         // bilingual labels above so both locales can identify the variant.
         const match = /^name:\s*(.+)$/m.exec(meta)
         if (match?.[1] !== undefined && match[1].trim() !== '') {
-          name = variantName(preset.id, match[1].trim())
+          // The scalar is copied out of the source's YAML as written, so a
+          // quoted `name: 'Data mode'` would otherwise reach the picker with
+          // its quotes doubled into the variant's own scalar.
+          name = variantName(preset.id, unquoteScalar(match[1].trim()))
         }
       }
       // Inherit the source's declared order so the WSL variants line up with
