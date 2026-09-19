@@ -66,6 +66,7 @@
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-fs": "*",
     "@deepseek-ai/dsh-fs-local": "*",
+    "@deepseek-ai/dsh-sandbox": "*",
     "@deepseek-ai/dsh-shell": "*",
     "@deepseek-ai/dsh-subprocess": "*",
     "@deepseek-ai/dsh-timeout": "*"

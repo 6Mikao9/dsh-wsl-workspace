@@ -10,6 +10,23 @@
  * Both UNC paths and Linux absolute paths resolve; Windows drive paths
  * resolve through their `/mnt/<drive>` form, so a WSL-composed session can
  * still touch the Windows filesystem coherently.
+ *
+ * Two seams the host's own provider supplies are re-established here, because
+ * a WSL world mounts this backend in a preset realm where the host's
+ * `fs-sandbox` wrapper (and therefore both behaviours) is not in the call
+ * path:
+ *
+ * - **Linux symlinks**: the share lists a link but cannot resolve it, so a link
+ *   path used to fail as missing. `resolve`/`lstat` now retry through the
+ *   distribution (`wsl.exe … readlink -f`, see `shared/links.ts`) and continue
+ *   at the real path — never silently replacing the link, since the fallback
+ *   only runs when the direct resolution failed.
+ * - **The file policy**: writes are fenced by `ctx.sandboxPolicy` exactly like
+ *   `@deepseek-ai/dsh-fs-sandbox` fences the host backend — the same
+ *   `writableRoots` allow-list, the same `FS_SANDBOX_DENIED` error the tool
+ *   layer turns into its model-facing denial and escalation hint, and the same
+ *   `sandboxMode` capability fact it reads to advertise escalation.
+ *
  * @module dsh-wsl-workspace/fs
  */
 
@@ -18,8 +35,10 @@ import z from '@deepseek-ai/schemastery'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { link, lstat, rename } from 'node:fs/promises'
 import { FsError } from '@deepseek-ai/dsh-fs'
-import type { FsPathInfo, FsTarget } from '@deepseek-ai/dsh-fs'
+import type { FsEditOutcome, FsEditRequest, FsPathInfo, FsTarget, FsVersion, FsWriteIntent, FsWriteOutcome } from '@deepseek-ai/dsh-fs'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
+import { canonicalPath, writableRoots } from '@deepseek-ai/dsh-sandbox'
+import { resolveLinuxSymlink } from './shared/links.ts'
 import {
   isAbsoluteLinuxPath,
   joinUnc,
@@ -38,6 +57,21 @@ export interface Config {
   /** Exclusive UTF-8 byte limit on each overwrite-diff side (see fs-local). */
   diffBasisMaxBytes?: number
 }
+
+/** The host file-effect policy for one call, as `ctx.sandboxPolicy` resolves it. */
+export interface SandboxPolicyLike {
+  mode: string
+  workspaceRoot?: string
+}
+
+/** The `ctx.sandboxPolicy` face this backend fences its writes with (optional service). */
+export interface SandboxPolicyFace {
+  /** Deployment default mode, mirrored as this backend's `sandboxMode`. */
+  defaultMode?: string
+  /** Per-call (or session-resolved) policy. */
+  resolve(): SandboxPolicyLike
+}
+
 
 /** One translated coordinate: the input the local backend opens plus its cwd. */
 interface Translated {
@@ -194,11 +228,165 @@ export class WslFileSystem extends LocalFileSystem {
   override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
     if (opts?.signal?.aborted) throw new FsError('resolve aborted', 'FS_ABORTED')
     const { input, cwd } = this.translate(path, opts?.cwd)
-    const local = await super.resolve(input, {
-      cwd,
-      ...opts?.signal !== undefined ? { signal: opts.signal } : {},
-    })
+    const resolved = { cwd, ...opts?.signal !== undefined ? { signal: opts.signal } : {} }
+    let local: FsTarget
+    try {
+      local = await super.resolve(input, resolved)
+    } catch (error) {
+      const real = await this.linkAwarePath(input, input)
+      if (real === undefined) throw error
+      return this.wslTarget(await super.resolve(real, resolved))
+    }
+    // The share resolves a link path to a *lexical* identity: `lstat` on a
+    // Linux symlink fails, so the local resolver hands back the deepest
+    // existing ancestor plus the remaining segments. Ask the distribution
+    // before accepting that identity, or a link would be treated as a plain
+    // missing file (and a write through it would escape the policy).
+    const real = await this.linkAwarePath(input, String(local.targetKey))
+    if (real === undefined) return this.wslTarget(local)
+    return this.wslTarget(await super.resolve(real, resolved))
+  }
+
+  /** Wrap a locally resolved target in this world's Linux-facing identity. */
+  private wslTarget(local: FsTarget): FsTarget {
     return { targetKey: local.targetKey, displayPath: this.linuxDisplay(String(local.displayPath)) }
+  }
+
+  /**
+   * The real path a link-aware lookup must use, or `undefined` when the input
+   * needs no help. Only a path this share cannot already describe pays for a
+   * `wsl.exe` lookup: an existing file or directory resolves directly, while a
+   * symlink (in the final segment or anywhere above it), a dangling target and
+   * a not-yet-created file all ask the distribution, which answers with the
+   * same path when nothing was linked.
+   * @param input - the translated input or resolved identity to inspect.
+   * @param targetKey - the identity the local resolver produced.
+   * @returns the distribution's real path when it differs, else `undefined`.
+   */
+  private async linkAwarePath(input: string, targetKey: string): Promise<string | undefined> {
+    const unc = parseWslUnc(targetKey) ?? parseWslUnc(input)
+    if (unc === null) return undefined
+    const asSpelled = joinUnc(unc.distro, unc.linuxPath)
+    if (await this.describable(targetKey)) return undefined
+    const real = await resolveLinuxSymlink(asSpelled)
+    if (real === undefined) return undefined
+    return real.toLowerCase() === asSpelled.toLowerCase() ? undefined : real
+  }
+
+  /** Whether this share can describe a Windows-side identity at all. */
+  private async describable(winPath: string): Promise<boolean> {
+    return await super.lstat(winPath, {}).catch(() => undefined) !== undefined
+  }
+
+  /**
+   * The host file-effect policy for this call: the tool layer's per-call value
+   * when it passes one, else the service's own resolution. `undefined` means
+   * the deployment mounts no policy at all — the same state as a host
+   * filesystem without `fs-sandbox`, so nothing is fenced.
+   */
+  protected sandboxPolicy(perCall?: SandboxPolicyLike): SandboxPolicyLike | undefined {
+    if (isSandboxPolicy(perCall)) return perCall
+    const service = this.sandboxPolicyService()
+    if (service === undefined) return undefined
+    try {
+      const policy = service.resolve()
+      return isSandboxPolicy(policy) ? policy : undefined
+    } catch {
+      // A policy that cannot resolve (no session in scope) fences nothing.
+      return undefined
+    }
+  }
+
+  /** The policy service this backend reads, when the deployment mounts one. */
+  private sandboxPolicyService(): SandboxPolicyFace | undefined {
+    const service = this.ctx.get('sandboxPolicy') as SandboxPolicyFace | undefined
+    return service !== undefined && typeof service.resolve === 'function' ? service : undefined
+  }
+
+  /**
+   * The deployment's default sandbox mode — the capability fact the file tool
+   * reads to advertise escalation, mirrored from `SandboxedFileSystem`.
+   */
+  get sandboxMode(): string | undefined {
+    const mode = this.sandboxPolicyService()?.defaultMode
+    return typeof mode === 'string' ? mode : undefined
+  }
+
+  /**
+   * Fence a mutation by the policy, then hand back the EXACT target to mutate
+   * (no check-here-write-there): `read-only` denies, `workspace-write`
+   * re-resolves and requires containment under a writable root, and
+   * `danger-full-access` passes through. Mirrors
+   * `@deepseek-ai/dsh-fs-sandbox`'s `checkedTarget`, including the
+   * `FS_SANDBOX_DENIED` code the tool layer renders as a denial.
+   * @param target - the resolved target about to be written.
+   * @param perCall - the tool layer's per-call policy, when it passes one.
+   * @returns the target the mutation must use.
+   */
+  private async checkedTarget(target: FsTarget, perCall?: SandboxPolicyLike): Promise<FsTarget> {
+    const policy = this.sandboxPolicy(perCall)
+    if (policy === undefined || policy.mode === 'danger-full-access') return target
+    if (policy.mode === 'read-only') {
+      throw new FsError(
+        `cannot write "${target.displayPath}": file access denied under read-only mode`,
+        'FS_SANDBOX_DENIED',
+      )
+    }
+    if (policy.mode !== 'workspace-write') return target
+    const fresh = await this.resolve(target.displayPath)
+    for (const root of this.writableRoots(policy)) {
+      if (this.underRoot(String(fresh.targetKey), root)) return fresh
+    }
+    throw new FsError(
+      `cannot write "${target.displayPath}": file access denied under workspace-write mode`,
+      'FS_SANDBOX_DENIED',
+    )
+  }
+
+  /**
+   * The roots a write may land under: the host's rule verbatim
+   * (`writableRoots`: the workspace root plus the platform temp areas) plus,
+   * in a WSL session, the distribution's own `/tmp` — the temp area of the
+   * world this session actually runs in, which the host-side rule cannot name.
+   * @param policy - the resolved policy.
+   */
+  private writableRoots(policy: SandboxPolicyLike): string[] {
+    const roots = writableRoots(policy as Parameters<typeof writableRoots>[0]) as string[]
+    const workspace = policy.workspaceRoot
+    const unc = workspace === undefined ? null : parseWslUnc(workspace)
+    if (unc !== null) roots.push(joinUnc(unc.distro, '/tmp'))
+    return roots
+  }
+
+  /** Whether a canonical target key is a writable root or sits below one. */
+  private underRoot(targetKey: string, root: string): boolean {
+    const key = trimTrailing(canonicalPath(targetKey)).toLowerCase()
+    const base = trimTrailing(canonicalPath(root)).toLowerCase()
+    if (base === '' || base === '/' || key === base) return key === base
+    return key.startsWith(base.endsWith('/') || base.endsWith('\\') ? base : `${base}\\`)
+      || key.startsWith(`${base}/`)
+  }
+
+  /** Fence a full-content write by the policy, then delegate to the parent. */
+  override async writeText(
+    target: FsTarget,
+    content: string,
+    expected?: FsWriteIntent,
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxPolicyLike,
+  ): Promise<FsWriteOutcome> {
+    return super.writeText(await this.checkedTarget(target, sandboxPolicy), content, expected, signal)
+  }
+
+  /** Fence an edit by the policy, then delegate to the parent. */
+  override async editText(
+    target: FsTarget,
+    edit: FsEditRequest,
+    expected?: { version: FsVersion },
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxPolicyLike,
+  ): Promise<FsEditOutcome> {
+    return super.editText(await this.checkedTarget(target, sandboxPolicy), edit, expected, signal)
   }
 
   override processPath(target: FsTarget): string {
@@ -240,8 +428,24 @@ export class WslFileSystem extends LocalFileSystem {
     if (signal?.aborted) throw new FsError('lstat aborted', 'FS_ABORTED')
     if (path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
     const { input, cwd } = this.translate(path, opts?.cwd)
-    return super.lstat(input, { cwd }, signal)
+    const info = await super.lstat(input, { cwd }, signal).catch(() => undefined)
+    if (info !== undefined) return info
+    // Same substrate limit as `resolve`: a link path must describe its target,
+    // because the share cannot describe the link itself.
+    const real = await this.linkAwarePath(input, input)
+    if (real === undefined) return info
+    return super.lstat(real, { cwd }, signal)
   }
+}
+
+/** Whether a value is a usable file-effect policy. */
+function isSandboxPolicy(value: SandboxPolicyLike | undefined): value is SandboxPolicyLike {
+  return value !== undefined && typeof value.mode === 'string' && value.mode !== ''
+}
+
+/** Strip a trailing separator (keeping the root separator itself). */
+function trimTrailing(path: string): string {
+  return path.length > 1 ? path.replace(/[\\/]+$/, '') : path
 }
 
 export default WslFileSystem
