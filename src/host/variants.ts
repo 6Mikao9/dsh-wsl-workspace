@@ -13,7 +13,7 @@
  */
 
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
-const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
+const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'persistent-bash', 'persistent-pwsh', 'terminal-bash', 'terminal-pwsh', 'custom-bash', 'bootstrap-filesystem'])
 
 /** Execution-world rows that register the model-facing editor tool. */
 const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
@@ -37,8 +37,39 @@ function isWslWorldGroup(block: readonly string[]): boolean {
   return WSL_WORLD_PROVIDER_IDS.some((id) => new RegExp(`^\\s+- id: ${id}$`, 'm').test(text))
 }
 
+/**
+ * The persistent-shell rows: the host's own PTY backend, told to run this
+ * plugin's relay (so the shell is a WSL one), plus the persistent `bash` tool
+ * that consumes it. Both are optional because a world generated without the
+ * relay paths (shape tests, older callers) must stay exactly what it was.
+ */
+function persistentShellRows(relayPath: string, nodePath: string): string[] {
+  return [
+    '    # Persistent shell: the host PTY backend runs this plugin\'s relay,',
+    '    # which hands the PTY to `wsl.exe … bash` (distribution and user come',
+    '    # from the session). The one-shot `bash` above stays available.',
+    '    - id: terminal-wsl',
+    "      name: '@deepseek-ai/dsh-terminal-bash'",
+    '      config:',
+    '        backendType: wsl',
+    '        shellDialect: bash',
+    `        shellPath: '${nodePath.replace(/'/g, "''")}'`,
+    '        shellArgs:',
+    `          - '${relayPath.replace(/'/g, "''")}'`,
+    '    - id: persistent-bash',
+    "      name: '@deepseek-ai/dsh-tool-bash-persistent'",
+    '      config:',
+    '        backendType: wsl',
+  ]
+}
+
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
-function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean): string {
+function wslWorldGroup(
+  shellPath: string,
+  fsPath: string,
+  includeEditor: boolean,
+  persistent?: { relayPath: string; nodePath: string },
+): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
     '# The shell and fs services are provided entry-locally (the isolate',
@@ -72,6 +103,7 @@ function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean
           '        maxOutputChars: 16000',
         ]
       : []),
+    ...(persistent === undefined ? [] : persistentShellRows(persistent.relayPath, persistent.nodePath)),
     '',
   ].join('\n')
 }
@@ -263,20 +295,27 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  * variant) is replaced rather than duplicated, so the variant always mounts
  * exactly one world pointing at this installation's providers.
  *
- * The persistent-shell group is NOT re-added: it registers the
- * same `bash` tool name as the WSL world's `dsh-tool-bash`, and the tools
- * registry rejects duplicates within one preset layer — the whole variant
- * fails to mount and the session falls back to another preset. Its PTY
- * backend additionally cannot run on this plugin's Windows host
- * (`dsh-subprocess-local`: "terminal inspection is unsupported on platform
- * win32"), so the group could never spawn a shell here anyway. The WSL
- * world's ordinary `bash` tool covers command execution for every variant.
+ * The source's own persistent-shell group is not re-added as such: it registers
+ * the same `bash` tool name as the WSL world's `dsh-tool-bash`, and the tools
+ * registry rejects duplicates within one preset layer — the whole variant fails
+ * to mount and the session falls back to another preset. Its PTY *backend*, on
+ * the other hand, is exactly what a stateful WSL shell needs, and it is
+ * config-driven: given the relay in {@link persistentShellRows} it runs
+ * `wsl.exe … bash` under the host's PTY, and its tool registers the separate
+ * `persistent-bash` name, so the one-shot `bash` above stays as it is.
  * @param source - the source composition text.
  * @param shellPath - absolute path of the plugin's built WSL shell provider.
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
+ * @param persistent - the relay and interpreter a stateful shell needs; omit to
+ *   generate a world without the persistent-shell rows.
  * @returns the variant composition text.
  */
-export function transformPresetForWsl(source: string, shellPath: string, fsPath: string): string {
+export function transformPresetForWsl(
+  source: string,
+  shellPath: string,
+  fsPath: string,
+  persistent?: { relayPath: string; nodePath: string },
+): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
   const kept: string[] = []
@@ -315,7 +354,7 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
   if (source.includes('str-replace-editor')) sawEditor = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent))
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

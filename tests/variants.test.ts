@@ -127,6 +127,38 @@ test('minimal-like transform keeps persona fixed and uses the cwd-aware fs tools
   assert.ok(!out.includes('inside a WSL'), 'minimal persona not amended (complete prompt)')
 })
 
+const RELAY = 'D:/plugin/lib/wsl-relay.js'
+const NODE = 'C:/Program Files/nodejs/node.exe'
+
+test('the world mounts a persistent WSL shell when the relay paths are supplied', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE })
+  assert.ok(out.includes('    - id: terminal-wsl'), 'PTY backend row injected')
+  assert.ok(out.includes("      name: '@deepseek-ai/dsh-terminal-bash'"), 'host PTY backend mounted')
+  assert.ok(out.includes("      name: '@deepseek-ai/dsh-tool-bash-persistent'"), 'persistent tool mounted')
+  assert.ok(out.includes('    - id: persistent-bash'), 'persistent tool row injected')
+  assert.ok(out.includes(`        shellPath: '${NODE}'`), 'the relay runs on this installation\'s node')
+  assert.ok(out.includes(`          - '${RELAY}'`), 'the relay is this installation\'s script')
+  assert.ok(out.includes('        shellDialect: bash'), 'the shell is bash, not pwsh')
+  assert.equal((out.match(/backendType: wsl/g) ?? []).length, 2, 'backend and tool agree on the backend type')
+  // The one-shot bash stays: the persistent one registers its own tool name.
+  assert.ok(out.includes('    - id: tool-bash'), 'one-shot bash kept')
+  const ids = [...out.matchAll(/^\s*- id: ([a-z0-9-]+)$/gm)].map(match => match[1] ?? '')
+  assert.equal(new Set(ids).size, ids.length, `duplicate loader entry id in ${ids.join(',')}`)
+})
+
+test('a source persistent-shell row is replaced instead of duplicated', () => {
+  const source = `${STANDARD_LIKE}\n- id: persistent-bash\n  name: '@deepseek-ai/dsh-tool-bash-persistent'\n- id: terminal-pwsh\n  name: '@deepseek-ai/dsh-terminal-bash'\n`
+  const out = transformPresetForWsl(source, SHELL, FS, { relayPath: RELAY, nodePath: NODE })
+  assert.equal((out.match(/id: persistent-bash/g) ?? []).length, 1, 'exactly one persistent-bash row')
+  assert.ok(!out.includes('terminal-pwsh'), 'the source terminal row is dropped')
+})
+
+test('without relay paths the world keeps its previous shape', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS)
+  assert.ok(!out.includes('terminal-wsl'), 'no PTY backend row')
+  assert.ok(!out.includes('persistent-bash'), 'no persistent tool row')
+})
+
 /** A prefab-family composition: win32-only custom bash + local fs group. */
 const PREFAB_LIKE = `- id: persona
   name: '@deepseek-ai/dsh-persona'

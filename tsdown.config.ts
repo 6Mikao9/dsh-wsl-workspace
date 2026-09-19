@@ -39,6 +39,7 @@ export default defineConfig([
       index: 'src/index.ts',
       shell: 'src/shell.ts',
       fs: 'src/fs.ts',
+      'wsl-relay': 'src/host/wsl-relay.ts',
     },
     outDir: 'lib',
     format: ['esm'],
