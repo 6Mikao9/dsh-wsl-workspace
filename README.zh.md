@@ -36,6 +36,54 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录；结果按扫描根缓存 10 秒，技能正文始终实时读取。一个底层限制不是本插件能修的：Windows 侧的 `\\wsl.localhost` 共享**无法解析 Linux 符号链接**（用 `ln -s` 链进来的项目发现不了，扫描会跳过而不报错，请把工作区注册在真实项目目录所在的层级）。**0.4.3 已修复**：UNC 工作区原先**收不到技能目录**——宿主技能提供者用 `fs.watch` 监视该共享，对 `\\wsl.localhost\...` 会抛 `EISDIR`，该次观测被判为不完整，而 `dsh-tool-skill` 在快照不完整时会丢弃整条目录消息。现在生成预设时会把 `skill-filesystem` 行的 `watch` 固定为 `false`，目录在会话启动时扫描一次并照常注入。唯一代价是不再实时刷新：会话运行中途新加入的技能要等下一个会话才出现在目录里（技能正文仍由 `get` 实时读取）。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
 
+## 更新日志
+
+英文完整历史见 [README.md](README.md)，本节为对应中文记录（0.4.3 及更早为摘要）。
+
+### 0.4.4 — 2026-09-19
+
+- **在 WSL 变体基础上改出来的自定义模式完全用不了**：本插件靠 id 前缀（`wsl-`）识别自己的产物，于是「把生成的 `wsl-standard` / `wsl-cordis` 复制改名再改」得到的用户预设会被当成普通源预设，被**再追加一个世界组**。DSH 拒绝含两个 `wsl-world` 行的组合，选中该模式时直接失败：`无法切换到「WSL · <名称>」：duplicate loader entry id: wsl-world`；在"先挂载组、后校验行 id"的版本上，同一处重复会晚一步表现为 `tool "str replace editor" is already registered in this scope`（即 [#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24) 报告的现象）。现在生成器会**替换**它找到的世界组（按挂载的 `shell-wsl` / `fs-wsl` provider id 识别，改过组名也能认出），每个变体最终只挂一个世界，且指向本机安装的 provider。源里重复出现的顶层行 id 也只保留第一处——DSH 遇到重复 id 是**整个预设**不可用，而不是只丢那一行。
+- **`tool-str-replace-editor` 行与旧的 `str-replace-editor` 行一样被替换**（[#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24)）：较新的名单用这个 id，而它注册的工具名与注入世界组里那个编辑器行相同，所以源里的那行会被丢弃，变体注入的、走 WSL 文件系统的编辑器保留。
+- **变体显示名不再多出一层引号**：变体的 `preset.yml` 原先逐字复制源里的 `name:` 标量，于是 `name: 'Data mode'` 到了模式选择器里变成 `WSL · ''Data mode''`；现在会先去掉一层 YAML 引号再写出。
+- **未采纳 [#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24) 的做法**：禁用 `tool-cordis` 行来规避 inspect provider 重复注册。`disabled` 的行根本不会 apply，结果是 WSL 创造模式**直接丢掉** `cordis_inspect_list` / `cordis_inspect_query`（已与 0.4.3 对照：0.4.3 里两个工具都在，且能返回 host 与 client 两侧的 provider）；PR 描述里"模型仍能在工具目录看到、只是不能用"与实际不符。其报告中的重复注册需要该行被 apply 两次，而这在"由复制预设引起"的情形下已由上面的行 id 去重解决。
+- **验证**：八个已声明版本（`0.1.0-rc.7` … `0.1.5-rc.2`）跑通与 0.4.3 相同的 8/10 项检查（仅剩既有的 `typecheck` 基线与一项需要在线服务的检查）；17 个已安装运行时里全部 shipped 预设共 136 次变换，除本次修复外结果不变；68 个"复制变体"场景全部收敛为单一新世界组。另做浏览器 + 真模型验证：复制变体模式本身、创造模式（检查工具完整）以及 `0.1.0-rc.7` 的标准流程。
+
+### 0.4.3 — 2026-09-11
+
+- **persona 文本位置变更**（[#22](https://github.com/6Mikao9/dsh-wsl-workspace/issues/22)）：DSH 把 persona 面向模型的字段从 `text` 改为内联 `suffix` + 折叠 `prefix`，而变体生成器只识别 `text: >-`，于是 WSL 环境说明从未追加（会话仍在发行版内运行，但模型不知道自己的 cwd 是 Linux 路径）。现在按 `suffix` → `text` → `prefix` 依次补写（内联标量会先折成块标量，句子落在原 `text` 块的位置），带 `complete: true` 的 persona 依旧不动。
+- **帮助面板**：对话框新增「?」按钮，就地展示本构建声明的 DSH 版本（直接从 `package.json` 经宿主路由读取，不会与清单脱节）、插件的用法与特性，以及无法修复的已知限制。
+- **UNC 工作区终于能收到技能目录**：宿主技能提供者用 `fs.watch` 监视工作区，对 `\\wsl.localhost\...` 会抛 `EISDIR`，该次观测被判为不完整，而 `dsh-tool-skill` 在快照不完整时会丢弃**整条**目录消息，于是 WSL 会话的模型一个技能都看不到。现在生成预设时把 `skill-filesystem` 行的 `watch` 固定为 `false`（若该行已有 `config:` 就并入，源里自己声明了 `watch` 则不动），目录改为在会话启动时扫描一次。代价是不再实时刷新：会话运行中途加入的技能要等下一个会话（技能正文仍实时读取）。
+- **`verify-lib` 加固**：其注释/字符串剥离器会把注释里的孤立单引号与后面的引号配对、吞掉剩余 bundle，使所有 `node:*` 导入看起来都被 tree-shake 掉；现在引号规则遇换行即终止，与 JavaScript 字符串一致。
+
+### 0.4.2 — 2026-09-10
+
+- **在 `0.1.2-rc.1` 工作区里「创建并打开」**：会话启动器改为在对话框写入时解析——本插件 apply 早于发布 `uiWorkspace` 的 UI 域注册服务，apply 时缓存的值整页都是 `undefined`，于是「创建并打开」只建了工作区、没开会话，而对话框仍报成功。两种 API 都不存在的版本现在会在写入前直接失败，不再留下孤立工作区。
+- **技能正文完整性**：`findFrontmatterEnd` 返回的就是正文首字符下标，此前的偏移会把首字符吃掉；同时**带 UTF-8 BOM 的 `SKILL.md` 不再被丢弃**（BOM 会在围栏检查前剥离）。
+- **绑定收敛于迟到输入**：agent preset 名单与已注册的 `/mnt/<drive>` 工作区集都是绑定的输入且都异步到达，现在各自到达后重跑一遍，而不是等一个可能永远不来的会话存储事件。
+- **兼容性清单修正**：`0.1.3-alpha.1` 并未发布（`npm view` 为 404），替换为已发布的 `0.1.3-alpha.2`。
+- **可复现发布**：新增 `.gitattributes`（`* text=auto eol=lf`、`lib/** -text`）。`core.autocrlf=true` 会在检出时把文本文件改写成 CRLF，而 `lib/` 是提交并原样发布的，导致同一提交在不同机器上产出不同的 npm 包。
+- **闭环测试**：`tests/client-lifecycle.test.mjs` 用发布出去的 `lib/client.js` 跑通新旧两种服务形态（`connection.api.agentPresets` + `workspaces.startSession` 与 `remote.agentPresets` + `uiWorkspace`），并断言「创建并打开」的正常、迟到注册与无启动器三种情况。
+
+### 0.4.1 — 2026-09-03
+
+- **DSH `0.1.2-rc.1` 兼容**：运行时按特性检测自动选用新旧 API——`uiWorkspace.startSession()`（`0.1.2-rc.1+`）/ `workspaces.startSession()`（`0.1.1-rc.2` 及更早）、`summary.projectionValues?.agentPreset`（`0.1.2-rc.1+`）/ `summary.agentPreset`（`0.1.1-rc.2` 及更早）；兼容性清单加入 `0.1.2-rc.1`。
+- **修复 `0.1.2-rc.1+` 上的 `without inject` 崩溃**：agent preset 名单改经 `ctx.get('remote.agentPresets')` 读取（拓扑无关的服务查找），不再走 `remote` 聚合上的 `agentPresets` 属性——Cordis 的 associate 代理会拒绝未在 `inject` 声明的点号属性。`inject` 仍只保留两代 DSH 共有的服务（`slots`、`locale`、`sessions`、`workspaces`）。
+
+### 0.4.0 — 2026-08-29
+
+- **查询缓存**：已完成的技能目录查询按扫描根缓存 10 秒，避免在慢速 9P 共享上反复重扫；`get()` 仍实时读正文，新技能在 TTL 窗口内出现。
+- **符号链接项目**：显式识别目录符号链接并安全剪枝（不崩、不循环），但经排查属底层限制——Windows 侧无法解析 Linux 符号链接（实测 `readlink` → `EISDIR`，`stat`/`readdir` → `ENOENT`），因此用 `ln -s` 链进来的项目仍发现不了；另加"名称 + 正文"指纹去重，保证解析得到链接的平台上别名技能不会被发布两次。
+- **块标量 frontmatter**：`description:` / `whenToUse:` 写成 YAML 块标量（`|`、`>`）现在能解析，此前这类技能会被静默丢弃。
+- **兼容性清单**：`dsh.compatibility.dshReleases` 逐版本声明兼容性，并附可复现的一次性 Profile 安装/启动/卸载证据；`engines` 声明 Node.js 下限。
+- **门禁脚本**：`scripts/check-rank-parity.mjs` 在项目等级常量与宿主 `dsh-skill-filesystem` 漂移时让发布失败。
+
+### 0.3.2 — 2026-08-29
+
+- **WSL 会话注入嵌套项目的技能目录**（[#10](https://github.com/6Mikao9/dsh-wsl-workspace/issues/10)）：注册工作区之下的嵌套项目里的 `.dsh/skills` / `.agents/skills` 会带宿主的项目等级与来源一并发布，模型看到的目录与会话 cwd 就在项目里时一致；发现过程有深度与预算上限，会剪掉 `node_modules` 与点目录，且不改动非 WSL 会话。
+- **扫描根对齐宿主**：从项目子目录发起查询先就近解析 `.git` 祖先，深层 cwd 也能看到所属项目的技能，且不会泄漏该祖先之上的技能。
+- **加固**：技能根预算按次强制，`skills.registerProvider` 调用加了保护，宿主 `skills` 服务形状不同时不再拖垮插件加载。
+- **清理**：移除历史预构建 `lib/` chunk 中残留的死 vendor 代码（含内联的 schemastery 副本），并补充嵌套技能目录的回归测试与 TESTING.md 章节。
+
 ## 许可与出处
 
 MIT，详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)，NOTICE 精确列明：

@@ -174,6 +174,104 @@ test('a top-level editor is replaced instead of registered twice', () => {
   assert.equal(editorRegistrants, 1)
 })
 
+/** The same editor row under the id a newer release row set uses. */
+test('a tool-str-replace-editor row is replaced too', () => {
+  const out = transformPresetForWsl(`- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a coding agent.
+
+- id: tool-str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+  config:
+    maxOutputChars: 16000
+`, SHELL, FS)
+  assert.ok(!/^- id: tool-str-replace-editor$/m.test(out), 'source editor row dropped')
+  const editorRegistrants = out.match(/name: '@deepseek-ai\/dsh-tool-str-replace-editor'/g)?.length ?? 0
+  assert.equal(editorRegistrants, 1, 'exactly one editor registration')
+})
+
+/** A preset a user copied out of a generated variant and edited. */
+const COPIED_VARIANT_LIKE = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a coding agent.
+
+- id: wsl-world
+  name: cordis:group
+  group: true
+  isolate:
+    shell: true
+    fs: true
+  config:
+    - id: shell-wsl
+      name: 'D:/old-install/lib/shell.js'
+
+    - id: fs-wsl
+      name: 'D:/old-install/lib/fs.js'
+
+    - id: tool-bash
+      name: '@deepseek-ai/dsh-tool-bash'
+
+    - id: tool-fs
+      name: '@deepseek-ai/dsh-tool-fs'
+
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+
+- id: their-own-tool
+  name: '@me/dsh-their-own-tool'
+`
+
+test('a copied variant is re-worlded instead of carrying two world groups', () => {
+  const out = transformPresetForWsl(COPIED_VARIANT_LIKE, SHELL, FS)
+  const groups = out.match(/^- id: wsl-world$/gm)?.length ?? 0
+  assert.equal(groups, 1, 'exactly one world group')
+  assert.ok(!out.includes('D:/old-install'), 'the stale world is replaced, not kept')
+  assert.ok(out.includes(`name: '${SHELL}'`), 'the fresh shell provider is the one mounted')
+  assert.ok(out.includes(`name: '${FS}'`), 'the fresh fs provider is the one mounted')
+  assert.ok(out.includes('- id: their-own-tool'), 'the user row survives')
+  const editorRegistrants = out.match(/name: '@deepseek-ai\/dsh-tool-str-replace-editor'/g)?.length ?? 0
+  assert.equal(editorRegistrants, 1, 'the editor is mounted once')
+})
+
+test('a renamed copy of the world group is recognized by its providers', () => {
+  const renamed = COPIED_VARIANT_LIKE.replace('- id: wsl-world', '- id: my-wsl-world')
+  const out = transformPresetForWsl(renamed, SHELL, FS)
+  assert.ok(!out.includes('my-wsl-world'), 'the copied group is dropped whatever its id')
+  assert.equal(out.match(/^- id: wsl-world$/gm)?.length ?? 0, 1, 'one world group injected')
+  assert.ok(!out.includes('D:/old-install'), 'no stale provider path left')
+})
+
+test('a repeated top-level row id is reduced to one', () => {
+  const duplicated = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a coding agent.
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 4096
+`
+  const out = transformPresetForWsl(duplicated, SHELL, FS)
+  const ids = [...out.matchAll(/^- id: ([A-Za-z0-9_.-]+)$/gm)].map((m) => m[1])
+  const repeated = ids.filter((id, index) => ids.indexOf(id) !== index)
+  assert.deepEqual(repeated, [], 'no duplicate top-level id survives')
+  assert.equal(ids.filter((id) => id === 'agent-instructions').length, 1, 'the first row of a repeated id wins')
+})
+
 test('transform preserves unknown rows verbatim', () => {
   const out = transformPresetForWsl(`${STANDARD_LIKE}\n- id: my-custom-tool\n  name: '@me/dsh-custom'\n`, SHELL, FS)
   assert.ok(out.includes("- id: my-custom-tool\n  name: '@me/dsh-custom'"), 'unknown row kept')
