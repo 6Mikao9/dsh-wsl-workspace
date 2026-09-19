@@ -324,10 +324,23 @@ is per call: the source PTY group stays dropped, because it double-registers
 
 Help panel, verified in the browser on `0.1.5-rc.2`: the greeting line and the
 repository link render first, a "What's new" section carries this release, and the
-known-issue list is down to the three limitations that still hold — the historical
-"fixed in 0.4.3" note and the per-generation API paragraph are gone. Those three
-were re-checked and kept on purpose: the 9P share still cannot resolve Linux
-symlinks (upstream substrate, would need a WSL-side resolver in the discovery
-walk), the watcher stays off for UNC workspaces (the deliberate trade-off behind
-the catalog fix), and only plugin-registered workspaces default to a WSL variant
-(by design, not a defect).
+known-issue list is down to the two limitations that still hold — the historical
+"fixed in 0.4.3" note, the per-generation API paragraph and the "only
+plugin-registered workspaces default to a WSL variant" note are gone.
+
+Both remaining limitations were re-checked and kept on purpose, and neither is a
+dead end:
+
+- **Linux symlinks are not resolvable over the share.** The discovery walk is this
+  plugin's own provider, and its symlink branch (`src/host/wsl-skills.ts`:
+  `entry.isSymbolicLink()` → `io.stat(joinUnc(...))`) already tries to follow a
+  linked directory; it gives up only because 9P answers `EISDIR`/`ENOENT` for
+  those entries. A `wsl.exe -d <distro> -- readlink -f <linux path>` fallback on
+  that branch — the plugin already owns the UNC↔Linux helpers and the WSL
+  execution channel — resolves the target and lets the walk continue. That is a
+  new feature (loop/depth accounting, real-path dedupe, one WSL round-trip per
+  candidate link, cross-release re-testing), not a one-line fix; the file tools
+  would need the same fallback inside `WslFileSystem`'s resolution, which is a
+  larger change.
+- **No live catalog refresh** for UNC workspaces: the deliberate trade-off behind
+  the catalog fix, as the panel says.
