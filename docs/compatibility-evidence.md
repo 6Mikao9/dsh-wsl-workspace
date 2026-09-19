@@ -566,5 +566,94 @@ different ways in a real session, which is why the session was driven at all:
   persistent-shell group versus the world's own), which was fixed in the same
   commit and re-run green on all six; `parity-02` ran the final code everywhere.
 
+## Search tools and a live catalog (2026-09-19, plugin 0.6.0)
+
+The two remaining known issues from the 0.5.0 panel, closed with the mechanism
+each needed:
+
+| limitation | mechanism |
+|---|---|
+| a WSL session had no `grep`/`glob` tool | the world mounts its own twin (`src/host/wsl-search.ts` → `lib/wsl-search.js`) that runs **inside the distribution** — GNU `grep -rnIEH -Z` and GNU `find` — and keeps the host suite's model-facing contract by calling `@deepseek-ai/dsh-tool-fs-search`'s own exported formatters; the `tool-fs-search` row is replaced, and only for modes whose source preset mounted it |
+| the catalog could not see an *edit* to an existing skill | the cheap poll (3 s) now also stamps every skill file with its modification time and size, so a rewritten `SKILL.md` moves the registry's revision — the catalog message is rebuilt only when that revision moves; the full re-discovery walk moved to its own 30 s cadence (it used to be the only pass, at 10 s) |
+
+### What only a real substrate caught
+
+Every one of these passed the host-side suite at some point:
+
+1. **GNU grep silently cancels `--include` when any file `--exclude` is present**
+   (grep 3.12): `--include=alpha.*` alone kept one file, and adding
+   `--exclude='.*'` made it keep everything — measured, then designed around:
+   the hidden-*file* guard now rides `--include='[!.]*'` and only when the caller
+   passed no filter of its own, while hidden *directories* and `node_modules` are
+   pruned with `--exclude-dir`, which does not disturb `--include`.
+2. **`grep -r` prints no file name for a single-file operand**, so the NUL framing
+   yielded `5:Body…` with no path and the tool returned zero matches for
+   `grep path=<file>` — caught by `search-real`, fixed with `-H`.
+3. **`--exclude-dir='.*'` also excludes the search root** when its base name
+   starts with a dot, so a search rooted at `.dsh`/`.git`/any dot-directory
+   returned nothing; the flag is now skipped for a dot-rooted target.
+4. **A row without a `config:` block hands the plugin an undefined config.** The
+   first real 0.6.0 session failed to mount the entire world:
+   `failed to apply loader entry search-wsl … Cannot read properties of
+   undefined (reading 'grepMaxMatches')`. Fixed with in-code defaults (one
+   `DEFAULTS` object that the schema also reads) plus a unit test that mounts
+   with `undefined` and with `{}`.
+5. **`lib/` was shipping stale code-split chunks.** Because `clean: false` and two
+   tsdown configurations share `outDir`, entries from earlier builds survived and
+   `verify-lib` began reporting tree-shaken imports in `shell.js`. And because
+   the search suite was not a declared peer, the first build *inlined* it: a
+   285 KB `lib/wsl-search.js` that bundled a second copy of DSH's tool stack.
+   Fixed by declaring the three runtime peers (which is also what keeps them
+   external) and clearing `lib/` before every build.
+
+### Verification
+
+- **Thirteen-check harness, all eight declared releases** (`0.1.0-rc.7` …
+  `0.1.5-rc.2`, run `parity-04`): `unit`, `lib`, `materialize`, `rank`,
+  `smoke-source`, `smoke-built`, `shell-extra`, `skills-real`, `fs-real`,
+  `relay-real` and the new `search-real` pass on every release; the only failures
+  are the documented `typecheck` baseline (2) and `host-api`, which needs a live
+  server. `search-real` drives the real tools against a real distribution
+  fixture: record framing (colons, spaces, unicode, newlines in paths), include
+  filters and `{a,b}` expansion, a path-shaped include, caps and footers, the
+  spill backend present and absent, search-card projection, every `SEARCH_*`
+  error code, argv-safety (a backtick pattern never reaches a shell), glob
+  ordering by modification time, hidden/`node_modules`/VCS pruning and the
+  in-tree-symlink rule.
+- **Real sessions on three releases** — `0.1.0-rc.7`, `0.1.2-rc.1` and
+  `0.1.5-rc.2`, each `WSL · Standard mode` on `/home/mille/wsprobe/ws`. Per
+  release, from the session log: the offered `grep`/`glob` carry *this* plugin's
+  descriptions (`tools=25/26/27 WSL-specific=glob,grep`); `grep
+  NEEDLE_SESSION_TOKEN` returned 3 matches in 2 files with POSIX display paths
+  and `node_modules` skipped; `glob **/*.js` returned 3 files *including*
+  `node_modules` (ripgrep's `--no-ignore --hidden` parity). Then an existing
+  skill's description was rewritten and a new skill added from WSL; the next
+  turn's log carries a **replacement** catalog (`"update":true`) with
+  `first-skill: EDITED mid-session on <release>` and
+  `skill-<release>: ADDED mid-session on <release>` — and each model reported the
+  diff itself. Before this release the edit could not move the revision at all.
+- Unit tests: `tests/wsl-search.test.ts` (28 cases) checks the framing, the glob
+  matcher, retention against `ItemRetainer`, byte-equality of both renderers with
+  the host suite's own formatters, card metadata narrowed back through its
+  `present*Result`, argv construction, and the config-less mount; the skill
+  provider gained an edit-detection case and a cadence case (a brand-new skills
+  directory waits for the walk), and `skills-real` proves on the real 9P share
+  that a rewritten skill file invalidates exactly once.
+
+### Still not fixed (now stated in the panel's known issues)
+
+- `grep` is the distribution's GNU grep: POSIX ERE (no lookaround or
+  backreferences) and no `.gitignore` support, so git-ignored files are searched;
+  only hidden entries, `node_modules` and VCS directories are skipped. A
+  distribution without GNU grep fails loudly (exit 3) instead of framing records
+  the parser cannot read.
+- An `include` containing `/` is matched in this process, so that call scans
+  every file before filtering (a performance, not a semantic, difference).
+- `glob`'s modification-order listing needs GNU `find -printf`; a busybox `find`
+  falls back to path order, which the script reports as a different listing mode.
+- The catalog refresh is still a poll: an add, remove or edit inside a published
+  skills directory lands within about 3 s; a new project's *first* skills
+  directory waits for the next walk, up to 30 s.
+
 
 

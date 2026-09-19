@@ -163,7 +163,7 @@ function createIo(
         node = realNode(node)
         if (node === undefined) throw new Error(`ENOENT: ${path}`)
       }
-      return { isDirectory: () => node.directory }
+      return { isDirectory: () => node.directory, ...stampOf(node) }
     },
   }
   if (options.distributionFallback === true) {
@@ -179,6 +179,21 @@ function createIo(
 /** A no-op registration control (abortable only by the caller). */
 function control(): { signal: AbortSignal; invalidate: () => void } {
   return { signal: new AbortController().signal, invalidate: () => {} }
+}
+
+/**
+ * A content-derived modification stamp for the fake substrate. The real
+ * `nodeSkillIo.stat` reports `mtimeMs`/`size`; deriving both from the fixture's
+ * content models that without threading a clock through every helper, and it
+ * still moves when an edit keeps the file's length unchanged.
+ * @param node - the fake file node.
+ * @returns the stamp fields `stat` reports.
+ */
+function stampOf(node: FakeNode): { mtimeMs: number; size: number } {
+  const content = node.content ?? ''
+  let hash = 7
+  for (let index = 0; index < content.length; index += 1) hash = (hash * 31 + content.charCodeAt(index)) % 1_000_000_007
+  return { mtimeMs: hash, size: content.length }
 }
 
 const CWD_WORKSPACE_ROOT = '\\\\wsl.localhost\\Ubuntu\\home\\mille\\repro-ws-root'
@@ -711,7 +726,7 @@ test('publishes a project skill added mid-session as a new scan root too', async
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root'])
   const control = countingControl()
-  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10)
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 10)
   assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
 
   dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
@@ -723,6 +738,49 @@ test('publishes a project skill added mid-session as a new scan root too', async
     (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name),
     ['late'],
   )
+  control.dispose()
+})
+
+test('invalidates when an existing skill file is edited, without a directory change', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  const skillFile = ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md']
+  file(root, skillFile, SKILL_MD('first', 'Original description'))
+  const control = countingControl()
+  // The discovery walk is out of reach, so only the cheap pass can explain a
+  // fresh catalog: this is the case a directory listing alone cannot see.
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 1_000_000)
+  assert.deepEqual((await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.description), ['Original description'])
+
+  await delay(40)
+  assert.equal(control.invalidations(), 0, 'an unchanged catalog stays quiet')
+
+  file(root, skillFile, SKILL_MD('first', 'Edited description'))
+  await delay(60)
+  assert.equal(control.invalidations(), 1, 'an edited skill file invalidates the catalog')
+  assert.deepEqual(
+    (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.description),
+    ['Edited description'],
+  )
+
+  // Re-publishing the same content must not keep invalidating the registry.
+  await delay(40)
+  assert.equal(control.invalidations(), 1)
+  control.dispose()
+})
+
+test('a brand-new skills directory waits for the discovery cadence, not the cheap pass', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  const control = countingControl()
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 1_000_000)
+  assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
+
+  dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills', 'late.md'],
+    SKILL_MD('late', 'A project added mid-session'))
+  await delay(60)
+  assert.equal(control.invalidations(), 0, 'the cheap pass only re-checks roots it already published')
   control.dispose()
 })
 

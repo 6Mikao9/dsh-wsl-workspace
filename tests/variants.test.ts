@@ -107,7 +107,7 @@ test('standard-like transform drops world rows and injects the WSL realm', () =>
   assert.ok(!/^- id: tool-pwsh$/m.test(out), 'pwsh row dropped')
   assert.ok(!/^- id: tool-bash$/m.test(out), 'top-level bash row dropped')
   assert.ok(!/^- id: tool-fs$/m.test(out), 'top-level fs row dropped')
-  assert.ok(!/^- id: tool-fs-search$/m.test(out), 'grep tool dropped (Windows rg cannot open Linux paths)')
+  assert.ok(!/^- id: tool-fs-search$/m.test(out), 'the Windows ripgrep suite row is dropped')
   assert.ok(out.includes('- id: tool-jobs'), 'jobs row kept')
   assert.ok(out.includes('- id: wsl-world'), 'wsl realm injected')
   assert.ok(out.includes(`name: '${SHELL}'`), 'shell provider path present')
@@ -115,6 +115,20 @@ test('standard-like transform drops world rows and injects the WSL realm', () =>
   assert.ok(out.includes('isolate:\n    shell: true\n    fs: true'), 'realm isolates shell+fs')
   assert.ok(out.includes('Your working directory {{cwd}} is inside a WSL'), 'persona amended')
   assert.ok(!out.includes('persistent-shell'), 'no persistent shell for standard-like')
+  assert.ok(!out.includes('search-wsl'), 'no search row without a search path to mount')
+})
+
+const SEARCH = 'D:/plugin/lib/wsl-search.js'
+
+test('a mode that mounts the search suite gets the in-distribution twin instead', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, undefined, SEARCH)
+  assert.ok(out.includes('    - id: search-wsl'), 'the world mounts its own grep/glob')
+  assert.ok(out.includes(`      name: '${SEARCH}'`), 'the search row points at this installation')
+  assert.ok(!out.includes('@deepseek-ai/dsh-tool-fs-search'), 'no row mounts the Windows ripgrep suite')
+  assert.ok(out.indexOf('- id: search-wsl') > out.indexOf('- id: tool-fs'), 'the search row sits with the other tools')
+  // A search path with nothing to replace must not add a tool the mode never had.
+  assert.ok(!transformPresetForWsl(MINIMAL_LIKE, SHELL, FS, undefined, SEARCH).includes('search-wsl'),
+    'a mode without the search suite gains no search tools')
 })
 
 test('minimal-like transform keeps persona fixed and uses the cwd-aware fs tools', () => {

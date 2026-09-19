@@ -87,14 +87,12 @@ function wslWorldGroup(
   fsPath: string,
   includeEditor: boolean,
   persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
+  searchPath?: string,
 ): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
     '# The shell and fs services are provided entry-locally (the isolate',
     '# realm); host services (tools registry, shell-env, jobs) fall through.',
-    '# tool-fs-search is intentionally absent: the packaged ripgrep runs on',
-    '# the Windows host and cannot open Linux paths; WSL sessions search with',
-    '# shell tools instead.',
     '- id: wsl-world',
     "  name: cordis:group",
     '  group: true',
@@ -123,8 +121,17 @@ function wslWorldGroup(
       : []),
     '    - id: tool-fs',
     "      name: '@deepseek-ai/dsh-tool-fs'",
-    // The editor resolves through this entry-local WSL fs. Older editor builds
-    // pass no cwd, so the provider inherits it from the current tool execution.
+    // `grep`/`glob` run inside the distribution, not through the host suite's
+    // Windows ripgrep: same tool names, same model-facing contract, Linux paths
+    // and Linux symlinks. Older editor builds pass no cwd, so the provider
+    // inherits it from the current tool execution.
+    ...(searchPath === undefined
+      ? []
+      : [
+          '    - id: search-wsl',
+          `      name: '${searchPath.replace(/'/g, "''")}'`,
+        ]),
+    // The editor resolves through this entry-local WSL fs.
     // Anchored-family presets require this name during bootstrap.
     ...(includeEditor
       ? [
@@ -339,6 +346,8 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
  * @param persistent - the relay, interpreter and sandbox provider a stateful
  *   shell needs; omit to generate a world without the persistent-shell rows.
+ * @param searchPath - absolute path of the plugin's built in-distribution
+ *   `grep`/`glob` tools; mounted only for a source that had `tool-fs-search`.
  * @returns the variant composition text.
  */
 export function transformPresetForWsl(
@@ -346,12 +355,14 @@ export function transformPresetForWsl(
   shellPath: string,
   fsPath: string,
   persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
+  searchPath?: string,
 ): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
   const kept: string[] = []
   const seen = new Set<string>()
   let sawEditor = false
+  let sawSearch = false
   let personaAppended = false
   for (const span of spans) {
     const id = spanId(lines, span)
@@ -367,6 +378,7 @@ export function transformPresetForWsl(
     const block = lines.slice(span.start, span.end)
     if (WORLD_ROWS.has(id) || isWslWorldGroup(block)) {
       if (EDITOR_ROWS.has(id)) sawEditor = true
+      if (id === 'tool-fs-search') sawSearch = true
       continue
     }
     if (id === SKILL_FILESYSTEM_ROW) {
@@ -381,11 +393,14 @@ export function transformPresetForWsl(
     kept.push(...block)
   }
   // An editor mounted inside a source group (a copied variant, say) also means
-  // the composition expects one, so the injected world keeps its editor row.
+  // the composition expects one, so the injected world keeps its editor row. The
+  // search tools follow the same rule: a mode without them (minimal) must not
+  // gain them, and a mode with them must not lose them.
   if (source.includes('str-replace-editor')) sawEditor = true
+  if (source.includes('tool-fs-search')) sawSearch = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined))
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

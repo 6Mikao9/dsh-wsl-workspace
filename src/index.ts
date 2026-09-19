@@ -381,7 +381,7 @@ function publishVariant(staging: string, dest: string): void {
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string },
 ): Promise<void> {
   const presets = await agentPresets.list()
   const userRoot = join(dshHome, '.agent-presets')
@@ -395,7 +395,7 @@ async function materializeVariants(
       relayPath: paths.relay,
       nodePath: paths.node,
       sandboxPath: paths.sandbox,
-    })
+    }, paths.search)
     const dir = join(userRoot, variantId)
     const staging = `${dir}.staging`
     rmSync(staging, { recursive: true, force: true })
@@ -479,6 +479,8 @@ export function apply(ctx: Context, config: Config): void {
   // `wsl.exe … bash` under that PTY: two paths the generated preset must carry.
   const relayPath = join(packageRoot, 'lib', 'wsl-relay.js').replace(/\\/g, '/')
   const sandboxPath = join(packageRoot, 'lib', 'wsl-sandbox.js').replace(/\\/g, '/')
+  // The in-distribution `grep`/`glob` twin that replaces the host search suite.
+  const searchPath = join(packageRoot, 'lib', 'wsl-search.js').replace(/\\/g, '/')
   const nodePath = process.execPath.replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
@@ -490,6 +492,7 @@ export function apply(ctx: Context, config: Config): void {
         relay: relayPath,
         node: nodePath,
         sandbox: sandboxPath,
+        search: searchPath,
       }).catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or
         // unreadable source preset must not take the whole plugin down, but

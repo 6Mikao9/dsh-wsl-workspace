@@ -35,6 +35,11 @@ const STANDARD_SRC = `# standard
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
   config:
@@ -260,7 +265,11 @@ assert(stdParsed.name === 'WSL · Standard mode（标准模式）', 'variant met
 assert(typeof stdParsed.description === 'string' && stdParsed.description.includes('bash and file tools run inside'), 'variant metadata description survives YAML parsing')
 assert(!/^- id: tool-pwsh$/m.test(stdYaml), 'variant drops pwsh row')
 assert(!/^- id: tool-bash$/m.test(stdYaml), 'variant drops top-level bash row')
-assert(!/^- id: tool-fs-search$/m.test(stdYaml), 'variant drops the grep tool (Windows rg cannot open Linux paths)')
+assert(!/^- id: tool-fs-search$/m.test(stdYaml), 'the host search-suite row is replaced by the world\'s own')
+assert(stdYaml.includes('- id: search-wsl'), 'the world mounts its in-distribution grep/glob twin')
+const searchRow = /name: '(.+wsl-search\.js)'/.exec(stdYaml)
+assert(searchRow !== null && existsSync(searchRow[1]), 'the search row points at a real lib file')
+assert((stdYaml.match(/name: '@deepseek-ai\/dsh-tool-fs-search'/g) ?? []).length === 0, 'no row mounts the Windows ripgrep suite')
 assert(stdYaml.includes('- id: wsl-world'), 'variant injects wsl realm')
 assert(stdYaml.includes('inside a WSL'), 'variant persona amended')
 const shellRow = /name: '(.+shell\.js)'/.exec(stdYaml)
@@ -297,6 +306,7 @@ const minVariant = join(home, '.agent-presets', 'wsl-minimal')
 const minYaml = readFileSync(join(minVariant, 'agent.cordis.yml'), 'utf8')
 assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
+assert(!minYaml.includes('search-wsl'), 'minimal mode gains no search tools: its source mounts none')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
 assert(!minYaml.includes('persistent-shell"') && minYaml.includes('- id: persistent-shell'), 'the source PTY group is replaced by the world\'s own')
 // The world mounts its OWN persistent shell instead of the source's group:

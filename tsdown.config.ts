@@ -4,8 +4,9 @@ import { builtinModules } from 'node:module'
 /**
  * Standalone build for the dsh-wsl-workspace third-party plugin.
  *
- * Node half: three ESM entries (`lib/index.js` host plugin, `lib/shell.js` and
- * `lib/fs.js` service providers) with every `@deepseek-ai/*` and node builtin
+ * Node half: the ESM entries (`lib/index.js` host plugin, `lib/shell.js` and
+ * `lib/fs.js` service providers, plus the WSL world's relay, sandbox and search
+ * pieces) with every `@deepseek-ai/*` and node builtin
  * external — at runtime they resolve from the harness's own dependency tree.
  * The preset installer references `lib/shell.js`/`lib/fs.js` by absolute path,
  * so those entry file names are load-bearing.
@@ -41,6 +42,7 @@ export default defineConfig([
       fs: 'src/fs.ts',
       'wsl-relay': 'src/host/wsl-relay.ts',
       'wsl-sandbox': 'src/host/wsl-sandbox.ts',
+      'wsl-search': 'src/host/wsl-search.ts',
     },
     outDir: 'lib',
     format: ['esm'],
