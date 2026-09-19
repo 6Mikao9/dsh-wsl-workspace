@@ -40,6 +40,7 @@ export default defineConfig([
       shell: 'src/shell.ts',
       fs: 'src/fs.ts',
       'wsl-relay': 'src/host/wsl-relay.ts',
+      'wsl-sandbox': 'src/host/wsl-sandbox.ts',
     },
     outDir: 'lib',
     format: ['esm'],

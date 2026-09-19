@@ -381,7 +381,7 @@ function publishVariant(staging: string, dest: string): void {
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  paths: { shell: string; fs: string; relay: string; node: string },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string },
 ): Promise<void> {
   const presets = await agentPresets.list()
   const userRoot = join(dshHome, '.agent-presets')
@@ -394,6 +394,7 @@ async function materializeVariants(
     const transformed = transformPresetForWsl(source, paths.shell, paths.fs, {
       relayPath: paths.relay,
       nodePath: paths.node,
+      sandboxPath: paths.sandbox,
     })
     const dir = join(userRoot, variantId)
     const staging = `${dir}.staging`
@@ -477,6 +478,7 @@ export function apply(ctx: Context, config: Config): void {
   // The persistent shell runs the host PTY backend on the relay, which starts
   // `wsl.exe … bash` under that PTY: two paths the generated preset must carry.
   const relayPath = join(packageRoot, 'lib', 'wsl-relay.js').replace(/\\/g, '/')
+  const sandboxPath = join(packageRoot, 'lib', 'wsl-sandbox.js').replace(/\\/g, '/')
   const nodePath = process.execPath.replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
@@ -487,6 +489,7 @@ export function apply(ctx: Context, config: Config): void {
         fs: fsPath,
         relay: relayPath,
         node: nodePath,
+        sandbox: sandboxPath,
       }).catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or
         // unreadable source preset must not take the whole plugin down, but

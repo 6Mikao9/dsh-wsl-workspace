@@ -129,27 +129,53 @@ test('minimal-like transform keeps persona fixed and uses the cwd-aware fs tools
 
 const RELAY = 'D:/plugin/lib/wsl-relay.js'
 const NODE = 'C:/Program Files/nodejs/node.exe'
+const SANDBOX = 'D:/plugin/lib/wsl-sandbox.js'
 
 test('the world mounts a persistent WSL shell when the relay paths are supplied', () => {
-  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE })
-  assert.ok(out.includes('    - id: terminal-wsl'), 'PTY backend row injected')
-  assert.ok(out.includes("      name: '@deepseek-ai/dsh-terminal-bash'"), 'host PTY backend mounted')
-  assert.ok(out.includes("      name: '@deepseek-ai/dsh-tool-bash-persistent'"), 'persistent tool mounted')
-  assert.ok(out.includes('    - id: persistent-bash'), 'persistent tool row injected')
-  assert.ok(out.includes(`        shellPath: '${NODE}'`), 'the relay runs on this installation\'s node')
-  assert.ok(out.includes(`          - '${RELAY}'`), 'the relay is this installation\'s script')
-  assert.ok(out.includes('        shellDialect: bash'), 'the shell is bash, not pwsh')
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  assert.ok(out.includes('    - id: persistent-shell'), 'persistent-shell group injected')
+  assert.ok(out.includes('      isolate:\n        terminals: true'), 'the registry keeps its own terminals realm')
+  assert.ok(out.includes('        - id: pty'), 'the terminals service is provided')
+  assert.ok(out.includes("          name: '@deepseek-ai/dsh-terminal'"), 'host terminal registry mounted')
+  assert.ok(out.includes('        - id: terminal-wsl'), 'PTY backend row injected')
+  assert.ok(out.includes("          name: '@deepseek-ai/dsh-terminal-bash'"), 'host PTY backend mounted')
+  assert.ok(out.includes("          name: '@deepseek-ai/dsh-tool-bash-persistent'"), 'persistent tool mounted')
+  assert.ok(out.includes('        - id: persistent-bash'), 'persistent tool row injected')
+  assert.ok(out.includes(`            shellPath: '${NODE}'`), 'the relay runs on this installation\'s node')
+  assert.ok(out.includes(`              - '${RELAY}'`), 'the relay is this installation\'s script')
+  assert.ok(out.includes('            shellDialect: bash'), 'the shell is bash, not pwsh')
+  // The PTY backend confines through ctx.sandbox, which cannot describe a Linux
+  // path, so the world isolates the capability and provides its own.
+  assert.ok(out.includes('    sandbox: true'), 'the sandbox capability is world-local')
+  assert.ok(out.includes('    - id: sandbox-wsl'), 'the world sandbox row is injected')
+  assert.ok(out.includes(`      name: '${SANDBOX}'`), 'it points at this installation')
   assert.equal((out.match(/backendType: wsl/g) ?? []).length, 2, 'backend and tool agree on the backend type')
-  // The one-shot bash stays: the persistent one registers its own tool name.
-  assert.ok(out.includes('    - id: tool-bash'), 'one-shot bash kept')
+  // The persistent tool registers the `bash` name, so it replaces the one-shot
+  // row: mounting both fails the whole preset ("tool bash is already registered").
+  assert.ok(!out.includes("      name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot bash tool is replaced')
+  assert.equal((out.match(/name: '@deepseek-ai\/dsh-tool-bash('|-persistent')/g) ?? []).length, 1, 'exactly one bash tool row')
   const ids = [...out.matchAll(/^\s*- id: ([a-z0-9-]+)$/gm)].map(match => match[1] ?? '')
   assert.equal(new Set(ids).size, ids.length, `duplicate loader entry id in ${ids.join(',')}`)
 })
 
+test('the persistent-shell group is indented validly for the loader', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const lines = out.split('\n')
+  const start = lines.findIndex(line => line === '    - id: persistent-shell')
+  assert.ok(start > 0, 'group row present')
+  const group = lines.slice(start, start + 24)
+  // The group's nested config items sit two levels deeper than the row.
+  assert.ok(group.includes('      config:'), 'the group owns a config list')
+  assert.ok(group.includes('        - id: pty'), 'first nested row indented under config')
+  assert.ok(group.includes("          name: '@deepseek-ai/dsh-terminal'"), 'nested keys one level deeper')
+  assert.ok(group.some(line => line.startsWith('            shellPath:')), 'the backend\'s keys are two levels below its row')
+})
+
 test('a source persistent-shell row is replaced instead of duplicated', () => {
   const source = `${STANDARD_LIKE}\n- id: persistent-bash\n  name: '@deepseek-ai/dsh-tool-bash-persistent'\n- id: terminal-pwsh\n  name: '@deepseek-ai/dsh-terminal-bash'\n`
-  const out = transformPresetForWsl(source, SHELL, FS, { relayPath: RELAY, nodePath: NODE })
+  const out = transformPresetForWsl(source, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
   assert.equal((out.match(/id: persistent-bash/g) ?? []).length, 1, 'exactly one persistent-bash row')
+  assert.equal((out.match(/id: persistent-shell/g) ?? []).length, 1, 'exactly one persistent-shell group')
   assert.ok(!out.includes('terminal-pwsh'), 'the source terminal row is dropped')
 })
 

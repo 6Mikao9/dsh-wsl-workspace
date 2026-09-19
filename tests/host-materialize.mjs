@@ -298,16 +298,22 @@ const minYaml = readFileSync(join(minVariant, 'agent.cordis.yml'), 'utf8')
 assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
-assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the source PTY group (duplicate bash registration + unsupported win32 PTY)')
+assert(!minYaml.includes('persistent-shell"') && minYaml.includes('- id: persistent-shell'), 'the source PTY group is replaced by the world\'s own')
 // The world mounts its OWN persistent shell instead of the source's group:
-// the host's PTY backend pointed at this plugin's relay, plus the persistent
-// tool. Exactly one of each, and the one-shot bash survives beside them.
+// the host's PTY registry and backend pointed at this plugin's relay, plus the
+// persistent tool. That tool registers the `bash` name, so the one-shot
+// dsh-tool-bash row must be gone (both mounted fails the whole preset).
 assert((minYaml.match(/- id: persistent-bash\n/g) ?? []).length === 1, 'minimal variant mounts exactly one persistent-bash row')
 assert(minYaml.includes("name: '@deepseek-ai/dsh-tool-bash-persistent'"), 'the persistent bash tool is mounted')
 assert(minYaml.includes('- id: terminal-wsl'), 'the host PTY backend is mounted for it')
+assert(minYaml.includes('- id: pty'), 'the terminals service it needs is provided')
+assert(minYaml.includes('terminals: true'), 'the registry keeps its own terminals realm')
 assert(minYaml.includes('backendType: wsl'), 'the persistent shell uses the WSL backend')
 assert(minYaml.includes('wsl-relay.js'), 'the backend runs this installation\'s relay')
-assert((minYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'the one-shot bash row stays, exactly once')
+assert(minYaml.includes('wsl-sandbox.js'), 'the world provides its own sandbox capability')
+assert(minYaml.includes('sandbox: true'), 'the sandbox capability is world-local')
+assert(!minYaml.includes("name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot bash tool row is replaced, not duplicated')
+assert((minYaml.match(/name: 'bash'/g) ?? []).length <= 1, 'no two rows claim the bash tool name')
 assert(
   /- id: skill-filesystem\n  name: '[^']+'\n  config:\n    watch: false\n/.test(minYaml),
   'a skill-filesystem row with no config gets one carrying watch: false',
@@ -319,7 +325,10 @@ assert(existsSync(prefabVariant), 'third-party WSL variant generated')
 assert(!prefabYaml.includes('custom-bash'), 'third-party variant drops custom-bash (would double-register bash)')
 assert(!prefabYaml.includes('bootstrap-filesystem'), 'third-party variant drops bootstrap-filesystem (host-local fs)')
 assert(prefabYaml.includes('- id: wsl-world'), 'third-party variant injects wsl realm')
-assert((prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'third-party variant registers bash exactly once')
+assert(
+  (prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash(-persistent)?'/g) ?? []).length === 1,
+  'third-party variant registers the bash tool exactly once (one-shot or persistent, never both)',
+)
 assert(prefabYaml.includes('str-replace-editor'), 'third-party variant re-injects the editor over the WSL fs')
 assert(existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'third-party opaque asset directory is mirrored')
 

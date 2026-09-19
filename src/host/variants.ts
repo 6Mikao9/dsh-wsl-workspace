@@ -38,28 +38,46 @@ function isWslWorldGroup(block: readonly string[]): boolean {
 }
 
 /**
- * The persistent-shell rows: the host's own PTY backend, told to run this
- * plugin's relay (so the shell is a WSL one), plus the persistent `bash` tool
- * that consumes it. Both are optional because a world generated without the
- * relay paths (shape tests, older callers) must stay exactly what it was.
+ * The persistent-shell rows: the host's own PTY registry and its config-driven
+ * backend, told to run this plugin's relay (so the shell is a WSL one), plus
+ * the persistent tool that consumes them.
+ *
+ * Two shapes matter here. The registry is an agent-owned service — the shipped
+ * `persistent-shell` group keeps it in its own `terminals` realm for that
+ * reason — so this is a nested group of the world rather than three flat rows.
+ * And the persistent tool registers the tool name **`bash`**, exactly like the
+ * one-shot `dsh-tool-bash` row it replaces: both cannot be mounted (the tools
+ * registry rejects the duplicate and the whole preset fails to load), which is
+ * also why DSH's own Minimal mode describes itself as "a single-tool agent with
+ * a persistent shell". So a world with the relay paths swaps the shell tool
+ * instead of adding one, and a world without them keeps the one-shot row.
  */
 function persistentShellRows(relayPath: string, nodePath: string): string[] {
   return [
-    '    # Persistent shell: the host PTY backend runs this plugin\'s relay,',
-    '    # which hands the PTY to `wsl.exe … bash` (distribution and user come',
-    '    # from the session). The one-shot `bash` above stays available.',
-    '    - id: terminal-wsl',
-    "      name: '@deepseek-ai/dsh-terminal-bash'",
+    '    # Persistent shell: the host PTY registry and its backend, running',
+    '    # this plugin\'s relay, which hands the PTY to `wsl.exe … bash`',
+    '    # (distribution and user come from the session). It registers the',
+    '    # `bash` tool, so it takes the place of the one-shot row above.',
+    '    - id: persistent-shell',
+    '      name: cordis:group',
+    '      group: true',
+    '      isolate:',
+    '        terminals: true',
     '      config:',
-    '        backendType: wsl',
-    '        shellDialect: bash',
-    `        shellPath: '${nodePath.replace(/'/g, "''")}'`,
-    '        shellArgs:',
-    `          - '${relayPath.replace(/'/g, "''")}'`,
-    '    - id: persistent-bash',
-    "      name: '@deepseek-ai/dsh-tool-bash-persistent'",
-    '      config:',
-    '        backendType: wsl',
+    '        - id: pty',
+    "          name: '@deepseek-ai/dsh-terminal'",
+    '        - id: terminal-wsl',
+    "          name: '@deepseek-ai/dsh-terminal-bash'",
+    '          config:',
+    '            backendType: wsl',
+    '            shellDialect: bash',
+    `            shellPath: '${nodePath.replace(/'/g, "''")}'`,
+    '            shellArgs:',
+    `              - '${relayPath.replace(/'/g, "''")}'`,
+    '        - id: persistent-bash',
+    "          name: '@deepseek-ai/dsh-tool-bash-persistent'",
+    '          config:',
+    '            backendType: wsl',
   ]
 }
 
@@ -68,7 +86,7 @@ function wslWorldGroup(
   shellPath: string,
   fsPath: string,
   includeEditor: boolean,
-  persistent?: { relayPath: string; nodePath: string },
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
 ): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
@@ -83,13 +101,26 @@ function wslWorldGroup(
     '  isolate:',
     '    shell: true',
     '    fs: true',
+    // The Windows confinement runner cannot describe a Linux path, so the
+    // world owns the capability (see the sandbox row below) whenever it mounts
+    // a shell that would otherwise call it.
+    ...(persistent === undefined ? [] : ['    sandbox: true']),
     '  config:',
     `    - id: shell-wsl`,
     `      name: '${shellPath.replace(/'/g, "''")}'`,
     '    - id: fs-wsl',
     `      name: '${fsPath.replace(/'/g, "''")}'`,
-    '    - id: tool-bash',
-    "      name: '@deepseek-ai/dsh-tool-bash'",
+    ...(persistent === undefined
+      ? []
+      : [
+          '    - id: sandbox-wsl',
+          `      name: '${persistent.sandboxPath.replace(/'/g, "''")}'`,
+        ]),
+    // The shell tool comes from the persistent-shell group when this world has
+    // one (same `bash` name, so only one of the two may be mounted).
+    ...(persistent === undefined
+      ? ['    - id: tool-bash', "      name: '@deepseek-ai/dsh-tool-bash'"]
+      : []),
     '    - id: tool-fs',
     "      name: '@deepseek-ai/dsh-tool-fs'",
     // The editor resolves through this entry-local WSL fs. Older editor builds
@@ -306,15 +337,15 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  * @param source - the source composition text.
  * @param shellPath - absolute path of the plugin's built WSL shell provider.
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
- * @param persistent - the relay and interpreter a stateful shell needs; omit to
- *   generate a world without the persistent-shell rows.
+ * @param persistent - the relay, interpreter and sandbox provider a stateful
+ *   shell needs; omit to generate a world without the persistent-shell rows.
  * @returns the variant composition text.
  */
 export function transformPresetForWsl(
   source: string,
   shellPath: string,
   fsPath: string,
-  persistent?: { relayPath: string; nodePath: string },
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
 ): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
