@@ -456,14 +456,43 @@ distribution process at all.
 ### Observation outside this change (not fixed here)
 
 The same session probed the access mode and found it is **not enforced for the
-file tools in a WSL session**: with the session set to `workspace-write`
+file tools in a WSL session**. With the session on `workspace-write`
 ("工作区内修改"), `write` to `/home/mille/symprobe/policy-probe.txt` (outside the
 workspace, no symlink involved) and to `D:\ProgramData\dsh-policy-probe.txt`
-succeeded, with no denial. This is independent of the symlink change — no code
-touched by 0.4.5 is in that path — and it was only observed on `0.1.5-rc.2`; the
-likely mechanism is that a WSL variant mounts its own `fs` provider
-(`lib/fs.js`) while the sandbox layer decorates the host's `fs` service. It is
-recorded here because the help panel currently claims the opposite, and because
-confirming it across the declared releases (and deciding between wiring the
-policy in and correcting the text) is its own piece of work.
+succeeded, with no denial — the second came back as
+`/mnt/d/ProgramData/dsh-policy-probe.txt` created, and `read` confirmed its
+content.
+
+This is independent of the symlink change (no code touched by 0.4.5 is in that
+path), and the mechanism is visible in the composition rather than guessed:
+
+```
+$ dsh --profile web --dump-config | grep -E 'sandbox|permission'
+- id: sandbox            name: '@deepseek-ai/dsh-sandbox-local'
+- id: sandbox-policy     name: '@deepseek-ai/dsh-sandbox-policy'
+      mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+- id: fs-sandbox         name: '@deepseek-ai/dsh-fs-sandbox'
+- id: permission         name: '@deepseek-ai/dsh-permission-presets'
+```
+
+The policy is host-plane and wraps the host `fs` service, while a WSL variant
+mounts its own entry-local `fs` provider (`lib/fs.js`) inside the preset's
+`isolate` realm and its `tool-fs` consumes that one, so the wrapper is not in the
+call path. The variant shape is the same on every declared release (the transform
+matrix asserts the injected world and its providers for all eight). The non-WSL
+half of the statement — that those sessions keep the documented behaviour — rests
+on that composition, not on a live probe: the attempt to start a control session
+in a Windows workspace through the browser stalled on the workspace switcher.
+
+Corrections that followed from the observation:
+
+- `README.md` / `README.zh.md`, "File tools" behaviour note: no longer claims
+  that `workspace-write` restricts writes in a WSL session; it states the measured
+  behaviour, the mechanism, and that non-WSL sessions keep the documented one.
+- Help panel known issues: a bullet says the access mode does not constrain a WSL
+  session's file tools.
+- `README.md` / `README.zh.md` also gained the missing **bash shell lifetime**
+  note (one command per call, no persistent shell) — the limitation the per-mode
+  matrix kept demonstrating while no document stated it.
+
 

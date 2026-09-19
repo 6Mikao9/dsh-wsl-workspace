@@ -32,8 +32,9 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ## 行为与权限说明
 
 - **bash 工具**：以配置的用户名在 WSL 发行版内运行（留空 = 发行版默认用户，通常为 root），可对发行版内任意路径读写。Windows 的 ACL 沙箱无法包裹 `wsl.exe`（子进程运行在 Linux 内核侧），WSL 自身即隔离边界，DSH 文件策略不作用于 bash。
-- **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问，受 DSH 文件策略约束。`workspace-write` 下读可到任意位置、写仅限会话工作区；改为 `danger-full-access` 后工作区外也可写入。用户名设置不影响文件工具。
-- **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录；结果按扫描根缓存 10 秒，技能正文始终实时读取。一个底层限制不是本插件能修的：Windows 侧的 `\\wsl.localhost` 共享**无法解析 Linux 符号链接**（用 `ln -s` 链进来的项目发现不了，扫描会跳过而不报错，请把工作区注册在真实项目目录所在的层级）。**0.4.3 已修复**：UNC 工作区原先**收不到技能目录**——宿主技能提供者用 `fs.watch` 监视该共享，对 `\\wsl.localhost\...` 会抛 `EISDIR`，该次观测被判为不完整，而 `dsh-tool-skill` 在快照不完整时会丢弃整条目录消息。现在生成预设时会把 `skill-filesystem` 行的 `watch` 固定为 `false`，目录在会话启动时扫描一次并照常注入。唯一代价是不再实时刷新：会话运行中途新加入的技能要等下一个会话才出现在目录里（技能正文仍由 `get` 实时读取）。
+- **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问；用户名设置不影响它们。**在 WSL 会话里，访问模式约束不到它们**：策略层（`fs-sandbox` / `sandbox-policy`）属于宿主平面，包裹的是宿主的 `fs` 服务（见 `dsh --profile web --dump-config`），而 WSL 变体刻意在预设的 isolate realm 内挂自己的 `fs` 提供者，包装层不在调用路径上。0.1.5-rc.2 实测：会话处于 `workspace-write` 时，工作区外写入（Linux 路径与 `D:\...` 路径）都成功、没有任何拒绝。非 WSL 会话不受影响（其工具用的是宿主 `fs`，文档行为照旧）。把策略接进 WSL 世界是后续工作；在那之前，请把 WSL 会话的文件工具视为不受限，访问模式按钮只对非 WSL 会话有效。
+- **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录。建议把工作区注册在你实际工作的项目根；若注册目录本身在更大的 git 仓库里，扫描会从该仓库根开始（与宿主规则一致），同级项目可能一并出现。Windows 侧共享解不开的 Linux 符号链接会改由发行版解析（`wsl.exe … readlink -f`，每次查找最多 32 条、并发 4 条），解析后从真实路径继续扫描，因此 `ln -s` 链进来的项目、以及它下面的嵌套项目都能被发现，并按真实路径去重。技能正文始终实时读取；目录本身在会话启动时收集一次——生成预设会把 `skill-filesystem` 行的 `watch` 固定为 `false`（对 `\\wsl.localhost\...` 开监视会失败），所以会话运行中途新加入的技能要等下一个会话。
+- **bash 的生命周期**：每次调用一个全新 shell。每条 `bash` 命令都从会话 cwd 起一个新 shell，`cd`、export 的变量、激活的 venv、后台任务都不会跨调用保留——请串成一条命令或用绝对路径。WSL 变体没有持久 shell：宿主的 `persistent-shell` 组注册的工具名与变体自己世界里的 `bash` 相同（同时挂载会让整个预设挂载失败），而且它的 PTY 后端在 Windows 宿主上直接拒绝启动。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
 
 ## 更新日志
@@ -81,7 +82,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ### 0.4.0 — 2026-08-29
 
 - **查询缓存**：已完成的技能目录查询按扫描根缓存 10 秒，避免在慢速 9P 共享上反复重扫；`get()` 仍实时读正文，新技能在 TTL 窗口内出现。
-- **符号链接项目**：显式识别目录符号链接并安全剪枝（不崩、不循环），但经排查属底层限制——Windows 侧无法解析 Linux 符号链接（实测 `readlink` → `EISDIR`，`stat`/`readdir` → `ENOENT`），因此用 `ln -s` 链进来的项目仍发现不了；另加"名称 + 正文"指纹去重，保证解析得到链接的平台上别名技能不会被发布两次。
+- **符号链接项目**：0.4.0 时显式识别目录符号链接并安全剪枝（不崩、不循环），并实测出"光靠共享本身跟不了"——Windows 侧无法解析 Linux 符号链接（`readlink` → `EISDIR`，`stat`/`readdir` → `ENOENT`）；0.4.5 改为交给发行版解析，链进来的项目因此可被发现（见该版本说明）。另加"名称 + 正文"指纹去重，保证能解析链接的平台上别名技能不会被发布两次。
 - **块标量 frontmatter**：`description:` / `whenToUse:` 写成 YAML 块标量（`|`、`>`）现在能解析，此前这类技能会被静默丢弃。
 - **兼容性清单**：`dsh.compatibility.dshReleases` 逐版本声明兼容性，并附可复现的一次性 Profile 安装/启动/卸载证据；`engines` 声明 Node.js 下限。
 - **门禁脚本**：`scripts/check-rank-parity.mjs` 在项目等级常量与宿主 `dsh-skill-filesystem` 漂移时让发布失败。
