@@ -493,6 +493,78 @@ Corrections that followed from the observation:
   session's file tools.
 - `README.md` / `README.zh.md` also gained the missing **bash shell lifetime**
   note (one command per call, no persistent shell) — the limitation the per-mode
-  matrix kept demonstrating while no document stated it.
+  matrix kept demonstrating while no document stated it. **Both of those
+  limitations were then fixed**, and the 0.5.0 section below records that.
+
+## WSL world parity (2026-09-19, plugin 0.5.0)
+
+Four gaps between a WSL variant and the host closed in one release, each with the
+mechanism it needed rather than a workaround:
+
+| gap | mechanism |
+|---|---|
+| file tools could not read or write through a Linux symlink | `resolve`/`lstat` retry through the distribution (`wsl.exe … readlink -f`) whenever this share cannot describe the path, and continue at the real path |
+| the access mode did not constrain a WSL session's file tools | `writeText`/`editText` fence exactly as `dsh-fs-sandbox` does: `ctx.sandboxPolicy`, `writableRoots` (plus the distro's `/tmp`), `FS_SANDBOX_DENIED`, `sandboxMode` |
+| the skill catalog was frozen for the session | a per-scan-root change detector polls the published directory shape every 10 s and calls `control.invalidate()` |
+| `bash` was one process per call | the world mounts the host's PTY registry + config-driven backend, pointed at this plugin's relay, which hands the PTY to `wsl.exe … bash` |
+
+### What the browser pass caught that the unit checks could not
+
+The generated preset looked right in every host-side check and failed three
+different ways in a real session, which is why the session was driven at all:
+
+1. `2 row(s) did not activate: terminal-wsl … waiting for terminals` — the world
+   drops the source's `persistent-shell` group, and that group is what *provides*
+   the `terminals` service. Fixed by mounting the world's own nested group
+   (`isolate: terminals: true`) with the `pty` row.
+2. `failed to apply loader entry persistent-bash … tool "bash" is already
+   registered in this scope` — `@deepseek-ai/dsh-tool-bash-persistent` registers
+   the tool name `bash`, not `persistent-bash`, so it can never sit beside the
+   one-shot `dsh-tool-bash` row. Fixed by replacing that row (which is also what
+   DSH's Minimal mode does, describing itself as a persistent-shell-only agent).
+3. `GetNamedSecurityInfoW failed (Win32 1): \\wsl.localhost\…\ws` — the PTY
+   backend confines through `ctx.sandbox` before spawning, and the host's Windows
+   runner cannot read the ACL of a 9P path. Fixed by isolating the capability and
+   providing the world's own no-op provider (`src/host/wsl-sandbox.ts`) that
+   returns the caller's argv with `enforcement: 'partial'` — the policy stays
+   where it is meaningful in this world (the file tools).
+
+### Verification
+
+- **Unit** — `tests/fs-policy.test.ts` (7 fence cases: inside/outside under
+  `workspace-write`, `read-only`, `danger-full-access`, no policy service at all,
+  edits, and the platform temp allowance), the three skill-refresh cases, and the
+  three world-shape cases in `tests/variants.test.ts`. The harness's `unit` check
+  runs them on every release.
+- **Real 9P** — `scripts/compatibility/fs-real.mjs`: a link resolves to its real
+  path, reads work through a link, a link chain and a directory link, a dangling
+  link's target is created while the link survives, a write through a link
+  reaches its target, the fence denies a link out of the workspace, and the
+  distribution's `/tmp` is writable. `scripts/compatibility/relay-real.mjs`
+  drives the relay itself: it starts in the session workspace, `export` and `cd`
+  survive between sends, the distribution resolves from the UNC cwd and from
+  `DSH_WSL_DISTRO`, `DSH_WSL_USER` is honored, and the shell exits cleanly.
+- **Real session, `0.1.5-rc.2`, `WSL · Standard mode`, workspace
+  `/home/mille/symprobe/ws`** (one session, four turns):
+  - *persistent shell*: `export PERSIST_MARK=ok42; cd /tmp; pwd` → `/tmp`, then a
+    separate call `echo MARK=$PERSIST_MARK; pwd` → `MARK=ok42` and `/tmp`;
+  - *policy fence*: `write` to `/home/mille/symprobe/outside-probe.txt` (outside
+    the workspace) came back as `[sandbox: file access denied under
+    workspace-write mode]` plus DSH's escalation hint, and `ls` confirmed no file
+    was created — i.e. the tool layer renders the world's `FS_SANDBOX_DENIED`
+    exactly as it renders the host backend's;
+  - *catalog*: the injected list carried the four symlink-only skills, and after a
+    skill was created from WSL mid-session the next turn's list had exactly one
+    more entry (`fresh-probe`), which the model itself described as the catalog
+    refreshing while the session runs.
+- **Twelve-check harness, all eight declared releases** (`0.1.0-rc.7` …
+  `0.1.5-rc.2`, runs `parity-01` and `parity-02`): `unit`, `lib`, `materialize`,
+  `rank`, `smoke-source`, `smoke-built`, `shell-extra`, `skills-real`, `fs-real`
+  and `relay-real` pass; the only failures are the documented `typecheck`
+  baseline (2) and `host-api`, which needs a live server. In `parity-01` the
+  first six cases ran a stale `materialize` expectation (the source's
+  persistent-shell group versus the world's own), which was fixed in the same
+  commit and re-run green on all six; `parity-02` ran the final code everywhere.
+
 
 
