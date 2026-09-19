@@ -30,6 +30,7 @@ import {
   grepSearchMeta,
   linuxTarget,
   matchGlob,
+  normalizeSpill,
   parseGlobRecords,
   parseGrepRecords,
   renderGlobText,
@@ -82,8 +83,8 @@ describe('parseGrepRecords', () => {
 
 describe('parseGlobRecords', () => {
   it('reads the GNU listing with modification times', () => {
-    assert.deepEqual(parseGlobRecords(Buffer.from('G /ws\n', 'utf8')), { mode: 'gnu', root: '/ws', files: [] })
-    const withFiles = Buffer.from('G /ws\n1700000000.500000000\t/ws/a.txt\u00001700000001.250000000\t/ws/b c.txt\u0000', 'utf8')
+    assert.deepEqual(parseGlobRecords(Buffer.from('G/ws\u0000', 'utf8')), { mode: 'gnu', root: '/ws', files: [] })
+    const withFiles = Buffer.from('G/ws\u00001700000000.500000000\t/ws/a.txt\u00001700000001.250000000\t/ws/b c.txt\u0000', 'utf8')
     assert.deepEqual(parseGlobRecords(withFiles), {
       mode: 'gnu',
       root: '/ws',
@@ -94,8 +95,19 @@ describe('parseGlobRecords', () => {
     })
   })
 
+  it('keeps a root whose own name contains a newline in one piece', () => {
+    // The header is NUL terminated for exactly this reason: a line-oriented
+    // header silently truncated such a root to its first line.
+    const stdout = Buffer.from('G/ws/od\nd dir\u00001700000000.000000000\t/ws/od\nd dir/a.txt\u0000', 'utf8')
+    assert.deepEqual(parseGlobRecords(stdout), {
+      mode: 'gnu',
+      root: '/ws/od\nd dir',
+      files: [{ path: '/ws/od\nd dir/a.txt', mtimeMs: 1_700_000_000_000 }],
+    })
+  })
+
   it('reads the plain fallback listing without times', () => {
-    const stdout = Buffer.from('P /ws\n/ws/a.txt\u0000/ws/b.txt\u0000', 'utf8')
+    const stdout = Buffer.from('P/ws\u0000/ws/a.txt\u0000/ws/b.txt\u0000', 'utf8')
     assert.deepEqual(parseGlobRecords(stdout), {
       mode: 'plain',
       root: '/ws',
@@ -104,6 +116,11 @@ describe('parseGlobRecords', () => {
         { path: '/ws/b.txt', mtimeMs: 0 },
       ],
     })
+  })
+
+  it('tolerates an empty or headerless stream', () => {
+    assert.deepEqual(parseGlobRecords(Buffer.alloc(0)), { mode: 'plain', root: '', files: [] })
+    assert.deepEqual(parseGlobRecords(Buffer.from('G', 'utf8')), { mode: 'gnu', root: '', files: [] })
   })
 })
 
@@ -284,6 +301,17 @@ describe('target and argv resolution', () => {
     assert.equal(linuxTarget(undefined), '')
   })
 
+  it('maps a Windows drive path to the /mnt form the file tools also open', () => {
+    assert.equal(linuxTarget('D:\\ProgramData\\proj'), '/mnt/d/ProgramData/proj')
+    assert.equal(linuxTarget('c:/Users/me'), '/mnt/c/Users/me')
+    assert.equal(linuxTarget('D:\\'), '/mnt/d')
+    assert.equal(linuxTarget('/already/linux'), '/already/linux')
+    // A bare `D:` is drive-relative rather than a path, and the shared helper's
+    // scope is a single-letter drive followed by a separator; it passes through
+    // and the distribution reports the missing path.
+    assert.equal(linuxTarget('D:'), 'D:')
+  })
+
   it('passes every model value as its own argv element after the fixed script', () => {
     const target = { distro: 'Ubuntu', linuxCwd: '/home/mille/ws', username: 'mille' }
     const script = 'set -u; exit 0'
@@ -344,5 +372,37 @@ describe('apply', () => {
     const run = registry()
     apply(run, {})
     assert.deepEqual([...run.tools.keys()], ['grep', 'glob'])
+  })
+
+  it('declares a spill schema a backend\u2019s own SpillRef satisfies', () => {
+    // The canonical value is validated against `output.schema`, and the spill
+    // backend's `SpillRef` is `{locator, bytes, retrievalHint}` — a closed object
+    // would fail the tool's own result.
+    const ctx = registry()
+    apply(ctx, CONFIG)
+    for (const name of ['grep', 'glob']) {
+      const spill = ctx.tools.get(name).output.schema.properties.spill
+      assert.equal(spill.type, 'object')
+      assert.equal(spill.additionalProperties, true)
+      assert.deepEqual(Object.keys(spill.properties).sort(), ['locator', 'retrievalHint'])
+    }
+    assert.deepEqual(
+      normalizeSpill({ locator: 'spill://x', bytes: 12, retrievalHint: 'read it' }),
+      { locator: 'spill://x', bytes: 12, retrievalHint: 'read it' },
+    )
+    assert.equal(normalizeSpill(undefined), undefined)
+    assert.equal(normalizeSpill({ bytes: 1 }), undefined, 'a reference with no locator is not renderable')
+    assert.deepEqual(normalizeSpill({ locator: 'spill://x' }).retrievalHint, '')
+  })
+
+  it('renders a capped result through a spill reference the backend supplied', () => {
+    const ctx = registry()
+    apply(ctx, CONFIG)
+    const grep = ctx.tools.get('grep')
+    const matches = Array.from({ length: 300 }, (_, index) => ({ path: 'a.ts', lineNumber: index + 1, line: 'x' }))
+    const spill = { locator: 'spill://session/grep-results.txt', bytes: 10, retrievalHint: 'Read it with the read tool.' }
+    const rendered = grep.output.render({ pattern: 'x' }, { matches, spill }).map(part => part.text).join('\n')
+    assert.equal(rendered.includes('Full grep result stored at: spill://session/grep-results.txt. Read it with the read tool.'), true)
+    assert.equal(rendered.startsWith('Found 250 of 300 matches'), true)
   })
 })

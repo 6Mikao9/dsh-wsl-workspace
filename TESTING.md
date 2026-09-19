@@ -59,11 +59,16 @@ This exercises the filesystem round-trip (resolve/write/read/edit/stat/version/l
 node scripts/verify-lib.mjs
 ```
 
-The `build` script chains it after `tsdown`:
+The `build` script clears the committed `lib/` first and chains the gate after `tsdown`:
 
 ```powershell
-pnpm build   # tsdown && node scripts/verify-lib.mjs
+pnpm build   # node scripts/clean-lib.mjs && tsdown && node scripts/verify-lib.mjs
 ```
+
+The clean step is not optional: `tsdown` runs with `clean: false` and the node and
+client configurations share `lib/` as their output directory, so without it every
+code-split chunk an earlier build emitted stays in the tree (and, once a file is
+renamed, ships in the tarball as dead weight).
 
 ## Nested skill-catalog regression (issue #10)
 
@@ -99,11 +104,30 @@ After installing the plugin into a profile and restarting `dsh web`:
 
 ## Release checklist
 
-1. `pnpm build` — rebuilds `lib/` and runs the verification gate.
-2. `node --experimental-strip-types --test tests/variants.test.ts tests/fs-execution-context.test.ts tests/shell.test.ts tests/paths.test.ts tests/wsl-skills.test.ts` — all green.
+1. `pnpm build` — clears `lib/`, rebuilds it, and runs the verification gate.
+2. `node --experimental-strip-types --test tests/*.test.ts` — all green (locales, variants, paths, shell, fs execution context, fs policy, wsl skills, wsl search).
 3. `node tests/host-materialize.mjs` — all assertions pass.
 4. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
 5. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
 6. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
-7. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE` (tsdown uses `clean: false`, so remove stale chunks from `lib/` before packing).
+7. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE`.
 8. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
+
+### The multi-release check harness
+
+`scripts/compatibility/` prepares one isolated case per declared release (its own
+`DSH_HOME`, its own dependency tree pinned to that release, the plugin installed
+into it) and runs a fixed check list inside it. The drivers require PowerShell 7.2,
+so on a Windows PowerShell 5.1 host use the Node equivalent:
+
+```powershell
+node .test-runs/harness.mjs <runId> 0.1.0-rc.7 0.1.5-rc.2   # prepare + check
+node .test-runs/harness.mjs <runId> --checks 0.1.5-rc.2      # re-check an existing case
+```
+
+Four checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
+`search-real`); they build their own fixtures under `/tmp/dsh-wsl-compat` (override
+with `WSL_COMPAT_ROOT`, and the distribution with `WSL_COMPAT_DISTRO`) and remove
+them again. `host-api` needs a running `dsh web` for the case, so it is expected to
+fail in a sweep. The `typecheck` baseline is two pre-existing errors from the
+harness's own type declarations.

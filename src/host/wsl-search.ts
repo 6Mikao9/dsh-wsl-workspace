@@ -69,7 +69,7 @@ import {
 } from '@deepseek-ai/dsh-tool-fs-search'
 import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
-import { isAbsoluteLinuxPath, parseWslUnc } from '../shared/paths.ts'
+import { isAbsoluteLinuxPath, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 import { getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 
@@ -88,11 +88,14 @@ import { getWorkspaceUsername } from '../shared/wsl-credentials.ts'
  * shape how they are written, each measured against grep 3.12 on Ubuntu:
  *  - A file `--exclude` pattern silently cancels `--include` entirely, so the
  *    hidden-file guard rides `--include='[!.]*'` instead — and only when the
- *    caller passed no filter of its own, since repeated includes are OR-ed.
+ *    caller passed no filter of its own (repeated includes are OR-ed) and only
+ *    for a *directory* target, because a file the caller named explicitly is
+ *    exactly what it asked for.
  *  - `--exclude-dir` excludes the search root itself when its base name starts
  *    with a dot, so that flag is skipped for a dot-rooted target.
- *  - `head -c` bounds the transfer in-distro, and `PIPESTATUS[0]` keeps grep's
- *    own status rather than head's.
+ *  - `head -c` bounds the transfer in-distro, `PIPESTATUS[0]` keeps grep's own
+ *    status rather than head's, and the search root is resolved physically first
+ *    so a linked-in directory is searched where the file tools would read it.
  *
  * The search root is resolved physically first, so the printed paths are
  * absolute and a linked-in directory is searched at its real path — the same
@@ -107,16 +110,23 @@ const GREP_SCRIPT = [
   'set -u',
   'pattern=$1; include=$2; target=$3; cap=$4',
   '[ -n "$target" ] || target=.',
-  'if [ -d "$target" ]; then target=$(cd -- "$target" && pwd -P); else',
+  'if [ -d "$target" ]; then',
+  '  target=$(cd -- "$target" && pwd -P)',
+  '  dir=1',
+  'else',
   '  case $target in /*) ;; *) target=$PWD/$target ;; esac',
+  '  dir=0',
   'fi',
   'if ! grep --version 2>/dev/null | head -n 1 | grep -q GNU; then',
   '  printf "grep is not GNU grep: %s\\n" "$(grep --version 2>/dev/null | head -n 1)" >&2',
   '  exit 3',
   'fi',
-  'opts=(-rnIEH -Z --exclude-dir=node_modules)',
-  'case ${target##*/} in .*) ;; *) opts+=(--exclude-dir=".*") ;; esac',
-  '[ -n "$include" ] || opts+=(--include="[!.]*")',
+  'opts=(-rnIEH -Z)',
+  'if [ "$dir" = 1 ]; then',
+  '  opts+=(--exclude-dir=node_modules)',
+  '  case ${target##*/} in .*) ;; *) opts+=(--exclude-dir=".*") ;; esac',
+  '  [ -n "$include" ] || opts+=(--include="[!.]*")',
+  'fi',
   'if [ -n "$include" ]; then',
   '  while IFS= read -r one; do [ -n "$one" ] && opts+=(--include="$one"); done <<<"$include"',
   'fi',
@@ -130,9 +140,13 @@ const GREP_SCRIPT = [
  * `%T@` is the mtime in seconds (GNU find only), so the caller can order the
  * result the way ripgrep's `--sort=modified` does — oldest first — without a
  * stat per file and without a 9P round trip per file. VCS metadata directories
- * are pruned; the pattern itself is matched in Node. The first line is a
- * `<mode> <resolved-root>\n` header (`G` = GNU `-printf`, `P` = plain `-print0`
- * fallback), and the records that follow are NUL framed.
+ * are pruned; the pattern itself is matched in Node.
+ *
+ * The header is `G`/`P` (GNU `-printf`, else the plain `-print0` fallback)
+ * immediately followed by the physically resolved root, **NUL terminated** so a
+ * path containing a newline cannot split it; every record after it is NUL framed
+ * too. `PIPESTATUS[0]` is what the script exits with, because a `find` that
+ * cannot read the target must not look like an empty directory.
  */
 const GLOB_SCRIPT = [
   'set -u',
@@ -143,10 +157,11 @@ const GLOB_SCRIPT = [
   'fi',
   'prune=(-name .git -o -name .hg -o -name .svn -o -name .bzr -o -name .jj -o -name .sl)',
   'if find --version 2>/dev/null | head -n 1 | grep -q GNU; then',
-  "  { printf 'G %s\\n' \"$target\"; find \"$target\" \\( \"${prune[@]}\" \\) -prune -o -type f -printf '%T@\\t%p\\0'; } | head -c \"$cap\"",
+  "  { printf 'G%s\\0' \"$target\"; find \"$target\" \\( \"${prune[@]}\" \\) -prune -o -type f -printf '%T@\\t%p\\0'; } | head -c \"$cap\"",
   'else',
-  "  { printf 'P %s\\n' \"$target\"; find \"$target\" \\( \"${prune[@]}\" \\) -prune -o -type f -print0; } | head -c \"$cap\"",
+  "  { printf 'P%s\\0' \"$target\"; find \"$target\" \\( \"${prune[@]}\" \\) -prune -o -type f -print0; } | head -c \"$cap\"",
   'fi',
+  'exit "${PIPESTATUS[0]}"',
 ].join('\n')
 
 /** The marker `$0` of both scripts; a fixed string, never a path from the model. */
@@ -325,17 +340,18 @@ export function parseGrepRecords(stdout: Buffer): WslGrepRecord[] {
  * Frame a raw `glob` stdout buffer into a listing mode, a resolved root and
  * entries.
  *
- * The script prefixes its output with `<mode> <root>\n` (`G` = GNU `-printf`:
- * `mtime\tpath` records; `P` = plain `-print0`: paths only, no modification
- * times).
+ * The script prefixes its output with a NUL-terminated `<mode><root>` header
+ * (`G` = GNU `-printf`: `mtime\tpath` records; `P` = plain `-print0`: paths only,
+ * no modification times). NUL framing keeps a root whose own path contains a
+ * newline in one piece.
  * @param stdout - the complete raw stdout bytes.
  * @returns the listing; `plain` entries carry `mtimeMs: 0`.
  */
 export function parseGlobRecords(stdout: Buffer): WslGlobListing {
-  const headerEnd = stdout.indexOf(0x0a)
+  const headerEnd = stdout.indexOf(0x00)
   const header = (headerEnd < 0 ? stdout : stdout.subarray(0, headerEnd)).toString('utf8')
   const mode: WslGlobMode = header.startsWith('G') ? 'gnu' : 'plain'
-  const root = header.length > 2 ? header.slice(2) : ''
+  const root = header.length > 0 ? header.slice(1) : ''
   const files: WslGlobRecord[] = []
   const body = headerEnd < 0 ? Buffer.alloc(0) : stdout.subarray(headerEnd + 1)
   for (const entry of body.toString('utf8').split('\u0000')) {
@@ -618,6 +634,40 @@ function formatGlobPage(items: readonly string[], seen: number, spillRef: SpillR
 }
 
 /**
+ * Normalize a spill reference for rendering.
+ *
+ * The canonical value is validated against the tool's output schema, and a
+ * backend's `SpillRef` carries fields of its own (`@deepseek-ai/dsh-spill`'s
+ * `SpillRef` is `{locator, bytes, retrievalHint}`), so the schema cannot close
+ * the object. This keeps the renderer's contract to the two fields it reads and
+ * survives a backend that omits the hint.
+ * @param spill - the backend's reference, as returned into the canonical value.
+ * @returns a render-ready reference, or undefined when there is nothing to name.
+ */
+export function normalizeSpill(spill: SpillRef | undefined | null): SpillRef | undefined {
+  if (spill === undefined || spill === null) return undefined
+  const locator = (spill as { locator?: unknown }).locator
+  if (typeof locator !== 'string' || locator === '') return undefined
+  const retrievalHint = (spill as { retrievalHint?: unknown }).retrievalHint
+  return { ...spill, locator, retrievalHint: typeof retrievalHint === 'string' ? retrievalHint : '' }
+}
+
+/**
+ * The spill reference's schema: an object whose extra fields are the backend's
+ * business. Requiring only what the footer prints keeps a version's `SpillRef`
+ * (which carries `bytes` too, and is branded) from failing the tool's own output
+ * validation — which is why `additionalProperties` is `true` here.
+ */
+const SPILL_SCHEMA = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    locator: { type: 'string' },
+    retrievalHint: { type: 'string' },
+  },
+} as const
+
+/**
  * Format one `glob` result exactly as the host suite's private `renderGlobPaths`
  * does: whole when within the cap, else the modification-time head or the
  * top-level sample, with the same footer.
@@ -709,16 +759,19 @@ export function resolveTarget(cwd: string | undefined, configured: string | unde
 
 /**
  * Express a model-supplied search target in Linux coordinates: a WSL UNC path
- * becomes its Linux form, everything else (absolute, relative, empty) is used as
- * typed and resolved by the distribution against the session workdir.
+ * becomes its Linux form, a Windows drive path becomes its `/mnt/<drive>` form
+ * (the same translation the file tools apply, so `grep path='D:\proj'` searches
+ * what `read D:\proj\a.ts` reads), and everything else — absolute, relative,
+ * empty — is used as typed and resolved by the distribution against the session
+ * workdir.
  * @param path - the tool call's `path`, when given.
  * @returns the script's `target` parameter.
  */
 export function linuxTarget(path: string | undefined): string {
   if (path === undefined) return ''
   const unc = parseWslUnc(path)
-  if (unc === null) return path
-  return unc.linuxPath === '' ? '/' : unc.linuxPath
+  if (unc !== null) return unc.linuxPath === '' ? '/' : unc.linuxPath
+  return windowsToMntPath(path) ?? path
 }
 
 /**
@@ -806,6 +859,10 @@ function runInDistro(
 /**
  * Classify one completed run into raw stdout or a `SEARCH_*` failure, using the
  * host suite's error vocabulary so retry/permission layers branch identically.
+ *
+ * The two engines disagree on exit 1: it is grep's "searched, found nothing",
+ * while `find` returns non-zero when it could not read the target at all — which
+ * must not be reported as an empty directory.
  * @param run - the completed run.
  * @param toolName - `grep` or `glob`, for the message.
  * @param rawOutputMaxBytes - the budget the script bounded stdout to.
@@ -824,9 +881,9 @@ function acceptRun(run: WslRun, toolName: string, rawOutputMaxBytes: number): Bu
     )
   }
   const code = run.code ?? -1
-  if (code === 0 || code === 1) return run.stdout
+  if (code === 0 || (code === 1 && toolName === 'grep')) return run.stdout
   const detail = (run.stderr.trim().split('\n')[0] ?? '').slice(0, 300)
-  if (code === 2 && INVALID_PATTERN.test(run.stderr)) {
+  if (code === 2 && toolName === 'grep' && INVALID_PATTERN.test(run.stderr)) {
     throw new SearchError(
       `${toolName} pattern rejected by the distribution's grep${detail === '' ? '' : `: ${detail}`}`,
       'SEARCH_INVALID_PATTERN',
@@ -919,19 +976,12 @@ function registerGrep(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
               },
             },
           },
-          spill: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              locator: { type: 'string', required: true },
-              retrievalHint: { type: 'string', required: true },
-            },
-          },
+          spill: SPILL_SCHEMA,
         },
       },
       render: (_args: unknown, value: { matches: GrepMatch[]; spill?: SpillRef }) => [{
         type: 'text',
-        text: renderGrepText(value.matches, caps, value.spill),
+        text: renderGrepText(value.matches, caps, normalizeSpill(value.spill)),
       }],
       presentationMeta: (_args: unknown, value: { matches: GrepMatch[] }) => (
         grepSearchMeta(retainMatches(value.matches, caps.maxMatches, caps.maxLineBytes), caps.maxMetaBytes)
@@ -1022,19 +1072,12 @@ function registerGlob(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
         properties: {
           root: { type: 'string', required: true },
           paths: { type: 'array', required: true, items: { type: 'string' } },
-          spill: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              locator: { type: 'string', required: true },
-              retrievalHint: { type: 'string', required: true },
-            },
-          },
+          spill: SPILL_SCHEMA,
         },
       },
       render: (_args: unknown, value: { root: string; paths: string[]; spill?: SpillRef }) => [{
         type: 'text',
-        text: renderGlobText(value.paths, caps, value.root, value.spill),
+        text: renderGlobText(value.paths, caps, value.root, normalizeSpill(value.spill)),
       }],
       presentationMeta: (_args: unknown, value: { root: string; paths: string[] }) => {
         const page = globCardPage(value.paths, caps, value.root)

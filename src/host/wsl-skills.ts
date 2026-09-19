@@ -543,6 +543,8 @@ export class WslSkillsProvider {
     signature: string
     roots: readonly SkillRoot[]
     polls: number
+    /** True while a poll is still in flight, so a slow pass cannot stack up. */
+    busy: boolean
   }>()
 
   constructor(
@@ -666,6 +668,7 @@ export class WslSkillsProvider {
       signature,
       roots,
       polls: 0,
+      busy: false,
     }
     // A pending poll must never hold the host process open (or outlive it).
     if (typeof detector.timer.unref === 'function') detector.timer.unref()
@@ -680,19 +683,28 @@ export class WslSkillsProvider {
   private async detect(cacheKey: string, distro: string, scanRoot: string): Promise<void> {
     const detector = this.detectors.get(cacheKey)
     if (detector === undefined || this.control.signal.aborted) return
-    detector.polls += 1
-    const walk = detector.polls % this.walkEveryPolls === 0
-    let signature: string
+    // A pass over a slow share can outlast the interval; letting the timer start
+    // another one would stack `wsl.exe` calls and make every later poll read a
+    // half-finished shape. One pass at a time per scan root.
+    if (detector.busy) return
+    detector.busy = true
     try {
-      signature = await this.shape(distro, walk ? await discoverSkillRoots(distro, scanRoot, this.io) : detector.roots)
-    } catch {
-      // A transient read failure keeps the last known shape and retries.
-      return
+      detector.polls += 1
+      const walk = detector.polls % this.walkEveryPolls === 0
+      let signature: string
+      try {
+        signature = await this.shape(distro, walk ? await discoverSkillRoots(distro, scanRoot, this.io) : detector.roots)
+      } catch {
+        // A transient read failure keeps the last known shape and retries.
+        return
+      }
+      if (signature === detector.signature) return
+      detector.signature = signature
+      this.cache.delete(cacheKey)
+      this.control.invalidate()
+    } finally {
+      detector.busy = false
     }
-    if (signature === detector.signature) return
-    detector.signature = signature
-    this.cache.delete(cacheKey)
-    this.control.invalidate()
   }
 
   /** The shape of one root set: paths, entry names, kinds and file stamps. */

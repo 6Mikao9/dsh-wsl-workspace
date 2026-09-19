@@ -9,7 +9,8 @@
   },
   "main": "lib/index.js",
   "scripts": {
-    "build": "tsdown && node scripts/verify-lib.mjs",
+    "clean": "node scripts/clean-lib.mjs",
+    "build": "npm run clean && tsdown && node scripts/verify-lib.mjs",
     "verify": "node scripts/verify-lib.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

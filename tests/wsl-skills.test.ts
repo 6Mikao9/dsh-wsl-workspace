@@ -784,6 +784,41 @@ test('a brand-new skills directory waits for the discovery cadence, not the chea
   control.dispose()
 })
 
+test('a slow poll never stacks up behind itself', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
+  const control = countingControl()
+  const base = createIo(root)
+  let reads = 0
+  let stalling = false
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const io: WslSkillIo = {
+    ...base,
+    readdir: async (path, options) => {
+      if (stalling) {
+        reads += 1
+        // The first poll stalls far past the interval: a second pass must not
+        // start on top of it.
+        if (reads === 1) await gate
+      }
+      return base.readdir(path, options)
+    },
+  }
+  const provider = new WslSkillsProvider(control, io, () => 1_000_000, 10)
+  await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  stalling = true
+  await delay(80)
+  const duringStall = reads
+  release()
+  await delay(40)
+  // Without the guard the interval would have started several overlapping walks
+  // while the first was still awaiting; with it, one pass at a time.
+  assert.equal(duringStall <= 1, true, `polls stacked: ${duringStall} readdir calls while one was stalled`)
+  control.dispose()
+})
+
 test('parses block scalars in frontmatter', async () => {
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
