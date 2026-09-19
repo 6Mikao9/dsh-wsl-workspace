@@ -32,14 +32,22 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ## 行为与权限说明
 
 - **bash 工具**：以配置的用户名在 WSL 发行版内运行（留空 = 发行版默认用户，通常为 root），可对发行版内任意路径读写。Windows 的 ACL 沙箱无法包裹 `wsl.exe`（子进程运行在 Linux 内核侧），WSL 自身即隔离边界，DSH 文件策略不作用于 bash。
-- **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问；用户名设置不影响它们。**在 WSL 会话里，访问模式约束不到它们**：策略层（`fs-sandbox` / `sandbox-policy`）属于宿主平面，包裹的是宿主的 `fs` 服务（见 `dsh --profile web --dump-config`），而 WSL 变体刻意在预设的 isolate realm 内挂自己的 `fs` 提供者，包装层不在调用路径上。0.1.5-rc.2 实测：会话处于 `workspace-write` 时，工作区外写入（Linux 路径与 `D:\...` 路径）都成功、没有任何拒绝。非 WSL 会话不受影响（其工具用的是宿主 `fs`，文档行为照旧）。把策略接进 WSL 世界是后续工作；在那之前，请把 WSL 会话的文件工具视为不受限，访问模式按钮只对非 WSL 会话有效。
-- **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录。建议把工作区注册在你实际工作的项目根；若注册目录本身在更大的 git 仓库里，扫描会从该仓库根开始（与宿主规则一致），同级项目可能一并出现。Windows 侧共享解不开的 Linux 符号链接会改由发行版解析（`wsl.exe … readlink -f`，每次查找最多 32 条、并发 4 条），解析后从真实路径继续扫描，因此 `ln -s` 链进来的项目、以及它下面的嵌套项目都能被发现，并按真实路径去重。技能正文始终实时读取；目录本身在会话启动时收集一次——生成预设会把 `skill-filesystem` 行的 `watch` 固定为 `false`（对 `\\wsl.localhost\...` 开监视会失败），所以会话运行中途新加入的技能要等下一个会话。
-- **bash 的生命周期**：每次调用一个全新 shell。每条 `bash` 命令都从会话 cwd 起一个新 shell，`cd`、export 的变量、激活的 venv、后台任务都不会跨调用保留——请串成一条命令或用绝对路径。WSL 变体没有持久 shell：宿主的 `persistent-shell` 组注册的工具名与变体自己世界里的 `bash` 相同（同时挂载会让整个预设挂载失败），而且它的 PTY 后端在 Windows 宿主上直接拒绝启动。
+- **文件工具（read/write/edit）**：经 Windows 侧的 WSL 9P 共享访问；用户名设置不影响它们。宿主原本会提供的两处能力，现在由 WSL 世界自己在内部补上——变体在预设的 isolate realm 里挂自己的 `fs` 提供者，宿主的 `fs-sandbox` 包装层不在调用路径上。**符号链接**：共享只列得出链接、解不开目标，链接路径以前会被当成不存在的文件；现在 `resolve`/`lstat` 会向发行版问一次真实路径（`wsl.exe … readlink -f`）并从那里继续，链接本身绝不会被普通文件替换。**访问模式**：`write`/`edit` 完全按宿主后端的做法由 `ctx.sandboxPolicy` 围栏——同一份 `writableRoots` 白名单（另加发行版的 `/tmp`，即会话所在世界的临时区）、同样的 `FS_SANDBOX_DENIED`（工具层会渲染成拒绝）、同样的 `sandboxMode`（工具据此声明升级）。由于围栏在解析之后执行，判定的是真实路径：链接指向工作区外就按工作区外处理，`workspace-write` 下会被拒绝。完全没有策略服务的部署则不围栏，与宿主一致。
+- **技能目录（skill catalog）**：从会话 cwd 最近的 `.git` 祖先开始（没有 `.git` 祖先则用 cwd 本身）向下扫描 `.dsh/skills` 与 `.agents/skills`（含嵌套项目），上限为 4 层目录、64 个技能目录、4096 个已访问目录。建议把工作区注册在你实际工作的项目根；若注册目录本身在更大的 git 仓库里，扫描会从该仓库根开始（与宿主规则一致），同级项目可能一并出现。Windows 侧共享解不开的 Linux 符号链接会改由发行版解析（`wsl.exe … readlink -f`，每次查找最多 32 条、并发 4 条），解析后从真实路径继续扫描，因此 `ln -s` 链进来的项目、以及它下面的嵌套项目都能被发现，并按真实路径去重。技能正文始终实时读取。生成预设会把 `skill-filesystem` 行的 `watch` 固定为 `false`（对 `\\wsl.localhost\...` 开监视会失败），插件改为自己轮询：每 10 秒重查一次已发布的目录形状（技能根 + 条目名与类型，不重读技能文件），有变化就让宿主重建目录，所以会话中途加入的技能约 10 秒内、在下一个回合出现。
+- **shell 的生命周期**：`bash` 每次调用都是全新 shell，`cd`、export 的变量、venv、后台任务不跨调用保留。需要跨调用保留状态时，世界还挂了宿主的 PTY 后端、指向本插件的中继脚本，由它把 PTY 交给 `wsl.exe … bash`：**`persistent-bash`** 是有状态的 shell，起始目录就是会话工作区、并加载登录环境（中继执行 `bash -lc 'cd … && exec bash -i'`，因为有些 profile 会把 `bash -l` 带回 `$HOME`）。发行版取自会话的 UNC cwd（否则用 `DSH_WSL_DISTRO`），可选用户名取自 `DSH_WSL_USER`。两个 shell 都在发行版内运行，都不受 DSH 文件策略约束——WSL 自身就是它们的隔离边界。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
 
 ## 更新日志
 
 英文完整历史见 [README.md](README.md)，本节为对应中文记录（0.4.3 及更早为摘要）。
+
+### 0.5.0 — 2026-09-19
+
+- **文件工具现在跟随 Linux 符号链接**：`\\wsl.localhost` 共享只列得出链接条目、描述不了它——对链接的 `lstat`、`stat`、`readFile` 全部失败，而 `resolve()` 会回一个词法身份——于是链接路径被当成不存在的文件，链接进来的项目**根本读写不了**。现在只要这份共享描述不了该路径，`resolve`/`lstat` 就向发行版问一次（`wsl.exe … readlink -f`，与技能扫描同一个实现）并从真实路径继续。链接不会被普通文件替换；向悬空链接写入会创建它的目标并保留链接。
+- **访问模式重新约束 WSL 会话**：变体在预设的 isolate realm 里挂自己的 `fs` 提供者，宿主的 `fs-sandbox` 包装层不在调用路径上，所以 `workspace-write` 拦不住工作区外写入（修复前实测：Linux 路径与 `D:\...` 路径都能写）。现在 `writeText`/`editText` 完全按 `@deepseek-ai/dsh-fs-sandbox` 的方式围栏：`ctx.sandboxPolicy`（工具层按次传入的优先，否则服务自解析）、同一份 `writableRoots` 白名单加发行版 `/tmp`、同样的 `FS_SANDBOX_DENIED`，并提供工具读取的 `sandboxMode` 以便声明升级。围栏在链接解析之后执行，判定的是真实路径——链接指向工作区外就按工作区外拒绝。
+- **技能目录实时刷新**：此前对 UNC 固定 `watch: false`，会话中途加入的技能只能等下个会话。现在 provider 为每个服务过的扫描根维护一个变更探测，每 10 秒重查已发布的目录形状（技能根 + 条目名与类型，**不重读技能文件**），有变化就调 `control.invalidate()`，目录中间件会在会话下一个回合重新收集。
+- **`persistent-bash`：有状态的 WSL shell**——逐模式矩阵反复暴露的那个缺口（每条 `bash` 都是新进程）。DSH 的 PTY 注册表支持替换后端，而 `@deepseek-ai/dsh-terminal-bash` 是配置驱动的，于是世界用 `backendType: wsl` 挂它，并指向本插件的中继脚本（`src/host/wsl-relay.ts` → `lib/wsl-relay.js`），由宿主自己的 node 运行。中继解析发行版（会话 UNC cwd → `DSH_WSL_DISTRO` → 宿主默认）与可选用户名（`DSH_WSL_USER`），然后把自己的 stdio——也就是那个 PTY——交给 `wsl.exe -d … --cd … -e bash -lc 'cd … && exec bash -i'`：登录环境、交互式、且保留会话目录（有些 profile 会把 `bash -l` 带回 `$HOME`）。`@deepseek-ai/dsh-tool-bash-persistent` 注册的是独立的 `persistent-bash` 工具，一次性 `bash` 原样保留。源预设自带的 `persistent-*`/`terminal-*` 行随它的世界一起被丢弃，不会与世界里的行重名。
+- **验证**：八个已声明版本（`0.1.0-rc.7` … `0.1.5-rc.2`）跑十二项门禁——新增 `fs-real`（真实后端上的链接解析、经链接与链接链读取、悬空链接创建、链接保留、出工作区链接的围栏、发行版 `/tmp` 允许）与 `relay-real`（真实 WSL 上的有状态 shell、发行版与用户名解析、干净退出）——仅剩既有的两项基线失败（`typecheck` 与需要在线服务的 `host-api`）。单测：`tests/fs-policy.test.ts`（7 例围栏）+ 技能 provider 的刷新用例，叠加在原有套件之上。
 
 ### 0.4.5 — 2026-09-19
 
