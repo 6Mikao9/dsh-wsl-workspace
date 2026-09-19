@@ -12,27 +12,35 @@
  * workspaces: it starts at the session cwd's nearest `.git` ancestor (the
  * host's project-root rule; the cwd itself when no ancestor has a `.git`
  * marker), then walks that root (depth- and budget-bounded). Directory
- * symlinks are followed when the substrate resolves them and pruned safely
- * when it does not — the `\\wsl.localhost` 9P share cannot resolve Linux
- * symlink targets, so linked-in projects stay undiscoverable there today.
- * The walk collects every
+ * symlinks are followed when the substrate resolves them, and — the case the
+ * `\\wsl.localhost` 9P share creates, where a link is listed but its Linux
+ * target cannot be resolved Windows-side — the distribution itself resolves
+ * them through bounded, concurrent `wsl.exe … readlink -f` calls. The walk
+ * collects every
  * `.dsh/skills` and `.agents/skills` directory it finds — including nested
- * projects — and publishes their skills with the same
- * project ranks and sources the host uses, so precedence and duplicate
+ * projects, linked-in projects anywhere on the Linux filesystem, and projects
+ * reachable through more than one path — and publishes their skills with the
+ * same project ranks and sources the host uses, so precedence and duplicate
  * resolution behave identically. Non-WSL lookups return nothing and leave
  * the host's own providers untouched.
  *
  * All filesystem reads go through `node:fs` against the `\\wsl.localhost\…`
- * 9P share (the same substrate `WslFileSystem` uses); an injectable IO face
- * keeps the discovery logic unit-testable without a live distro.
+ * 9P share (the same substrate `WslFileSystem` uses); the distribution-side
+ * resolution rides `wsl.exe` through `execFile` (no shell interpolation), and
+ * an injectable IO face keeps the discovery logic unit-testable without a
+ * live distro.
  *
  * @module dsh-wsl-workspace/host/wsl-skills
  */
 
+import { execFile } from 'node:child_process'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { join as joinWindowsPath, posix } from 'node:path'
-import { joinUnc, parseWslUnc } from '../shared/paths.ts'
+import { promisify } from 'node:util'
+import { isAbsoluteLinuxPath, joinUnc, parseWslUnc, uncToLinux } from '../shared/paths.ts'
+
+const execFileAsync = promisify(execFile)
 
 /** Project ranks copied from @deepseek-ai/dsh-skill-filesystem so WSL and host entries interleave identically. */
 const PROJECT_DSH_RANK = 100
@@ -44,6 +52,16 @@ const MAX_SCAN_DEPTH = 4
 const MAX_SKILL_ROOTS = 64
 /** Maximum directories visited per lookup (an absolute blast-radius cap). */
 const MAX_VISITED_DIRECTORIES = 4096
+/**
+ * How many Linux symlinks one lookup may hand to the distribution (a second
+ * blast-radius cap, and a latency cap: each resolution is a short `wsl.exe`
+ * call, so a tree with hundreds of links cannot stall the catalog).
+ */
+const MAX_LINK_RESOLUTIONS = 32
+/** How many `readlink` calls may be in flight at once. */
+const LINK_RESOLVE_CONCURRENCY = 4
+/** How long the distribution may take to answer one `readlink` call. */
+const LINK_RESOLVE_TIMEOUT_MS = 10_000
 /** How many parent levels above the session cwd are searched for a `.git` project marker. */
 const MAX_ANCESTOR_WALK = 64
 /** How long a completed lookup is served from cache before the next rescan. */
@@ -115,6 +133,13 @@ export interface WslSkillIo {
   readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>
   readFile(path: string, options: { encoding: 'utf8' }): Promise<string>
   stat(path: string): Promise<{ isDirectory(): boolean }>
+  /**
+   * Resolve Linux symlink targets the share itself cannot follow, returning
+   * each real path in the same UNC spelling (`undefined` where a link cannot
+   * be resolved). Optional: a substrate that follows links locally leaves this
+   * unimplemented, and the walk then never pays for a distribution round trip.
+   */
+  resolveLinks?(uncPaths: readonly string[]): Promise<(string | undefined)[]>
 }
 
 /** The node:fs/promises implementation the provider uses in production. */
@@ -122,6 +147,64 @@ export const nodeSkillIo: WslSkillIo = {
   readdir: async (path, options) => readdir(path, options),
   readFile: async (path, options) => readFile(path, options),
   stat: async path => stat(path),
+  resolveLinks: async uncPaths => wslResolveLinks(uncPaths),
+}
+
+/**
+ * Resolve Linux symlinks through the distribution that owns them: the
+ * `\\wsl.localhost` 9P share lists a link entry but cannot follow its Linux
+ * target, while the distribution resolves it trivially. Each link is one short
+ * `wsl.exe … readlink -f` call — the path travels as a process argument, so no
+ * shell quoting has to be right — and a few run at a time so a workspace full
+ * of links stays bounded.
+ *
+ * Never throws: a link the distribution cannot resolve (a missing component, a
+ * stopped distribution, a `readlink` that fails) stays unresolved, and the
+ * caller skips it exactly as it did before this fallback existed.
+ *
+ * @param uncPaths - the links to resolve, in UNC spelling.
+ * @param wslPath - the `wsl.exe` executable (absolute or PATH name).
+ * @returns one entry per input, in order: the resolved real path as a UNC
+ *   path, or `undefined` when the link or the distribution could not answer.
+ */
+export async function wslResolveLinks(
+  uncPaths: readonly string[],
+  wslPath = 'wsl.exe',
+): Promise<(string | undefined)[]> {
+  const resolved: (string | undefined)[] = uncPaths.map(() => undefined)
+  let next = 0
+  const workers = Array.from(
+    { length: Math.min(LINK_RESOLVE_CONCURRENCY, uncPaths.length) },
+    async () => {
+      for (let index = next; index < uncPaths.length; index = next) {
+        next += 1
+        resolved[index] = await wslResolveOne(uncPaths[index] ?? '', wslPath)
+      }
+    },
+  )
+  await Promise.all(workers)
+  return resolved
+}
+
+/** The distribution-side half of {@link wslResolveLinks} for one link. */
+async function wslResolveOne(uncPath: string, wslPath: string): Promise<string | undefined> {
+  const unc = parseWslUnc(uncPath)
+  // `readlink` answers one line, which the caller trims: a line break inside
+  // the path itself would come back mangled by that trim.
+  if (unc === null || /[\r\n]/.test(unc.linuxPath)) return undefined
+  try {
+    const output = await execFileAsync(
+      wslPath,
+      ['-d', unc.distro, '--', 'readlink', '-f', unc.linuxPath],
+      { encoding: 'utf8', timeout: LINK_RESOLVE_TIMEOUT_MS, windowsHide: true },
+    )
+    const target = String(output.stdout).trim()
+    return isAbsoluteLinuxPath(target) ? joinUnc(unc.distro, target) : undefined
+  } catch {
+    // Missing components, an unreadable link, a stopped distribution or a
+    // missing `readlink` all land here: the link simply stays unresolved.
+    return undefined
+  }
 }
 
 /** One discovered skill directory under a WSL workspace. */
@@ -177,11 +260,15 @@ async function nearestGitAncestor(distro: string, linuxDir: string, io: WslSkill
 async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkillIo): Promise<SkillRoot[]> {
   const roots: SkillRoot[] = []
   const visited = new Set<string>()
+  let linksResolved = 0
   // BFS layers so the budget prunes the widest, most redundant levels first
   // (shallow skill dirs matter most): [path, depth] pairs.
   let frontier: [string, number][] = [[linuxRoot, 0]]
   while (frontier.length > 0 && roots.length < MAX_SKILL_ROOTS) {
     const next: [string, number][] = []
+    // Symlink targets the share could not follow, resolved for this whole
+    // layer in one distribution round trip after the layer is enumerated.
+    const links: [string, number][] = []
     for (const [dir, depth] of frontier) {
       if (visited.size >= MAX_VISITED_DIRECTORIES) return roots
       if (visited.has(dir)) continue
@@ -207,17 +294,38 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
           next.push([childPath, depth + 1])
           continue
         }
-        if (entry.isSymbolicLink()) {
-          // A project may be linked into the workspace via a directory
-          // symlink; follow it when the target is a directory. Symlink
-          // cycles stay bounded: every hop increments the depth (capped by
-          // MAX_SCAN_DEPTH) and the walk as a whole by MAX_VISITED_DIRECTORIES.
-          try {
-            const target = await io.stat(joinUnc(distro, childPath))
-            if (target.isDirectory()) next.push([childPath, depth + 1])
-          } catch {
-            // Dangling symlink: nothing to traverse.
-          }
+        if (!entry.isSymbolicLink()) continue
+        // A project may be linked into the workspace via a directory symlink;
+        // follow it when the target is a directory. Symlink cycles stay
+        // bounded: every hop increments the depth (capped by MAX_SCAN_DEPTH)
+        // and the walk as a whole by MAX_VISITED_DIRECTORIES.
+        try {
+          const target = await io.stat(joinUnc(distro, childPath))
+          // A substrate that resolves Linux links itself answers here; a link
+          // to a file is not a project directory either way.
+          if (target.isDirectory()) next.push([childPath, depth + 1])
+          continue
+        } catch {
+          // The `\\wsl.localhost` 9P share reports the link entry but cannot
+          // resolve its Linux target; the distribution below can.
+        }
+        links.push([childPath, depth + 1])
+      }
+    }
+    if (links.length > 0 && io.resolveLinks !== undefined && linksResolved < MAX_LINK_RESOLUTIONS) {
+      const batch = links.slice(0, MAX_LINK_RESOLUTIONS - linksResolved)
+      linksResolved += batch.length
+      const resolved = await io.resolveLinks(batch.map(([path]) => joinUnc(distro, path)))
+      for (let index = 0; index < batch.length; index += 1) {
+        const real = resolved[index]
+        if (real === undefined) continue
+        // The walk continues at the link's real path, which also collapses a
+        // project reachable both directly and through a link onto one visit.
+        try {
+          const info = await io.stat(real)
+          if (info.isDirectory()) next.push([uncToLinux(real), batch[index]![1]])
+        } catch {
+          // The distribution resolved a target this share still cannot stat.
         }
       }
     }
