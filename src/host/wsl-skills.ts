@@ -61,6 +61,8 @@ const MAX_ANCESTOR_WALK = 64
 const CACHE_TTL_MS = 10_000
 /** Maximum cached lookups (one entry per distinct scan root across sessions). */
 const CACHE_MAX_ENTRIES = 32
+/** How often a served scan root is re-checked for skills added mid-session. */
+const REFRESH_POLL_MS = 10_000
 
 /** Kebab-case skill names, matching the host grammar. */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -469,20 +471,36 @@ function frontmatterBoolean(fields: Map<string, string>, key: string, dflt = fal
  * Completed `list()` lookups are cached per scan root for CACHE_TTL_MS so
  * repeated catalog builds over the slow 9P share do not rescan the tree;
  * `get()` always re-reads the skill file so body edits are picked up
- * immediately. `control.invalidate` remains reserved for host-driven
- * invalidation; the provider self-invalidates through the TTL.
+ * immediately.
+ *
+ * A scan root that has been served is re-checked every REFRESH_POLL_MS: the
+ * host cannot watch a `\\wsl.localhost\…` path (which is why the generated
+ * preset pins `watch: false`), so this provider watches for it instead. A
+ * changed directory listing clears the cache and calls `control.invalidate()`,
+ * which bumps the registry's revision; the catalog middleware re-collects on
+ * the session's next request, so a skill added mid-session reaches the model
+ * without starting a new session.
  */
 export class WslSkillsProvider {
   readonly name = 'wsl-workspace'
   private readonly control: WslSkillProviderControl
   private readonly io: WslSkillIo
   private readonly now: () => number
+  private readonly refreshMs: number
   private readonly cache = new Map<string, { expiresAt: number; candidates: WslSkillCandidate[] }>()
+  /** One change detector per served scan root, keyed like {@link cache}. */
+  private readonly detectors = new Map<string, { timer: ReturnType<typeof setInterval>; signature: string }>()
 
-  constructor(control: WslSkillProviderControl, io: WslSkillIo = nodeSkillIo, now: () => number = Date.now) {
+  constructor(
+    control: WslSkillProviderControl,
+    io: WslSkillIo = nodeSkillIo,
+    now: () => number = Date.now,
+    refreshMs: number = REFRESH_POLL_MS,
+  ) {
     this.control = control
     this.io = io
     this.now = now
+    this.refreshMs = refreshMs
   }
 
   /**
@@ -513,8 +531,13 @@ export class WslSkillsProvider {
     const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
     const candidates: WslSkillCandidate[] = []
     const seenSkills = new Set<string>()
+    // The catalog's shape (roots, entry names and kinds) is collected as the
+    // candidates are built, so the change detector starts from what this
+    // lookup actually saw instead of paying for a second walk.
+    const signature: string[] = []
     for (const root of roots) {
       const entries = await listSkillEntries(root, this.io)
+      signature.push(`${root.path}\u0001${entries.map(entry => `${entry.name}:${entry.kind}`).sort().join(',')}`)
       for (const entry of entries) {
         options.signal?.throwIfAborted()
         const parsed = await readSkill(entry.path, this.io, options.signal)
@@ -549,7 +572,63 @@ export class WslSkillsProvider {
       if (oldest === undefined) break
       this.cache.delete(oldest)
     }
+    this.watch(cacheKey, unc.distro, scanRoot, signature.join('\u0002'))
     return candidates
+  }
+
+  /**
+   * Keep one scan root's catalog honest for as long as this provider is
+   * registered: the host cannot watch a UNC workspace, so the provider polls
+   * the directory shape it just published (no skill file is read again) and,
+   * on any difference, drops its own cache and asks the registry to re-collect
+   * for the session's next request.
+   * @param cacheKey - this provider's key for the scan root.
+   * @param distro - the WSL distribution.
+   * @param scanRoot - the Linux path the lookup scanned.
+   * @param signature - the shape the lookup just published.
+   */
+  private watch(cacheKey: string, distro: string, scanRoot: string, signature: string): void {
+    const existing = this.detectors.get(cacheKey)
+    if (existing !== undefined) {
+      existing.signature = signature
+      return
+    }
+    const detector = { timer: setInterval(() => void this.detect(cacheKey, distro, scanRoot), this.refreshMs), signature }
+    // A pending poll must never hold the host process open (or outlive it).
+    if (typeof detector.timer.unref === 'function') detector.timer.unref()
+    this.detectors.set(cacheKey, detector)
+    this.control.signal.addEventListener('abort', () => {
+      clearInterval(detector.timer)
+      this.detectors.delete(cacheKey)
+    }, { once: true })
+  }
+
+  /** One poll: invalidate the catalog when the published shape no longer holds. */
+  private async detect(cacheKey: string, distro: string, scanRoot: string): Promise<void> {
+    const detector = this.detectors.get(cacheKey)
+    if (detector === undefined || this.control.signal.aborted) return
+    let signature: string
+    try {
+      signature = await this.shape(distro, scanRoot)
+    } catch {
+      // A transient read failure keeps the last known shape and retries.
+      return
+    }
+    if (signature === detector.signature) return
+    detector.signature = signature
+    this.cache.delete(cacheKey)
+    this.control.invalidate()
+  }
+
+  /** The directory shape of one scan root: roots, entry names and kinds only. */
+  private async shape(distro: string, scanRoot: string): Promise<string> {
+    const roots = await discoverSkillRoots(distro, scanRoot, this.io)
+    const parts: string[] = []
+    for (const root of roots) {
+      const entries = await listSkillEntries(root, this.io)
+      parts.push(`${root.path}\u0001${entries.map(entry => `${entry.name}:${entry.kind}`).sort().join(',')}`)
+    }
+    return parts.join('\u0002')
   }
 
   /**

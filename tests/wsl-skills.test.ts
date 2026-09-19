@@ -636,6 +636,96 @@ test('never asks the distribution for link targets when no lookup needs it', asy
   assert.equal(requested, 0)
 })
 
+/** A registration control that counts the invalidations this provider requests. */
+function countingControl(): {
+  signal: AbortSignal
+  invalidate: () => void
+  invalidations: () => number
+  dispose: () => void
+} {
+  const lifecycle = new AbortController()
+  let count = 0
+  return {
+    signal: lifecycle.signal,
+    invalidate: () => { count += 1 },
+    invalidations: () => count,
+    dispose: () => lifecycle.abort(),
+  }
+}
+
+const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+test('re-checks a served scan root and invalidates when a skill appears', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
+  const control = countingControl()
+  // A fixed clock keeps the TTL from expiring, so only the detector can
+  // explain a fresh catalog; a short poll keeps the test quick.
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10)
+  assert.deepEqual((await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name), ['first'])
+
+  // Nothing changed yet: a few polls must not disturb the registry.
+  await delay(40)
+  assert.equal(control.invalidations(), 0)
+
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'second.md'],
+    SKILL_MD('second', 'Added while the session runs'))
+  await delay(60)
+  assert.equal(control.invalidations(), 1)
+  // The detector dropped this provider's cache, so the re-collect sees it.
+  assert.deepEqual(
+    (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name).sort(),
+    ['first', 'second'],
+  )
+
+  // A second change invalidates again; without one it stays quiet.
+  await delay(40)
+  assert.equal(control.invalidations(), 1)
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'third.md'], SKILL_MD('third', 'Third skill'))
+  await delay(60)
+  assert.equal(control.invalidations(), 2)
+  control.dispose()
+})
+
+test('stops watching when the registration is disposed', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
+  const lifecycle = new AbortController()
+  let invalidations = 0
+  const provider = new WslSkillsProvider(
+    { signal: lifecycle.signal, invalidate: () => { invalidations += 1 } },
+    createIo(root),
+    () => 1_000_000,
+    10,
+  )
+  await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  lifecycle.abort()
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'late.md'], SKILL_MD('late', 'Too late'))
+  await delay(50)
+  assert.equal(invalidations, 0)
+})
+
+test('publishes a project skill added mid-session as a new scan root too', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  const control = countingControl()
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10)
+  assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
+
+  dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills', 'late.md'],
+    SKILL_MD('late', 'A project added mid-session'))
+  await delay(60)
+  assert.equal(control.invalidations(), 1)
+  assert.deepEqual(
+    (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name),
+    ['late'],
+  )
+  control.dispose()
+})
+
 test('parses block scalars in frontmatter', async () => {
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
