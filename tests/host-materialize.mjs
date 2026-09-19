@@ -298,8 +298,16 @@ const minYaml = readFileSync(join(minVariant, 'agent.cordis.yml'), 'utf8')
 assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
-assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the PTY group (duplicate bash registration + unsupported win32 PTY)')
-assert(!minYaml.includes('persistent-bash'), 'minimal variant drops persistent-bash')
+assert(!minYaml.includes('persistent-shell'), 'minimal variant drops the source PTY group (duplicate bash registration + unsupported win32 PTY)')
+// The world mounts its OWN persistent shell instead of the source's group:
+// the host's PTY backend pointed at this plugin's relay, plus the persistent
+// tool. Exactly one of each, and the one-shot bash survives beside them.
+assert((minYaml.match(/- id: persistent-bash\n/g) ?? []).length === 1, 'minimal variant mounts exactly one persistent-bash row')
+assert(minYaml.includes("name: '@deepseek-ai/dsh-tool-bash-persistent'"), 'the persistent bash tool is mounted')
+assert(minYaml.includes('- id: terminal-wsl'), 'the host PTY backend is mounted for it')
+assert(minYaml.includes('backendType: wsl'), 'the persistent shell uses the WSL backend')
+assert(minYaml.includes('wsl-relay.js'), 'the backend runs this installation\'s relay')
+assert((minYaml.match(/name: '@deepseek-ai\/dsh-tool-bash'/g) ?? []).length === 1, 'the one-shot bash row stays, exactly once')
 assert(
   /- id: skill-filesystem\n  name: '[^']+'\n  config:\n    watch: false\n/.test(minYaml),
   'a skill-filesystem row with no config gets one carrying watch: false',
