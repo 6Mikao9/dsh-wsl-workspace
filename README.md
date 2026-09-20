@@ -92,8 +92,10 @@ live skill catalog, a stateful shell, and tracked background jobs.
   distribution fixture — leaving only the two pre-existing baseline failures
   (`typecheck`, and `host-api` which needs a live server). 152 unit tests, including
   a parity check of every renderer against the host suite's own formatters. Real
-  browser sessions on five releases, with the session log as evidence for the tool
-  set, the search results, the catalog replacement, the shell fallback and the
+  browser sessions on five releases for the tool behaviour, and a **frontend pass on
+  all eight** (entry button, dialog, path check, create & open, mode picker, help
+  panel with v0.7.0 and 8 release chips), with the session log as evidence for the
+  tool set, the search results, the catalog replacement, the shell fallback and the
   background-job lifecycle.
 
 ### 0.6.0 — 2026-09-19

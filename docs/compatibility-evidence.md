@@ -732,11 +732,11 @@ Two more came from reading the contracts rather than probing:
 
 ### Verification of the fixes
 
-- 148 unit tests green, including the new cases pinning each defect: framing
+- 152 unit tests green, including the new cases pinning each defect: framing
   around a newline in a root, the explicit dot-file, the `/mnt` mapping, the spill
   schema shape, the description block, the poll-stacking guard, and the
   background-job producer's registry contract (start arguments, hook bridging,
-  outcome mapping, and the config-less mount).
+  outcome mapping, workdir default, abort, and the config-less mount).
 - `search-real` gained six regressions (explicit dot-file, unreadable root, root
   name with a newline, `/mnt` path, cooperative timeout → `SEARCH_ABORTED`,
   raw-output overflow) alongside the existing framing, include, cap, spill, card
@@ -745,6 +745,35 @@ Two more came from reading the contracts rather than probing:
   only the two documented baselines. Booting each case confirms the shape per
   release: `0.1.0-rc.7` gets the one-shot row and no producer, `0.1.0-rc.8` and
   later get the persistent shell plus `bash_background`.
+
+### Frontend pass on every declared release (2026-09-20, plugin 0.7.0)
+
+The 0.4.x line got a frontend pass on three releases; the 0.7.0 work had only been
+driven in a browser on one. Since the client surfaces are what an operator
+actually touches, all eight declared releases were booted side by side (isolated
+`DSH_HOME`, ports 3310–3317) and each was walked through the same flow against the
+same build:
+
+| Step | What it proves | 0.1.0-rc.7 | 0.1.0-rc.8 | 0.1.1-rc.1 | 0.1.1-rc.2 | 0.1.2-rc.1 | 0.1.3-alpha.2 | 0.1.5-rc.1 | 0.1.5-rc.2 |
+|---|---|---|---|---|---|---|---|---|---|
+| `添加 WSL 工作区…` entry | the plugin registers into this frontend | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Dialog fields | distribution list (`Ubuntu`, `docker-desktop`), path, username | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `检查` | the path is resolved and browsed **inside the distribution** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `创建并打开` | the workspace is registered and a session draft opens | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Mode picker | 4 WSL variants (`Standard` / `Code` / `Minimal` / `Creator`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `?` help panel | the 0.7.0 news / usage / known-issue text renders | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Panel metadata | **v0.7.0** and **8** declared-release chips | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+The `?` panel is reached from the WSL dialog's own header on every release, and on
+all eight it renders the same three sections with the 0.7.0 text — including the
+new `bash_background` / `job_kill` usage line and the rewritten five-bullet
+known-issue list.
+
+One behaviour that differs by release and is worth knowing: on the
+`0.1.0-rc.*` and `0.1.1-rc.*` frontends the workspace list lives behind the
+sidebar toggle, which starts **collapsed**, so the plugin's entry point is not in
+the DOM until it is opened. That is the host's layout, not this plugin's, and it is
+the same on the current line.
 
 ## The background-job producer (2026-09-20, plugin 0.7.0)
 
