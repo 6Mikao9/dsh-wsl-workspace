@@ -732,15 +732,74 @@ Two more came from reading the contracts rather than probing:
 
 ### Verification of the fixes
 
-- 137 unit tests green, including the new cases pinning each defect: framing
+- 148 unit tests green, including the new cases pinning each defect: framing
   around a newline in a root, the explicit dot-file, the `/mnt` mapping, the spill
-  schema shape, the description block, and the poll-stacking guard.
+  schema shape, the description block, the poll-stacking guard, and the
+  background-job producer's registry contract (start arguments, hook bridging,
+  outcome mapping, and the config-less mount).
 - `search-real` gained six regressions (explicit dot-file, unreadable root, root
   name with a newline, `/mnt` path, cooperative timeout → `SEARCH_ABORTED`,
   raw-output overflow) alongside the existing framing, include, cap, spill, card
   and argv-safety checks.
 - Thirteen checks × eight declared releases re-run with the fixes, each 11/13 with
-  only the two documented baselines.
+  only the two documented baselines. Booting each case confirms the shape per
+  release: `0.1.0-rc.7` gets the one-shot row and no producer, `0.1.0-rc.8` and
+  later get the persistent shell plus `bash_background`.
+
+## The background-job producer (2026-09-19, plugin 0.6.0)
+
+An operator's own session surfaced the last one, and it was this plugin's doing —
+twice over.
+
+**What they saw.** `bash` accepted `run_in_background: true`, ran the command in
+the *foreground* (a `sleep 3` really took three seconds), returned its output
+inline instead of a job id, and `job_list` answered `(no background jobs)` every
+time.
+
+**Why.** DSH's *one-shot* `dsh-tool-bash` is what starts a registry job:
+`run_in_background: true` calls `ctx.jobs.start({kind: 'bash', …, run})` around a
+`ctx.shell.start(...)` handle, and the host's `job_list`/`job_output`/`job_kill`
+read that registry. A WSL world replaces that tool with the host's **persistent**
+one, whose schema declares only `command` — so nothing produced a job. The
+parameter schema does not set `additionalProperties: false` either, so the
+unknown argument passed validation, was ignored by the tool, and no layer
+reported it. The model had been *told* to use that parameter by this plugin's own
+shell description, which mentioned `run_in_background: true` while describing how
+to background work — a promise the tool it was attached to cannot keep.
+
+**Fix, in two parts.**
+
+1. The description now says what the tool is: `command` only, no
+   `run_in_background` (and passing one is ignored), background a subshell as
+   `( long-job > log 2>&1 ) &` and poll the log.
+2. The world mounts `bash_background` (`src/host/wsl-jobs.ts` → `lib/wsl-jobs.js`),
+   a thin producer over the host's own seams: `ctx.jobs.start` for identity and
+   lifecycle, this plugin's `ctx.shell.start` for the process handle, and the
+   registry's `JobHooks` for cancel/done/readOutput. It is mounted only alongside
+   the persistent shell — a world that keeps the one-shot bash row already has
+   `run_in_background` on that tool, so mounting both would be redundant.
+
+**Verified in a real session** (`0.1.3-alpha.2`, WSL · Standard mode):
+
+```
+bash_background: started background job bash-1
+job_list:        bash-1 [bash] running — for i in 1 2 3; do echo tick $i; sleep 1; done
+job_output:      tick 1 / tick 2 / [status: running]
+(4 s later)      tick 3 / [status: completed, exit code: 0]
+```
+
+The reads are incremental (the second read returned only the new line), the status
+transitioned `running` → `completed`, and the runtime pushed its own completion
+notice — the same behaviour the host's one-shot tool gives a non-WSL session.
+
+**A second defect, caught by the same session.** The first attempt failed to mount
+at all: `failed to apply loader entry jobs-wsl … Cannot read properties of
+undefined (reading 'timeoutMs')` — a world row with no `config:` block hands a
+function plugin an *undefined* config, which is the same mistake `wsl-search` made
+one release earlier. Both entries now keep their defaults in one `DEFAULTS` object
+the schema also reads, and both have a unit test that mounts with `undefined` and
+with `{}`. That two entries made the identical mistake in one release is the
+argument for the test rather than the convention.
 
 
 

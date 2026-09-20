@@ -467,7 +467,7 @@ async function waitForSubprocess(ctx: Context): Promise<SubprocessProbeFace | un
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string },
   persistentShell: boolean,
 ): Promise<void> {
   const presets = await agentPresets.list()
@@ -482,7 +482,7 @@ async function materializeVariants(
       relayPath: paths.relay,
       nodePath: paths.node,
       sandboxPath: paths.sandbox,
-    } : undefined, paths.search)
+    } : undefined, paths.search, paths.jobs)
     const dir = join(userRoot, variantId)
     const staging = `${dir}.staging`
     rmSync(staging, { recursive: true, force: true })
@@ -568,6 +568,9 @@ export function apply(ctx: Context, config: Config): void {
   const sandboxPath = join(packageRoot, 'lib', 'wsl-sandbox.js').replace(/\\/g, '/')
   // The in-distribution `grep`/`glob` twin that replaces the host search suite.
   const searchPath = join(packageRoot, 'lib', 'wsl-search.js').replace(/\\/g, '/')
+  // The persistent shell has no `run_in_background` of its own; this is the
+  // producer that gives the world's `job_*` tools something to track.
+  const jobsPath = join(packageRoot, 'lib', 'wsl-jobs.js').replace(/\\/g, '/')
   const nodePath = process.execPath.replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
@@ -582,6 +585,7 @@ export function apply(ctx: Context, config: Config): void {
           node: nodePath,
           sandbox: sandboxPath,
           search: searchPath,
+          jobs: jobsPath,
         }, persistentShell)
       })().catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or

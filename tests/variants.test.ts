@@ -204,6 +204,24 @@ test('the description override does not disturb the rest of the row', () => {
   assert.equal((out.match(/description: \|-/g) ?? []).length, 1, 'only the tool row gains a description')
 })
 
+test('a persistent world also mounts the background-job producer', () => {
+  // The persistent bash tool's schema declares only `command`: without a
+  // producer the host's `job_*` tools always answer "no background jobs", and a
+  // `run_in_background` argument is silently ignored (a real session found
+  // that). The one-shot fallback needs no producer — its tool carries the
+  // parameter itself.
+  const JOBS = 'D:/plugin/lib/wsl-jobs.js'
+  const persistent = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, SEARCH, JOBS)
+  assert.ok(persistent.includes('    - id: jobs-wsl'), 'the persistent world mounts the producer')
+  assert.ok(persistent.includes(`      name: '${JOBS}'`), 'it points at this installation')
+  assert.ok(persistent.includes('- id: persistent-bash'), 'and the persistent shell it belongs to')
+  const oneShot = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, undefined, SEARCH, JOBS)
+  assert.ok(!oneShot.includes('jobs-wsl'), 'the one-shot fallback mounts no producer: its tool has run_in_background')
+  assert.ok(oneShot.includes("      name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot tool is what provides it there')
+  const noSearch = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
+  assert.ok(noSearch.includes('jobs-wsl'), 'the producer does not depend on the search suite being mounted')
+})
+
 test('the persistent-shell group is indented validly for the loader', () => {
   const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
   const lines = out.split('\n')

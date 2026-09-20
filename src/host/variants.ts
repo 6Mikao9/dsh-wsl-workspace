@@ -111,9 +111,11 @@ const SHELL_DESCRIPTION_ROWS = [
   '              absolute paths or an explicit `cd` at the start of a command instead of relying on where',
   '              the previous call left the shell. The shell runs as the workspace\'s Linux user; Windows',
   '              files are reachable as /mnt/<drive>, and no toolchain install is required.',
-  '              * To leave work running in the background, put it in a subshell with the `&` on its own',
-  '              line - `( long-job > log 2>&1 ) &` - or use the background-job tool',
-  '              (`run_in_background: true`) when the mode provides it.',
+  '              * This tool takes `command` only. It has no `run_in_background` parameter, and passing',
+  '              one is ignored - use the `bash_background` tool when the mode provides it, or background',
+  '              a subshell as below.',
+  '              * To leave work running without a tracked job, put it in a subshell with the `&` on its',
+  '              own line: `( long-job > log 2>&1 ) &`. Then poll the log file in a later call.',
   '              * Never end a `&&` chain with `&`. That backgrounds the whole command, so the call',
   '              returns immediately with no output and exit code 0, and the real output arrives later,',
   '              possibly inside the next call\'s output.',
@@ -128,6 +130,7 @@ function wslWorldGroup(
   includeEditor: boolean,
   persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
   searchPath?: string,
+  jobsPath?: string,
 ): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
@@ -170,6 +173,18 @@ function wslWorldGroup(
       : [
           '    - id: search-wsl',
           `      name: '${searchPath.replace(/'/g, "''")}'`,
+        ]),
+    // The world's `bash` is the host's *persistent* tool, whose schema declares
+    // only `command`: nothing here can start a tracked background job, so the
+    // host's `job_*` tools would always answer "no background jobs" and a
+    // `run_in_background` argument would be silently ignored. This row restores
+    // the producer. A world that keeps the one-shot bash row needs no such row —
+    // that tool carries `run_in_background` itself.
+    ...(jobsPath === undefined || persistent === undefined
+      ? []
+      : [
+          '    - id: jobs-wsl',
+          `      name: '${jobsPath.replace(/'/g, "''")}'`,
         ]),
     // The editor resolves through this entry-local WSL fs.
     // Anchored-family presets require this name during bootstrap.
@@ -388,6 +403,8 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  *   shell needs; omit to generate a world without the persistent-shell rows.
  * @param searchPath - absolute path of the plugin's built in-distribution
  *   `grep`/`glob` tools; mounted only for a source that had `tool-fs-search`.
+ * @param jobsPath - absolute path of the plugin's built background-job producer
+ *   for the persistent shell; mounted only alongside that shell.
  * @returns the variant composition text.
  */
 export function transformPresetForWsl(
@@ -396,6 +413,7 @@ export function transformPresetForWsl(
   fsPath: string,
   persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
   searchPath?: string,
+  jobsPath?: string,
 ): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
@@ -440,7 +458,7 @@ export function transformPresetForWsl(
   if (source.includes('tool-fs-search')) sawSearch = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath))
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

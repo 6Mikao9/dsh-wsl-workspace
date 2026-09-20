@@ -43,6 +43,7 @@ export default defineConfig([
       'wsl-relay': 'src/host/wsl-relay.ts',
       'wsl-sandbox': 'src/host/wsl-sandbox.ts',
       'wsl-search': 'src/host/wsl-search.ts',
+      'wsl-jobs': 'src/host/wsl-jobs.ts',
     },
     outDir: 'lib',
     format: ['esm'],
