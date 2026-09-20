@@ -44,6 +44,10 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 英文完整历史见 [README.md](README.md)，本节为对应中文记录（0.4.3 及更早为摘要）。
 
+### 0.7.1 — 2026-09-20
+
+- **`npm install dsh-wsl-workspace` 不再失败**。校验已发布产物时发现了这次发布自己引入的回归：npm 会自动安装缺失的同伴依赖，而 0.6.0 新加的 `@deepseek-ai/dsh-tool-fs-search` 同伴自己又依赖 `@deepseek-ai/dsh-retention`，后者**并未公开发布**——于是纯 `npm install` 直接以 `E404 … @deepseek-ai/dsh-retention` 失败（0.4.3 装得没问题，所以是我们引入的）。`dsh plugin add` 走 pnpm，对未满足的同伴依赖**只警告**，这正是所有门禁与真实安装都没抓到的原因。十个宿主同伴依赖现在都在 `peerDependenciesMeta` 里标为 optional：包仍然声明宿主必须提供什么，但 npm 不再尝试去下载它们。
+
 ### 0.7.0 — 2026-09-20
 
 WSL 世界现在在"会话能察觉到的每一处"都与宿主一致，最后两条已知问题也关掉了。以下内容一起发布：WSL 变体拿到 Linux 符号链接、会话的访问模式、发行版内的搜索、实时的技能目录、有状态的 shell，以及可跟踪的后台任务。

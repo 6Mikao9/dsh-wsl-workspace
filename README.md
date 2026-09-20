@@ -43,6 +43,18 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.7.1 — 2026-09-20
+
+- **`npm install dsh-wsl-workspace` no longer fails.** Verifying the published
+  artifact turned up a regression this release introduced: npm auto-installs
+  missing peer dependencies, and the `@deepseek-ai/dsh-tool-fs-search` peer added in
+  0.6.0 itself peers on `@deepseek-ai/dsh-retention`, which is **not published** — so
+  a plain `npm install` died with `E404 … @deepseek-ai/dsh-retention` (0.4.3 installs
+  fine, so it was ours). `dsh plugin add` uses pnpm, which only *warns* about unmet
+  peers, which is why every harness run and real install passed. All ten host peers
+  are now marked optional in `peerDependenciesMeta`: the package still declares what
+  the host must provide, but npm no longer tries to fetch it.
+
 ### 0.7.0 — 2026-09-20
 
 The WSL world now matches the host everywhere a session can tell the difference,
