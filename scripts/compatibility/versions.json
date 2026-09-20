@@ -1,0 +1,31 @@
+{
+  "versions": [
+    "0.0.1-rc.5",
+    "0.1.0-rc.2",
+    "0.1.0-rc.3",
+    "0.1.0-rc.6",
+    "0.1.0-rc.7",
+    "0.1.0-rc.8",
+    "0.1.1-rc.1",
+    "0.1.1-rc.2",
+    "0.1.2-alpha.2",
+    "0.1.2-alpha.3",
+    "0.1.2-alpha.4",
+    "0.1.2-alpha.5",
+    "0.1.2-rc.1",
+    "0.1.3-alpha.2",
+    "0.1.5-rc.2",
+    "0.1.5-rc.1"
+  ],
+  "excluded": [
+    "0.0.1-rc.1",
+    "0.0.1-rc.2"
+  ],
+  "exclusionReason": "User explicitly excluded these two releases on 2026-09-09; do not retry their unavailable npm dependencies.",
+  "representativeVersions": [
+    "0.1.0-rc.7",
+    "0.1.1-rc.2",
+    "0.1.2-rc.1",
+    "0.1.3-alpha.2"
+  ]
+}

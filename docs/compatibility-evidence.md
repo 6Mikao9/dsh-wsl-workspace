@@ -341,6 +341,512 @@ dead end:
   new feature (loop/depth accounting, real-path dedupe, one WSL round-trip per
   candidate link, cross-release re-testing), not a one-line fix; the file tools
   would need the same fallback inside `WslFileSystem`'s resolution, which is a
-  larger change.
+  larger change. **Done for the scan in 0.4.5** (see the next section); the file
+  tools are still open, and the panel now says exactly that.
 - **No live catalog refresh** for UNC workspaces: the deliberate trade-off behind
   the catalog fix, as the panel says.
+
+## Skill-scan symlink fallback (2026-09-19, plugin 0.4.5)
+
+### The defect
+
+A project linked into a workspace with `ln -s` was invisible to the skill
+catalog — not a crash, a silent skip. Reproduced on the real share before the
+fix (`node .test-runs/symlink/probe.mjs`, workspace `/home/mille/symprobe/ws`):
+
+```text
+linked-project   dir=false link=true stat: THROWS ENOENT
+chain-a          dir=false link=true stat: THROWS ENOENT
+notes-link       dir=false link=true stat: THROWS ENOENT
+broken           dir=false link=true stat: THROWS ENOENT
+```
+
+`readdir` reports the entry as a symlink (`S_IFLNK`), and every Windows-side
+`stat` on it fails, so the walk's follow branch never fires. The distribution
+resolves the same paths trivially: `wsl.exe -d Ubuntu -- readlink -f /home/mille/symprobe/ws/chain-b`
+→ `/home/mille/symprobe/deep/target`.
+
+### The fix
+
+`WslSkillIo` gained an optional `resolveLinks(uncPaths)` face; the production
+face (`nodeSkillIo`) asks the distribution, and `discoverSkillRoots` collects the
+symlink entries the share could not follow in each BFS layer, resolves them, and
+pushes the **real** path into the frontier. Consequences that were checked, not
+assumed:
+
+- the walk continues where this share can actually read, so `readdir`/`stat`/
+  `get()` all work again below a link;
+- a project reachable both directly and through a link collapses onto one visit
+  (the resolved path is the visited key, and the `(name, body)` fingerprint
+  dedupe still backs it up);
+- a link pointing back at the workspace root is absorbed by the visited set;
+- a link to a file, and a link the distribution cannot resolve (dangling,
+  missing intermediate component) are skipped exactly as before;
+- a substrate that follows links itself never triggers a distribution call, and
+  neither does a workspace without links (asserted, not observed).
+
+Bounds: at most 32 links per lookup, four `wsl.exe` calls in flight, 10 s per
+call, and the pre-existing depth / visited-directory / skill-directory budgets
+are unchanged. One process per link is deliberate — see below.
+
+### Why not one batched call
+
+Measured against this WSL build (`wsl.exe` 2.7.10.0, Ubuntu):
+
+| shape | result |
+|---|---|
+| `sh -c 'echo ARGC:$# ARG1:$1' sh a b c` | `ARGC:0 ARG1:` — arguments after the command are dropped |
+| `sh -c 'for p in "$@"; do readlink -f "$p"; done' sh /path` | loop never sees the path (same cause) |
+| any `sh -c` script containing a `"` | truncated at that quote by `wsl.exe`'s parser, silently |
+| `readlink -f good missing/component good` | prints the first line and exits 1 — the rest of the batch is lost |
+| `readlink -f '/path with spaces' "/path/with'quote"` | correct: a process argument carries any path |
+| 6 links, one call each, concurrency 1 | 656 ms |
+| 6 links, one call each, concurrency 4 | 208 ms |
+| 6 links in one batched `sh` call (quote-free script) | 111 ms |
+
+The batched form is faster but needs shell quoting that survives a parser which
+truncates on double quotes; a quote character in a directory name would either
+break the batch or need escaping that the same parser rewrites. One short call
+per link keeps the path a *process argument* — no quoting anywhere — and costs
+about 35 ms warm. On the full fixture: 6 links resolved in 179 ms inside a
+`list()`, and a link-free workspace scans in 12–20 ms without starting a
+distribution process at all.
+
+### Gates
+
+- **Real 9P** (`scripts/compatibility/skills-real.mjs`, part of the ten-check
+  harness): builds a workspace whose only path in is a symlink to a second
+  fixture **outside** the scan root, plus a nested project below the link target,
+  a file link, a dangling link and a loop back to the root. Asserts the linked
+  project and its nested project are published, that `get()` reads their bodies
+  through the real path, and — in the same run — that the identical walk with the
+  `resolveLinks` face removed finds neither. Passes.
+- **Live WSL fixture** (`/home/mille/symprobe/ws`, `node .test-runs/symlink/probe.mjs`):
+  catalog `["plain-skill","root-skill"]` before the fix → `["deep-skill","linked-skill",
+  "nested-skill","plain-skill","root-skill"]` after it; `linked-skill` is served at
+  `\\wsl.localhost\Ubuntu\home\mille\symprobe\elsewhere\linked-project\.dsh\skills\linked-skill\SKILL.md`
+  (outside the workspace, i.e. only reachable through the link) and every body
+  reads back.
+- **Unit** (`tests/wsl-skills.test.ts`): seven new cases — linked-in project
+  through the distribution, nested walk + no double publish, file/dangling links
+  ignored, ancestor loop bounded, no distribution call when the share resolves
+  links, per-lookup link budget, and no call at all in a link-free workspace.
+  26/26 in the file, and the harness's `unit` check passes on every release.
+- **Ten-check harness on the eight declared releases** (`0.1.0-rc.7` … `0.1.5-rc.2`,
+  run `symlink-01`): 8/10 each, the same two documented baseline failures
+  (`typecheck` exit 2 and `host-api`, which needs a live server). `skills-real`
+  passes on all eight — the first run of `0.1.1-rc.1` failed because a manual
+  fixture cleanup deleted `/tmp/dsh-wsl-compat` while that check was running; it
+  passed when re-run, and `0.1.1-rc.2` passed immediately afterwards in the same
+  sweep.
+- **Real model on `0.1.5-rc.2`** (browser, `WSL · Standard mode`, workspace
+  `/home/mille/symprobe/ws`): the model was asked to run `uname -r; pwd; whoami`
+  in bash and redirect the output into the linked project, to write a marker with
+  the file tool into the linked project's real path, and to list the skills it
+  can see. It reported the catalog as `browser4agent`, `deep-skill`,
+  `linked-skill`, `nested-skill`, `plain-skill`, `root-skill` — i.e. the three
+  skills that are only reachable through a symlink (one of them through a chain)
+  are in the injected catalog, interleaved with the host's own skills. On disk:
+  `elsewhere/linked-project/notes/agent.txt` = `SKILL-LINK-OK` (file tool, real
+  path outside the workspace) and `notes/bash.txt` =
+  `6.18.33.2-microsoft-standard-WSL2` / `/home/mille/symprobe/ws` / `mille`
+  (bash inside the distribution, redirect landed). The same session read the
+  file back through `ws/linked-project/...` as well.
+
+### Observation outside this change (not fixed here)
+
+The same session probed the access mode and found it is **not enforced for the
+file tools in a WSL session**. With the session on `workspace-write`
+("工作区内修改"), `write` to `/home/mille/symprobe/policy-probe.txt` (outside the
+workspace, no symlink involved) and to `D:\ProgramData\dsh-policy-probe.txt`
+succeeded, with no denial — the second came back as
+`/mnt/d/ProgramData/dsh-policy-probe.txt` created, and `read` confirmed its
+content.
+
+This is independent of the symlink change (no code touched by 0.4.5 is in that
+path), and the mechanism is visible in the composition rather than guessed:
+
+```
+$ dsh --profile web --dump-config | grep -E 'sandbox|permission'
+- id: sandbox            name: '@deepseek-ai/dsh-sandbox-local'
+- id: sandbox-policy     name: '@deepseek-ai/dsh-sandbox-policy'
+      mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+- id: fs-sandbox         name: '@deepseek-ai/dsh-fs-sandbox'
+- id: permission         name: '@deepseek-ai/dsh-permission-presets'
+```
+
+The policy is host-plane and wraps the host `fs` service, while a WSL variant
+mounts its own entry-local `fs` provider (`lib/fs.js`) inside the preset's
+`isolate` realm and its `tool-fs` consumes that one, so the wrapper is not in the
+call path. The variant shape is the same on every declared release (the transform
+matrix asserts the injected world and its providers for all eight). The non-WSL
+half of the statement — that those sessions keep the documented behaviour — rests
+on that composition, not on a live probe: the attempt to start a control session
+in a Windows workspace through the browser stalled on the workspace switcher.
+
+Corrections that followed from the observation:
+
+- `README.md` / `README.zh.md`, "File tools" behaviour note: no longer claims
+  that `workspace-write` restricts writes in a WSL session; it states the measured
+  behaviour, the mechanism, and that non-WSL sessions keep the documented one.
+- Help panel known issues: a bullet says the access mode does not constrain a WSL
+  session's file tools.
+- `README.md` / `README.zh.md` also gained the missing **bash shell lifetime**
+  note (one command per call, no persistent shell) — the limitation the per-mode
+  matrix kept demonstrating while no document stated it. **Both of those
+  limitations were then fixed**, and the 0.5.0 section below records that.
+
+## WSL world parity (2026-09-19, plugin 0.5.0)
+
+Four gaps between a WSL variant and the host closed in one release, each with the
+mechanism it needed rather than a workaround:
+
+| gap | mechanism |
+|---|---|
+| file tools could not read or write through a Linux symlink | `resolve`/`lstat` retry through the distribution (`wsl.exe … readlink -f`) whenever this share cannot describe the path, and continue at the real path |
+| the access mode did not constrain a WSL session's file tools | `writeText`/`editText` fence exactly as `dsh-fs-sandbox` does: `ctx.sandboxPolicy`, `writableRoots` (plus the distro's `/tmp`), `FS_SANDBOX_DENIED`, `sandboxMode` |
+| the skill catalog was frozen for the session | a per-scan-root change detector polls the published directory shape every 10 s and calls `control.invalidate()` |
+| `bash` was one process per call | the world mounts the host's PTY registry + config-driven backend, pointed at this plugin's relay, which hands the PTY to `wsl.exe … bash` |
+
+### What the browser pass caught that the unit checks could not
+
+The generated preset looked right in every host-side check and failed three
+different ways in a real session, which is why the session was driven at all:
+
+1. `2 row(s) did not activate: terminal-wsl … waiting for terminals` — the world
+   drops the source's `persistent-shell` group, and that group is what *provides*
+   the `terminals` service. Fixed by mounting the world's own nested group
+   (`isolate: terminals: true`) with the `pty` row.
+2. `failed to apply loader entry persistent-bash … tool "bash" is already
+   registered in this scope` — `@deepseek-ai/dsh-tool-bash-persistent` registers
+   the tool name `bash`, not `persistent-bash`, so it can never sit beside the
+   one-shot `dsh-tool-bash` row. Fixed by replacing that row (which is also what
+   DSH's Minimal mode does, describing itself as a persistent-shell-only agent).
+3. `GetNamedSecurityInfoW failed (Win32 1): \\wsl.localhost\…\ws` — the PTY
+   backend confines through `ctx.sandbox` before spawning, and the host's Windows
+   runner cannot read the ACL of a 9P path. Fixed by isolating the capability and
+   providing the world's own no-op provider (`src/host/wsl-sandbox.ts`) that
+   returns the caller's argv with `enforcement: 'partial'` — the policy stays
+   where it is meaningful in this world (the file tools).
+
+### Verification
+
+- **Unit** — `tests/fs-policy.test.ts` (7 fence cases: inside/outside under
+  `workspace-write`, `read-only`, `danger-full-access`, no policy service at all,
+  edits, and the platform temp allowance), the three skill-refresh cases, and the
+  three world-shape cases in `tests/variants.test.ts`. The harness's `unit` check
+  runs them on every release.
+- **Real 9P** — `scripts/compatibility/fs-real.mjs`: a link resolves to its real
+  path, reads work through a link, a link chain and a directory link, a dangling
+  link's target is created while the link survives, a write through a link
+  reaches its target, the fence denies a link out of the workspace, and the
+  distribution's `/tmp` is writable. `scripts/compatibility/relay-real.mjs`
+  drives the relay itself: it starts in the session workspace, `export` and `cd`
+  survive between sends, the distribution resolves from the UNC cwd and from
+  `DSH_WSL_DISTRO`, `DSH_WSL_USER` is honored, and the shell exits cleanly.
+- **Real session, `0.1.5-rc.2`, `WSL · Standard mode`, workspace
+  `/home/mille/symprobe/ws`** (one session, four turns):
+  - *persistent shell*: `export PERSIST_MARK=ok42; cd /tmp; pwd` → `/tmp`, then a
+    separate call `echo MARK=$PERSIST_MARK; pwd` → `MARK=ok42` and `/tmp`;
+  - *policy fence*: `write` to `/home/mille/symprobe/outside-probe.txt` (outside
+    the workspace) came back as `[sandbox: file access denied under
+    workspace-write mode]` plus DSH's escalation hint, and `ls` confirmed no file
+    was created — i.e. the tool layer renders the world's `FS_SANDBOX_DENIED`
+    exactly as it renders the host backend's;
+  - *catalog*: the injected list carried the four symlink-only skills, and after a
+    skill was created from WSL mid-session the next turn's list had exactly one
+    more entry (`fresh-probe`), which the model itself described as the catalog
+    refreshing while the session runs.
+- **Twelve-check harness, all eight declared releases** (`0.1.0-rc.7` …
+  `0.1.5-rc.2`, runs `parity-01` and `parity-02`): `unit`, `lib`, `materialize`,
+  `rank`, `smoke-source`, `smoke-built`, `shell-extra`, `skills-real`, `fs-real`
+  and `relay-real` pass; the only failures are the documented `typecheck`
+  baseline (2) and `host-api`, which needs a live server. In `parity-01` the
+  first six cases ran a stale `materialize` expectation (the source's
+  persistent-shell group versus the world's own), which was fixed in the same
+  commit and re-run green on all six; `parity-02` ran the final code everywhere.
+
+## Search tools and a live catalog (2026-09-20, plugin 0.7.0)
+
+The two remaining known issues from the 0.5.0 panel, closed with the mechanism
+each needed:
+
+| limitation | mechanism |
+|---|---|
+| a WSL session had no `grep`/`glob` tool | the world mounts its own twin (`src/host/wsl-search.ts` → `lib/wsl-search.js`) that runs **inside the distribution** — GNU `grep -rnIEH -Z` and GNU `find` — and keeps the host suite's model-facing contract by calling `@deepseek-ai/dsh-tool-fs-search`'s own exported formatters; the `tool-fs-search` row is replaced, and only for modes whose source preset mounted it |
+| the catalog could not see an *edit* to an existing skill | the cheap poll (3 s) now also stamps every skill file with its modification time and size, so a rewritten `SKILL.md` moves the registry's revision — the catalog message is rebuilt only when that revision moves; the full re-discovery walk moved to its own 30 s cadence (it used to be the only pass, at 10 s) |
+
+### What only a real substrate caught
+
+Every one of these passed the host-side suite at some point:
+
+1. **GNU grep silently cancels `--include` when any file `--exclude` is present**
+   (grep 3.12): `--include=alpha.*` alone kept one file, and adding
+   `--exclude='.*'` made it keep everything — measured, then designed around:
+   the hidden-*file* guard now rides `--include='[!.]*'` and only when the caller
+   passed no filter of its own, while hidden *directories* and `node_modules` are
+   pruned with `--exclude-dir`, which does not disturb `--include`.
+2. **`grep -r` prints no file name for a single-file operand**, so the NUL framing
+   yielded `5:Body…` with no path and the tool returned zero matches for
+   `grep path=<file>` — caught by `search-real`, fixed with `-H`.
+3. **`--exclude-dir='.*'` also excludes the search root** when its base name
+   starts with a dot, so a search rooted at `.dsh`/`.git`/any dot-directory
+   returned nothing; the flag is now skipped for a dot-rooted target.
+4. **A row without a `config:` block hands the plugin an undefined config.** The
+   first real 0.6.0 session failed to mount the entire world:
+   `failed to apply loader entry search-wsl … Cannot read properties of
+   undefined (reading 'grepMaxMatches')`. Fixed with in-code defaults (one
+   `DEFAULTS` object that the schema also reads) plus a unit test that mounts
+   with `undefined` and with `{}`.
+5. **`lib/` was shipping stale code-split chunks.** Because `clean: false` and two
+   tsdown configurations share `outDir`, entries from earlier builds survived and
+   `verify-lib` began reporting tree-shaken imports in `shell.js`. And because
+   the search suite was not a declared peer, the first build *inlined* it: a
+   285 KB `lib/wsl-search.js` that bundled a second copy of DSH's tool stack.
+   Fixed by declaring the three runtime peers (which is also what keeps them
+   external) and clearing `lib/` before every build.
+
+### Verification
+
+- **Thirteen-check harness, all eight declared releases** (`0.1.0-rc.7` …
+  `0.1.5-rc.2`, run `parity-04`): `unit`, `lib`, `materialize`, `rank`,
+  `smoke-source`, `smoke-built`, `shell-extra`, `skills-real`, `fs-real`,
+  `relay-real` and the new `search-real` pass on every release; the only failures
+  are the documented `typecheck` baseline (2) and `host-api`, which needs a live
+  server. `search-real` drives the real tools against a real distribution
+  fixture: record framing (colons, spaces, unicode, newlines in paths), include
+  filters and `{a,b}` expansion, a path-shaped include, caps and footers, the
+  spill backend present and absent, search-card projection, every `SEARCH_*`
+  error code, argv-safety (a backtick pattern never reaches a shell), glob
+  ordering by modification time, hidden/`node_modules`/VCS pruning and the
+  in-tree-symlink rule.
+- **Real sessions on three releases** — `0.1.0-rc.7`, `0.1.2-rc.1` and
+  `0.1.5-rc.2`, each `WSL · Standard mode` on `/home/mille/wsprobe/ws`. Per
+  release, from the session log: the offered `grep`/`glob` carry *this* plugin's
+  descriptions (`tools=25/26/27 WSL-specific=glob,grep`); `grep
+  NEEDLE_SESSION_TOKEN` returned 3 matches in 2 files with POSIX display paths
+  and `node_modules` skipped; `glob **/*.js` returned 3 files *including*
+  `node_modules` (ripgrep's `--no-ignore --hidden` parity). Then an existing
+  skill's description was rewritten and a new skill added from WSL; the next
+  turn's log carries a **replacement** catalog (`"update":true`) with
+  `first-skill: EDITED mid-session on <release>` and
+  `skill-<release>: ADDED mid-session on <release>` — and each model reported the
+  diff itself. Before this release the edit could not move the revision at all.
+- Unit tests: `tests/wsl-search.test.ts` (28 cases) checks the framing, the glob
+  matcher, retention against `ItemRetainer`, byte-equality of both renderers with
+  the host suite's own formatters, card metadata narrowed back through its
+  `present*Result`, argv construction, and the config-less mount; the skill
+  provider gained an edit-detection case and a cadence case (a brand-new skills
+  directory waits for the walk), and `skills-real` proves on the real 9P share
+  that a rewritten skill file invalidates exactly once.
+
+### Still not fixed (now stated in the panel's known issues)
+
+- `grep` is the distribution's GNU grep: POSIX ERE (no lookaround or
+  backreferences) and no `.gitignore` support, so git-ignored files are searched;
+  only hidden entries, `node_modules` and VCS directories are skipped. A
+  distribution without GNU grep fails loudly (exit 3) instead of framing records
+  the parser cannot read.
+- An `include` containing `/` is matched in this process, so that call scans
+  every file before filtering (a performance, not a semantic, difference).
+- `glob`'s modification-order listing needs GNU `find -printf`; a busybox `find`
+  falls back to path order, which the script reports as a different listing mode.
+- The catalog refresh is still a poll: an add, remove or edit inside a published
+  skills directory lands within about 3 s; a new project's *first* skills
+  directory waits for the next walk, up to 30 s.
+
+## Worst-case pass over the new code (2026-09-20, plugin 0.7.0)
+
+A second sweep over what this release added — hunting inputs that could break it
+rather than confirming the happy path — found six defects. Every one of them had
+passed the host-side suite.
+
+### Four in the search tools
+
+| input | what happened | fix |
+|---|---|---|
+| `grep path=.env` | **zero matches** for a file the caller named: the hidden-file guard (`--include='[!.]*'`) applied to file targets too | the guard is added only when the target is a directory (the script tracks `dir`); a file the caller names is what it asked for |
+| `glob path=/nope-missing` | `{root, paths: []}` with **no error** — `find`'s non-zero exit was swallowed by the pipeline, so an unreadable target looked like an empty directory | both scripts now `exit "${PIPESTATUS[0]}"`, and `acceptRun` treats exit 1 as success **only** for grep, where it means "searched, no match" |
+| a search root whose name contains a newline | `root: "od"` and every returned path wrong — the header was `<mode> <root>\n`, so the newline split it | the header is NUL terminated (`G<root>\0`), like every record after it |
+| `grep path='D:\proj'` | `SEARCH_FAILED … No such file or directory`, while `read D:\proj\a.ts` opens the same file | `linuxTarget` maps a drive path through the shared `windowsToMntPath`, so search and the file tools open one tree |
+
+Two more came from reading the contracts rather than probing:
+
+- **The spill schema was closed.** The canonical value is validated against
+  `tool.output.schema` (`createSuccessResult` throws `ToolOutputError` on a
+  violation), and `@deepseek-ai/dsh-spill`'s `SpillRef` is
+  `{locator, bytes, retrievalHint}` — so `additionalProperties: false` on the
+  `spill` field would have failed the tool's own result on *every capped search
+  with a spill backend mounted*, exactly when the model needs the recovery path.
+  The field is now open (extra fields belong to the backend) and `normalizeSpill`
+  narrows it to the two fields the footer prints.
+- **The catalog detector could stack polls.** A pass over a slow share can outlast
+  the 3 s interval, and the interval callback was fire-and-forget, so walks would
+  pile up on the 9P share and later polls could read a half-finished shape. One
+  pass in flight per scan root now.
+
+### Two in the shell — both the host's, both reported by the operator
+
+1. **The host's wrapper and a trailing `&`.**
+   `@deepseek-ai/dsh-tool-bash-persistent` wraps every command as
+   `printf …START; eval -- $'…'; status=$?; printf …END`. A command ending in `&`
+   backgrounds the *whole* eval'd command, so the END marker and its status are
+   printed before the work runs: the call returns exit code 0 with no output, and
+   the real output arrives later — it can land inside the next call's output
+   window. Reproduced inside a real PTY with the host's own `wrapCommand`, which
+   shows `__START__ / [1] 459 / __END__:0 / one` — the output arriving *after* the
+   marker; the same harness shows the documented form (`( … ) &` on its own line)
+   keeping the sequencing intact. **Every release from `0.1.0-rc.7` on carries the
+   identical wrapper**, and the host's own Minimal preset recommends exactly the
+   hazardous form (`sleep 10 &`). `description` is a supported config key on all
+   eight releases, so the world now overrides it with both facts (state carries
+   over across calls; background a subshell) plus the safe form. Confirmed in a
+   real `0.1.0-rc.7` session: the model quoted the override verbatim.
+
+2. **`0.1.0-rc.7` cannot run a PTY shell on Windows at all.** Its
+   `@deepseek-ai/dsh-subprocess-local` builds a process inspector inside
+   `spawnTerminal` and supports only `linux`/`darwin`, throwing
+   `subprocess-local: terminal inspection is unsupported on platform win32`
+   before any process starts. A real session on that release showed the model
+   getting exactly that error for every `bash` call, while grep/glob — which never
+   touch the PTY — kept working. The capability arrived in `0.1.0-rc.8`
+   (`createWindowsProcessInspector`), which the host itself relies on: that
+   release's Minimal preset mounts `persistent-bash` with no Windows guard, so the
+   host ships the same gap.
+
+   The plugin now **probes the substrate instead of assuming**: it hands
+   `spawnTerminal` a program that cannot exist, which reaches the inspector check
+   and nothing else — no process is created either way, and the rejection says
+   which half failed (`isTerminalInspectionUnsupported`). When the answer is "no
+   inspector", the world keeps the one-shot `dsh-tool-bash` row, which runs
+   through this plugin's own `ctx.shell` and never touches the PTY.
+
+   Verified per release by booting each prepared case and reading the generated
+   preset: `0.1.0-rc.7` gets the one-shot row, `0.1.0-rc.8` and `0.1.5-rc.2` get
+   the persistent group with the description override. A real session on
+   `0.1.0-rc.7` then showed `pwd && echo BASH_OK && uname -s` returning
+   `/home/mille/manualtest`, `BASH_OK`, `Linux` (exit 0) — previously every call
+   failed — and a follow-up pair of calls confirming the fallback is stateless
+   (`cd /tmp` in one call, `pwd` in the next → `/home/mille/manualtest`), which is
+   what that tool's own description tells the model.
+
+### Verification of the fixes
+
+- 152 unit tests green, including the new cases pinning each defect: framing
+  around a newline in a root, the explicit dot-file, the `/mnt` mapping, the spill
+  schema shape, the description block, the poll-stacking guard, and the
+  background-job producer's registry contract (start arguments, hook bridging,
+  outcome mapping, workdir default, abort, and the config-less mount).
+- `search-real` gained six regressions (explicit dot-file, unreadable root, root
+  name with a newline, `/mnt` path, cooperative timeout → `SEARCH_ABORTED`,
+  raw-output overflow) alongside the existing framing, include, cap, spill, card
+  and argv-safety checks.
+- Thirteen checks × eight declared releases re-run with the fixes, each 11/13 with
+  only the two documented baselines. Booting each case confirms the shape per
+  release: `0.1.0-rc.7` gets the one-shot row and no producer, `0.1.0-rc.8` and
+  later get the persistent shell plus `bash_background`.
+
+### Frontend pass on every declared release (2026-09-20, plugin 0.7.0)
+
+The 0.4.x line got a frontend pass on three releases; the 0.7.0 work had only been
+driven in a browser on one. Since the client surfaces are what an operator
+actually touches, all eight declared releases were booted side by side (isolated
+`DSH_HOME`, ports 3310–3317) and each was walked through the same flow against the
+same build:
+
+| Step | What it proves | 0.1.0-rc.7 | 0.1.0-rc.8 | 0.1.1-rc.1 | 0.1.1-rc.2 | 0.1.2-rc.1 | 0.1.3-alpha.2 | 0.1.5-rc.1 | 0.1.5-rc.2 |
+|---|---|---|---|---|---|---|---|---|---|
+| `添加 WSL 工作区…` entry | the plugin registers into this frontend | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Dialog fields | distribution list (`Ubuntu`, `docker-desktop`), path, username | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `检查` | the path is resolved and browsed **inside the distribution** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `创建并打开` | the workspace is registered and a session draft opens | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Mode picker | 4 WSL variants (`Standard` / `Code` / `Minimal` / `Creator`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `?` help panel | the 0.7.0 news / usage / known-issue text renders | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Panel metadata | **v0.7.0** and **8** declared-release chips | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+The `?` panel is reached from the WSL dialog's own header on every release, and on
+all eight it renders the same three sections with the 0.7.0 text — including the
+new `bash_background` / `job_kill` usage line and the rewritten five-bullet
+known-issue list.
+
+One behaviour that differs by release and is worth knowing: on the
+`0.1.0-rc.*` and `0.1.1-rc.*` frontends the workspace list lives behind the
+sidebar toggle, which starts **collapsed**, so the plugin's entry point is not in
+the DOM until it is opened. That is the host's layout, not this plugin's, and it is
+the same on the current line.
+
+## The background-job producer (2026-09-20, plugin 0.7.0)
+
+An operator's own session surfaced the last one, and it was this plugin's doing —
+twice over.
+
+**What they saw.** `bash` accepted `run_in_background: true`, ran the command in
+the *foreground* (a `sleep 3` really took three seconds), returned its output
+inline instead of a job id, and `job_list` answered `(no background jobs)` every
+time.
+
+**Why.** DSH's *one-shot* `dsh-tool-bash` is what starts a registry job:
+`run_in_background: true` calls `ctx.jobs.start({kind: 'bash', …, run})` around a
+`ctx.shell.start(...)` handle, and the host's `job_list`/`job_output`/`job_kill`
+read that registry. A WSL world replaces that tool with the host's **persistent**
+one, whose schema declares only `command` — so nothing produced a job. The
+parameter schema does not set `additionalProperties: false` either, so the
+unknown argument passed validation, was ignored by the tool, and no layer
+reported it. The model had been *told* to use that parameter by this plugin's own
+shell description, which mentioned `run_in_background: true` while describing how
+to background work — a promise the tool it was attached to cannot keep.
+
+**Fix, in two parts.**
+
+1. The description now says what the tool is: `command` only, no
+   `run_in_background` (and passing one is ignored), background a subshell as
+   `( long-job > log 2>&1 ) &` and poll the log.
+2. The world mounts `bash_background` (`src/host/wsl-jobs.ts` → `lib/wsl-jobs.js`),
+   a thin producer over the host's own seams: `ctx.jobs.start` for identity and
+   lifecycle, this plugin's `ctx.shell.start` for the process handle, and the
+   registry's `JobHooks` for cancel/done/readOutput. It is mounted only alongside
+   the persistent shell — a world that keeps the one-shot bash row already has
+   `run_in_background` on that tool, so mounting both would be redundant.
+
+**Verified in a real session** (`0.1.3-alpha.2`, WSL · Standard mode):
+
+```
+bash_background: started background job bash-1
+job_list:        bash-1 [bash] running — for i in 1 2 3; do echo tick $i; sleep 1; done
+job_output:      tick 1 / tick 2 / [status: running]
+(4 s later)      tick 3 / [status: completed, exit code: 0]
+```
+
+The reads are incremental (the second read returned only the new line), the status
+transitioned `running` → `completed`, and the runtime pushed its own completion
+notice — the same behaviour the host's one-shot tool gives a non-WSL session.
+
+**A second defect, caught by the same session.** The first attempt failed to mount
+at all: `failed to apply loader entry jobs-wsl … Cannot read properties of
+undefined (reading 'timeoutMs')` — a world row with no `config:` block hands a
+function plugin an *undefined* config, which is the same mistake `wsl-search` made
+one release earlier. Both entries now keep their defaults in one `DEFAULTS` object
+the schema also reads, and both have a unit test that mounts with `undefined` and
+with `{}`. That two entries made the identical mistake in one release is the
+argument for the test rather than the convention.
+
+**Two more, found by auditing the new tool before shipping it.**
+
+- **A producer without a reader.** The world mounted `bash_background` whenever the
+  persistent shell was mounted, but Minimal mode's source preset has no
+  `tool-jobs` row — so a WSL Minimal session would have handed out job ids with no
+  `job_output` or `job_kill` to read them. The row is now gated on the source
+  mounting `tool-jobs`, the same `sawSearch`/`sawEditor` rule the other rows
+  follow: a mode never gains a capability it did not have.
+- **The job's working directory.** `bash_background` passed only the caller's
+  `workdir`, so an omitted one fell through to this plugin's shell provider, whose
+  fallback is its own configured cwd — in a WSL world, the *host process's*
+  Windows directory, which the distribution cannot use. The persistent `bash`
+  starts in the session workspace (the relay's `cd`), so the producer now defaults
+  to the session cwd (`exec.agent.session.header.cwd`) and matches it. Verified in
+  a real session: `bash_background` with no `workdir` reported
+  `/home/mille/manualtest`, and `job_kill` on a long loop returned
+  `[status: killed, exit code: 1]` with no further output.
+
+
+

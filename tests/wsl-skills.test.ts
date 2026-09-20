@@ -18,6 +18,8 @@ interface FakeNode {
   directory: boolean
   content?: string
   symlink?: boolean
+  /** Linux path a symlink points at (absent for the "link node is also the target" shorthand). */
+  linkTarget?: string
   children?: Map<string, FakeNode>
 }
 
@@ -44,12 +46,24 @@ function markSymlink(node: FakeNode, path: string[]): void {
   dir(node, path).symlink = true
 }
 
+/**
+ * Point `fromPath` at an arbitrary Linux path (the `ln -s` layout). The link is
+ * its own entry: it carries the target's Linux path but no children of its own,
+ * so neither `readdir` nor `stat` can traverse it Windows-side.
+ */
+function linkAt(node: FakeNode, fromPath: string[], target: string[]): void {
+  const parent = dir(node, fromPath.slice(0, -1))
+  parent.children?.set(fromPath[fromPath.length - 1] ?? '', {
+    directory: true,
+    symlink: true,
+    linkTarget: `/${target.join('/')}`,
+  })
+}
+
 /** Point `fromPath` at the existing directory `toPath`, modelling a directory symlink. */
 function linkDir(node: FakeNode, fromPath: string[], toPath: string[]): void {
-  const target = dir(node, toPath)
-  target.symlink = true
-  const parent = dir(node, fromPath.slice(0, -1))
-  parent.children?.set(fromPath[fromPath.length - 1] ?? '', target)
+  dir(node, toPath)
+  linkAt(node, fromPath, toPath)
 }
 
 function file(node: FakeNode, path: string[], content: string): void {
@@ -60,28 +74,70 @@ function file(node: FakeNode, path: string[], content: string): void {
 const SKILL_MD = (name: string, description: string, extra = ''): string =>
   `---\nname: ${name}\ndescription: ${description}\n${extra}---\n\nBody of ${name}.\n`
 
-function createIo(root: FakeNode, options: { resolveSymlinks?: boolean } = {}): WslSkillIo {
+/** The UNC spelling of a Linux path inside the fake tree's distro. */
+function unc(linux: string): string {
+  return `\\\\wsl.localhost\\Ubuntu${linux.replace(/\//g, '\\')}`
+}
+
+/**
+ * Build the injectable IO face over a fake tree.
+ * @param root - the fake tree's root.
+ * @param options.resolveSymlinks - the share itself follows links (a future or
+ *   non-9P substrate); `false` models the `\\wsl.localhost` share.
+ * @param options.distributionFallback - implement the `wsl.exe readlink`
+ *   fallback face the real `nodeSkillIo` provides.
+ */
+function createIo(
+  root: FakeNode,
+  options: { resolveSymlinks?: boolean; distributionFallback?: boolean } = {},
+): WslSkillIo {
   const resolveSymlinks = options.resolveSymlinks ?? false
-  const resolve = (path: string): FakeNode | undefined => {
+  /** The Linux path a UNC or Windows spelling names. */
+  const linuxOf = (path: string): string | undefined => {
     // Provider hands over `\\wsl.localhost\<distro>\<linux>` UNC spellings.
     const forward = path.replace(/\\/g, '/')
     const match = /^\/\/wsl\.localhost\/[^/]+(\/.*)?$/.exec(forward)
-    if (match === null) return undefined
-    const linux = match[1] ?? '/'
-    const segments = linux.split('/').filter(segment => segment.length > 0)
+    return match === null ? undefined : (match[1] ?? '/')
+  }
+  const lookup = (linux: string): FakeNode | undefined => {
     let current = root
-    for (const segment of segments) {
+    for (const segment of linux.split('/').filter(segment => segment.length > 0)) {
       const child = current.children?.get(segment)
       if (child === undefined) return undefined
       current = child
     }
     return current
   }
-  return {
+  /** Follow symlink hops the way the kernel's realpath would. */
+  const realNode = (node: FakeNode): FakeNode | undefined => {
+    let current: FakeNode | undefined = node
+    for (let hops = 0; hops < 40 && current !== undefined; hops += 1) {
+      if (current.symlink !== true || current.linkTarget === undefined) return current
+      current = lookup(current.linkTarget)
+    }
+    return undefined
+  }
+  /** The real Linux path of a link chain, or `undefined` when it does not resolve. */
+  const realPath = (linux: string): string | undefined => {
+    let current = linux
+    for (let hops = 0; hops < 40; hops += 1) {
+      const node = lookup(current)
+      if (node === undefined) return undefined
+      if (node.symlink !== true) return current
+      if (node.linkTarget === undefined) return undefined
+      current = node.linkTarget
+    }
+    return undefined
+  }
+  const io: WslSkillIo = {
     readdir: async (path) => {
-      const node = resolve(path)
+      const linux = linuxOf(path)
+      const node = linux === undefined ? undefined : lookup(linux)
       if (node === undefined || !node.directory) throw new Error(`ENOENT: ${path}`)
-      return [...(node.children?.entries() ?? [])].map(([name, child]) => ({
+      // The 9P share lists a link entry but cannot list through it.
+      const listed = node.symlink === true ? (resolveSymlinks ? realNode(node) : undefined) : node
+      if (listed === undefined) throw new Error(`ENOENT (9P cannot follow): ${path}`)
+      return [...(listed.children?.entries() ?? [])].map(([name, child]) => ({
         name,
         isDirectory: () => child.directory && child.symlink !== true,
         isFile: () => !child.directory,
@@ -89,26 +145,55 @@ function createIo(root: FakeNode, options: { resolveSymlinks?: boolean } = {}): 
       }))
     },
     readFile: async (path) => {
-      const node = resolve(path)
+      const linux = linuxOf(path)
+      const node = linux === undefined ? undefined : lookup(linux)
       if (node === undefined || node.directory) throw new Error(`ENOENT: ${path}`)
       return node.content ?? ''
     },
     stat: async (path) => {
-      const node = resolve(path)
-      // Model the `\\wsl.localhost` 9P share by default: Linux symlinks are
-      // reported by readdir but their targets cannot be resolved Windows-side.
-      if (node !== undefined && node.symlink === true && !resolveSymlinks) {
+      const linux = linuxOf(path)
+      let node = linux === undefined ? undefined : lookup(linux)
+      if (node === undefined) {
         throw new Error(`ENOENT (9P cannot follow): ${path}`)
       }
-      if (node === undefined) throw new Error(`ENOENT: ${path}`)
-      return { isDirectory: () => node.directory }
+      if (node.symlink === true) {
+        // Model the `\\wsl.localhost` 9P share by default: Linux symlinks are
+        // reported by readdir but their targets cannot be resolved Windows-side.
+        if (!resolveSymlinks) throw new Error(`ENOENT (9P cannot follow): ${path}`)
+        node = realNode(node)
+        if (node === undefined) throw new Error(`ENOENT: ${path}`)
+      }
+      return { isDirectory: () => node.directory, ...stampOf(node) }
     },
   }
+  if (options.distributionFallback === true) {
+    io.resolveLinks = async (paths) => paths.map((path) => {
+      const linux = linuxOf(path)
+      const real = linux === undefined ? undefined : realPath(linux)
+      return real === undefined ? undefined : unc(real)
+    })
+  }
+  return io
 }
 
 /** A no-op registration control (abortable only by the caller). */
 function control(): { signal: AbortSignal; invalidate: () => void } {
   return { signal: new AbortController().signal, invalidate: () => {} }
+}
+
+/**
+ * A content-derived modification stamp for the fake substrate. The real
+ * `nodeSkillIo.stat` reports `mtimeMs`/`size`; deriving both from the fixture's
+ * content models that without threading a clock through every helper, and it
+ * still moves when an edit keeps the file's length unchanged.
+ * @param node - the fake file node.
+ * @returns the stamp fields `stat` reports.
+ */
+function stampOf(node: FakeNode): { mtimeMs: number; size: number } {
+  const content = node.content ?? ''
+  let hash = 7
+  for (let index = 0; index < content.length; index += 1) hash = (hash * 31 + content.charCodeAt(index)) % 1_000_000_007
+  return { mtimeMs: hash, size: content.length }
 }
 
 const CWD_WORKSPACE_ROOT = '\\\\wsl.localhost\\Ubuntu\\home\\mille\\repro-ws-root'
@@ -429,6 +514,309 @@ test('bounds symlink hops by the depth budget on resolving substrates', async ()
   const provider = new WslSkillsProvider(control(), createIo(root, { resolveSymlinks: true }))
   const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   assert.deepEqual(skills, [])
+})
+
+test('follows a linked-in project through the distribution when the share cannot', async () => {
+  const root = tree()
+  // The `ln -s` layout issue #10 users hit: the real project lives outside the
+  // workspace, only its link is inside it. The 9P share lists the link entry
+  // and then cannot resolve it; the distribution can.
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  dir(root, ['srv', 'projects', 'linked-project', '.dsh', 'skills'])
+  file(root, ['srv', 'projects', 'linked-project', '.dsh', 'skills', 'linked-skill', 'SKILL.md'],
+    SKILL_MD('linked-skill', 'Reached through a Linux symlink'))
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'linked-project'], ['srv', 'projects', 'linked-project'])
+
+  const provider = new WslSkillsProvider(control(), createIo(root, { distributionFallback: true }))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+
+  assert.deepEqual(skills.map(skill => skill.name), ['linked-skill'])
+  // The walk continues at the real path, which is the one this share can read.
+  assert.equal(skills[0]?.locator.path,
+    '\\\\wsl.localhost\\Ubuntu\\srv\\projects\\linked-project\\.dsh\\skills\\linked-skill\\SKILL.md')
+  const definition = await provider.get(skills[0]!, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition?.content, 'Body of linked-skill.')
+})
+
+test('keeps walking below a linked-in project and does not publish it twice', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'real-project', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'real-project', '.dsh', 'skills', 'outer', 'SKILL.md'],
+    SKILL_MD('outer', 'At the linked project root'))
+  // A nested project under the link target still joins via the BFS.
+  dir(root, ['home', 'mille', 'repro-ws-root', 'real-project', 'nested', '.agents', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'real-project', 'nested', '.agents', 'skills', 'nested.md'],
+    SKILL_MD('nested', 'Below the linked project'))
+  // The same project is reachable directly and through a second link.
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'alias-a'], ['home', 'mille', 'repro-ws-root', 'real-project'])
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'alias-b'], ['home', 'mille', 'repro-ws-root', 'real-project'])
+
+  const provider = new WslSkillsProvider(control(), createIo(root, { distributionFallback: true }))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name).sort(), ['nested', 'outer'])
+})
+
+test('skips links the distribution resolves to a file or cannot resolve at all', async () => {
+  const root = tree()
+  file(root, ['home', 'mille', 'repro-ws-root', 'notes.md'], '# notes\n')
+  linkAt(root, ['home', 'mille', 'repro-ws-root', 'notes-link'], ['home', 'mille', 'repro-ws-root', 'notes.md'])
+  // Dangling: `readlink -f` answers with a path that does not exist.
+  linkAt(root, ['home', 'mille', 'repro-ws-root', 'broken'], ['srv', 'never-created'])
+  // A project symlink whose target the share still cannot stat after resolution.
+  linkAt(root, ['home', 'mille', 'repro-ws-root', 'ghost'], ['srv', 'ghost-project'])
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'real.md'],
+    SKILL_MD('real', 'A plain in-workspace project'))
+
+  const provider = new WslSkillsProvider(control(), createIo(root, { distributionFallback: true }))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['real'])
+})
+
+test('stays bounded when the distribution resolves a link back to an ancestor', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'once.md'],
+    SKILL_MD('once', 'Published once despite the loop'))
+  // `proj/loop -> workspace root`: a cycle the visited set must absorb.
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'proj', 'loop'], ['home', 'mille', 'repro-ws-root'])
+
+  const provider = new WslSkillsProvider(control(), createIo(root, { distributionFallback: true }))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['once'])
+})
+
+test('does not call the distribution when the share resolves links itself', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'real-project', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'real-project', '.dsh', 'skills', 'brainstorming', 'SKILL.md'],
+    SKILL_MD('brainstorming', 'Structured brainstorming'))
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'linked-project'], ['home', 'mille', 'repro-ws-root', 'real-project'])
+
+  const base = createIo(root, { resolveSymlinks: true, distributionFallback: true })
+  let resolveCalls = 0
+  const io: WslSkillIo = {
+    ...base,
+    resolveLinks: async (paths) => {
+      resolveCalls += 1
+      return base.resolveLinks!(paths)
+    },
+  }
+  const provider = new WslSkillsProvider(control(), io)
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['brainstorming'])
+  assert.equal(resolveCalls, 0)
+})
+
+test('caps how many links one lookup hands to the distribution', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  for (let i = 0; i < 70; i += 1) {
+    dir(root, ['srv', 'targets', `t${i}`, '.dsh', 'skills'])
+    file(root, ['srv', 'targets', `t${i}`, '.dsh', 'skills', `s${i}.md`], SKILL_MD(`s${i}`, `Linked skill ${i}`))
+    linkDir(root, ['home', 'mille', 'repro-ws-root', `link-${String(i).padStart(2, '0')}`], ['srv', 'targets', `t${i}`])
+  }
+  const base = createIo(root, { distributionFallback: true })
+  let requested = 0
+  const io: WslSkillIo = {
+    ...base,
+    resolveLinks: async (paths) => {
+      requested += paths.length
+      return base.resolveLinks!(paths)
+    },
+  }
+  const provider = new WslSkillsProvider(control(), io)
+  await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  // 70 links in one layer, but the per-lookup budget stops at 32.
+  assert.equal(requested, 32)
+})
+
+test('never asks the distribution for link targets when no lookup needs it', async () => {
+  // A plain workspace with no links: the fallback must stay off the hot path.
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'plain.md'], SKILL_MD('plain', 'No links here'))
+  const base = createIo(root, { distributionFallback: true })
+  let requested = 0
+  const io: WslSkillIo = {
+    ...base,
+    resolveLinks: async (paths) => {
+      requested += paths.length
+      return base.resolveLinks!(paths)
+    },
+  }
+  const provider = new WslSkillsProvider(control(), io)
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  assert.deepEqual(skills.map(skill => skill.name), ['plain'])
+  assert.equal(requested, 0)
+})
+
+/** A registration control that counts the invalidations this provider requests. */
+function countingControl(): {
+  signal: AbortSignal
+  invalidate: () => void
+  invalidations: () => number
+  dispose: () => void
+} {
+  const lifecycle = new AbortController()
+  let count = 0
+  return {
+    signal: lifecycle.signal,
+    invalidate: () => { count += 1 },
+    invalidations: () => count,
+    dispose: () => lifecycle.abort(),
+  }
+}
+
+const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+test('re-checks a served scan root and invalidates when a skill appears', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
+  const control = countingControl()
+  // A fixed clock keeps the TTL from expiring, so only the detector can
+  // explain a fresh catalog; a short poll keeps the test quick.
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10)
+  assert.deepEqual((await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name), ['first'])
+
+  // Nothing changed yet: a few polls must not disturb the registry.
+  await delay(40)
+  assert.equal(control.invalidations(), 0)
+
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'second.md'],
+    SKILL_MD('second', 'Added while the session runs'))
+  await delay(60)
+  assert.equal(control.invalidations(), 1)
+  // The detector dropped this provider's cache, so the re-collect sees it.
+  assert.deepEqual(
+    (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name).sort(),
+    ['first', 'second'],
+  )
+
+  // A second change invalidates again; without one it stays quiet.
+  await delay(40)
+  assert.equal(control.invalidations(), 1)
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'third.md'], SKILL_MD('third', 'Third skill'))
+  await delay(60)
+  assert.equal(control.invalidations(), 2)
+  control.dispose()
+})
+
+test('stops watching when the registration is disposed', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
+  const lifecycle = new AbortController()
+  let invalidations = 0
+  const provider = new WslSkillsProvider(
+    { signal: lifecycle.signal, invalidate: () => { invalidations += 1 } },
+    createIo(root),
+    () => 1_000_000,
+    10,
+  )
+  await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  lifecycle.abort()
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'late.md'], SKILL_MD('late', 'Too late'))
+  await delay(50)
+  assert.equal(invalidations, 0)
+})
+
+test('publishes a project skill added mid-session as a new scan root too', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  const control = countingControl()
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 10)
+  assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
+
+  dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills', 'late.md'],
+    SKILL_MD('late', 'A project added mid-session'))
+  await delay(60)
+  assert.equal(control.invalidations(), 1)
+  assert.deepEqual(
+    (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name),
+    ['late'],
+  )
+  control.dispose()
+})
+
+test('invalidates when an existing skill file is edited, without a directory change', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  const skillFile = ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md']
+  file(root, skillFile, SKILL_MD('first', 'Original description'))
+  const control = countingControl()
+  // The discovery walk is out of reach, so only the cheap pass can explain a
+  // fresh catalog: this is the case a directory listing alone cannot see.
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 1_000_000)
+  assert.deepEqual((await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.description), ['Original description'])
+
+  await delay(40)
+  assert.equal(control.invalidations(), 0, 'an unchanged catalog stays quiet')
+
+  file(root, skillFile, SKILL_MD('first', 'Edited description'))
+  await delay(60)
+  assert.equal(control.invalidations(), 1, 'an edited skill file invalidates the catalog')
+  assert.deepEqual(
+    (await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.description),
+    ['Edited description'],
+  )
+
+  // Re-publishing the same content must not keep invalidating the registry.
+  await delay(40)
+  assert.equal(control.invalidations(), 1)
+  control.dispose()
+})
+
+test('a brand-new skills directory waits for the discovery cadence, not the cheap pass', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  const control = countingControl()
+  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 1_000_000)
+  assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
+
+  dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills', 'late.md'],
+    SKILL_MD('late', 'A project added mid-session'))
+  await delay(60)
+  assert.equal(control.invalidations(), 0, 'the cheap pass only re-checks roots it already published')
+  control.dispose()
+})
+
+test('a slow poll never stacks up behind itself', async () => {
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
+  const control = countingControl()
+  const base = createIo(root)
+  let reads = 0
+  let stalling = false
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const io: WslSkillIo = {
+    ...base,
+    readdir: async (path, options) => {
+      if (stalling) {
+        reads += 1
+        // The first poll stalls far past the interval: a second pass must not
+        // start on top of it.
+        if (reads === 1) await gate
+      }
+      return base.readdir(path, options)
+    },
+  }
+  const provider = new WslSkillsProvider(control, io, () => 1_000_000, 10)
+  await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  stalling = true
+  await delay(80)
+  const duringStall = reads
+  release()
+  await delay(40)
+  // Without the guard the interval would have started several overlapping walks
+  // while the first was still awaiting; with it, one pass at a time.
+  assert.equal(duringStall <= 1, true, `polls stacked: ${duringStall} readdir calls while one was stalled`)
+  control.dispose()
 })
 
 test('parses block scalars in frontmatter', async () => {

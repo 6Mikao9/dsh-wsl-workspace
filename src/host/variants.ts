@@ -13,7 +13,7 @@
  */
 
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
-const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'custom-bash', 'bootstrap-filesystem'])
+const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'persistent-bash', 'persistent-pwsh', 'terminal-bash', 'terminal-pwsh', 'custom-bash', 'bootstrap-filesystem'])
 
 /** Execution-world rows that register the model-facing editor tool. */
 const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
@@ -37,32 +37,159 @@ function isWslWorldGroup(block: readonly string[]): boolean {
   return WSL_WORLD_PROVIDER_IDS.some((id) => new RegExp(`^\\s+- id: ${id}$`, 'm').test(text))
 }
 
+/**
+ * The persistent-shell rows: the host's own PTY registry and its config-driven
+ * backend, told to run this plugin's relay (so the shell is a WSL one), plus
+ * the persistent tool that consumes them.
+ *
+ * Two shapes matter here. The registry is an agent-owned service — the shipped
+ * `persistent-shell` group keeps it in its own `terminals` realm for that
+ * reason — so this is a nested group of the world rather than three flat rows.
+ * And the persistent tool registers the tool name **`bash`**, exactly like the
+ * one-shot `dsh-tool-bash` row it replaces: both cannot be mounted (the tools
+ * registry rejects the duplicate and the whole preset fails to load), which is
+ * also why DSH's own Minimal mode describes itself as "a single-tool agent with
+ * a persistent shell". So a world with the relay paths swaps the shell tool
+ * instead of adding one, and a world without them keeps the one-shot row.
+ */
+function persistentShellRows(relayPath: string, nodePath: string): string[] {
+  return [
+    '    # Persistent shell: the host PTY registry and its backend, running',
+    '    # this plugin\'s relay, which hands the PTY to `wsl.exe … bash`',
+    '    # (distribution and user come from the session). It registers the',
+    '    # `bash` tool, so it takes the place of the one-shot row above.',
+    '    - id: persistent-shell',
+    '      name: cordis:group',
+    '      group: true',
+    '      isolate:',
+    '        terminals: true',
+    '      config:',
+    '        - id: pty',
+    "          name: '@deepseek-ai/dsh-terminal'",
+    '        - id: terminal-wsl',
+    "          name: '@deepseek-ai/dsh-terminal-bash'",
+    '          config:',
+    '            backendType: wsl',
+    '            shellDialect: bash',
+    `            shellPath: '${nodePath.replace(/'/g, "''")}'`,
+    '            shellArgs:',
+    `              - '${relayPath.replace(/'/g, "''")}'`,
+    '        - id: persistent-bash',
+    "          name: '@deepseek-ai/dsh-tool-bash-persistent'",
+    '          config:',
+    '            backendType: wsl',
+    ...SHELL_DESCRIPTION_ROWS,
+  ]
+}
+
+/**
+ * The persistent tool's model-facing description, replacing the host default.
+ *
+ * The host tool's default says only that state persists, and its own Minimal
+ * preset goes further in the wrong direction by suggesting `sleep 10 &`. Both
+ * facts a WSL session needs are missing, and both were learned the hard way:
+ *
+ *  - The shell is one process for the whole Agent, so a `cd` in one call decides
+ *    where the *next* call starts. A model that read the one-shot tool's contract
+ *    ("each call runs in a fresh shell — pass `workdir` instead of using `cd`")
+ *    will be surprised, and a probe left in `/tmp` makes every later relative path
+ *    resolve somewhere it never named.
+ *  - The host wraps each command as `eval -- $'…'`. A trailing `&` therefore
+ *    backgrounds the *whole* wrapped command: the tool's completion marker is
+ *    printed before the work runs, so the call reports no output and exit code 0
+ *    while the real output arrives later and can land inside the next call's
+ *    output window. `( … ) &` on its own line keeps the `&` on the subshell and
+ *    leaves the wrapper's sequencing intact.
+ *
+ * `description` is a supported key on every declared release (its `Config` schema
+ * carries it from 0.1.0-rc.7 on), so the override is version-safe.
+ */
+const SHELL_DESCRIPTION_ROWS = [
+  '            description: |-',
+  '              Run commands in a persistent bash shell inside this WSL distribution. State, including',
+  '              the current directory and exported environment variables, persists across calls: use',
+  '              absolute paths or an explicit `cd` at the start of a command instead of relying on where',
+  '              the previous call left the shell. The shell runs as the workspace\'s Linux user; Windows',
+  '              files are reachable as /mnt/<drive>, and no toolchain install is required.',
+  '              * This tool takes `command` only. It has no `run_in_background` parameter, and passing',
+  '              one is ignored - use the `bash_background` tool when the mode provides it, or background',
+  '              a subshell as below.',
+  '              * To leave work running without a tracked job, put it in a subshell with the `&` on its',
+  '              own line: `( long-job > log 2>&1 ) &`. Then poll the log file in a later call.',
+  '              * Never end a `&&` chain with `&`. That backgrounds the whole command, so the call',
+  '              returns immediately with no output and exit code 0, and the real output arrives later,',
+  '              possibly inside the next call\'s output.',
+  '              * Avoid commands that wait for stdin: an interactive foreground child can run until the',
+  '              command timeout, and a timeout resets the shell and discards its state.',
+]
+
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
-function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean): string {
+function wslWorldGroup(
+  shellPath: string,
+  fsPath: string,
+  includeEditor: boolean,
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
+  searchPath?: string,
+  jobsPath?: string,
+  sawJobs = false,
+): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
     '# The shell and fs services are provided entry-locally (the isolate',
     '# realm); host services (tools registry, shell-env, jobs) fall through.',
-    '# tool-fs-search is intentionally absent: the packaged ripgrep runs on',
-    '# the Windows host and cannot open Linux paths; WSL sessions search with',
-    '# shell tools instead.',
     '- id: wsl-world',
     "  name: cordis:group",
     '  group: true',
     '  isolate:',
     '    shell: true',
     '    fs: true',
+    // The Windows confinement runner cannot describe a Linux path, so the
+    // world owns the capability (see the sandbox row below) whenever it mounts
+    // a shell that would otherwise call it.
+    ...(persistent === undefined ? [] : ['    sandbox: true']),
     '  config:',
     `    - id: shell-wsl`,
     `      name: '${shellPath.replace(/'/g, "''")}'`,
     '    - id: fs-wsl',
     `      name: '${fsPath.replace(/'/g, "''")}'`,
-    '    - id: tool-bash',
-    "      name: '@deepseek-ai/dsh-tool-bash'",
+    ...(persistent === undefined
+      ? []
+      : [
+          '    - id: sandbox-wsl',
+          `      name: '${persistent.sandboxPath.replace(/'/g, "''")}'`,
+        ]),
+    // The shell tool comes from the persistent-shell group when this world has
+    // one (same `bash` name, so only one of the two may be mounted).
+    ...(persistent === undefined
+      ? ['    - id: tool-bash', "      name: '@deepseek-ai/dsh-tool-bash'"]
+      : []),
     '    - id: tool-fs',
     "      name: '@deepseek-ai/dsh-tool-fs'",
-    // The editor resolves through this entry-local WSL fs. Older editor builds
-    // pass no cwd, so the provider inherits it from the current tool execution.
+    // `grep`/`glob` run inside the distribution, not through the host suite's
+    // Windows ripgrep: same tool names, same model-facing contract, Linux paths
+    // and Linux symlinks. Older editor builds pass no cwd, so the provider
+    // inherits it from the current tool execution.
+    ...(searchPath === undefined
+      ? []
+      : [
+          '    - id: search-wsl',
+          `      name: '${searchPath.replace(/'/g, "''")}'`,
+        ]),
+    // The world's `bash` is the host's *persistent* tool, whose schema declares
+    // only `command`: nothing here can start a tracked background job, so the
+    // host's `job_*` tools would always answer "no background jobs" and a
+    // `run_in_background` argument would be silently ignored. This row restores
+    // the producer — but only for a source that also mounts the `job_*` control
+    // tools, because a producer without a reader hands out ids nothing can use
+    // (Minimal mode mounts neither). A world that keeps the one-shot bash row
+    // needs no producer either: that tool carries `run_in_background` itself.
+    ...(jobsPath === undefined || persistent === undefined || !sawJobs
+      ? []
+      : [
+          '    - id: jobs-wsl',
+          `      name: '${jobsPath.replace(/'/g, "''")}'`,
+        ]),
+    // The editor resolves through this entry-local WSL fs.
     // Anchored-family presets require this name during bootstrap.
     ...(includeEditor
       ? [
@@ -72,6 +199,7 @@ function wslWorldGroup(shellPath: string, fsPath: string, includeEditor: boolean
           '        maxOutputChars: 16000',
         ]
       : []),
+    ...(persistent === undefined ? [] : persistentShellRows(persistent.relayPath, persistent.nodePath)),
     '',
   ].join('\n')
 }
@@ -263,25 +391,40 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  * variant) is replaced rather than duplicated, so the variant always mounts
  * exactly one world pointing at this installation's providers.
  *
- * The persistent-shell group is NOT re-added: it registers the
- * same `bash` tool name as the WSL world's `dsh-tool-bash`, and the tools
- * registry rejects duplicates within one preset layer — the whole variant
- * fails to mount and the session falls back to another preset. Its PTY
- * backend additionally cannot run on this plugin's Windows host
- * (`dsh-subprocess-local`: "terminal inspection is unsupported on platform
- * win32"), so the group could never spawn a shell here anyway. The WSL
- * world's ordinary `bash` tool covers command execution for every variant.
+ * The source's own persistent-shell group is not re-added as such: it registers
+ * the same `bash` tool name as the WSL world's `dsh-tool-bash`, and the tools
+ * registry rejects duplicates within one preset layer — the whole variant fails
+ * to mount and the session falls back to another preset. Its PTY *backend*, on
+ * the other hand, is exactly what a stateful WSL shell needs, and it is
+ * config-driven: given the relay in {@link persistentShellRows} it runs
+ * `wsl.exe … bash` under the host's PTY, and its tool registers the separate
+ * `persistent-bash` name, so the one-shot `bash` above stays as it is.
  * @param source - the source composition text.
  * @param shellPath - absolute path of the plugin's built WSL shell provider.
  * @param fsPath - absolute path of the plugin's built WSL fs provider.
+ * @param persistent - the relay, interpreter and sandbox provider a stateful
+ *   shell needs; omit to generate a world without the persistent-shell rows.
+ * @param searchPath - absolute path of the plugin's built in-distribution
+ *   `grep`/`glob` tools; mounted only for a source that had `tool-fs-search`.
+ * @param jobsPath - absolute path of the plugin's built background-job producer
+ *   for the persistent shell; mounted only alongside that shell.
  * @returns the variant composition text.
  */
-export function transformPresetForWsl(source: string, shellPath: string, fsPath: string): string {
+export function transformPresetForWsl(
+  source: string,
+  shellPath: string,
+  fsPath: string,
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
+  searchPath?: string,
+  jobsPath?: string,
+): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
   const kept: string[] = []
   const seen = new Set<string>()
   let sawEditor = false
+  let sawSearch = false
+  let sawJobs = false
   let personaAppended = false
   for (const span of spans) {
     const id = spanId(lines, span)
@@ -297,6 +440,7 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
     const block = lines.slice(span.start, span.end)
     if (WORLD_ROWS.has(id) || isWslWorldGroup(block)) {
       if (EDITOR_ROWS.has(id)) sawEditor = true
+      if (id === 'tool-fs-search') sawSearch = true
       continue
     }
     if (id === SKILL_FILESYSTEM_ROW) {
@@ -311,11 +455,16 @@ export function transformPresetForWsl(source: string, shellPath: string, fsPath:
     kept.push(...block)
   }
   // An editor mounted inside a source group (a copied variant, say) also means
-  // the composition expects one, so the injected world keeps its editor row.
+  // the composition expects one, so the injected world keeps its editor row. The
+  // search tools and the background-job producer follow the same rule: a mode
+  // without them (minimal) must not gain them, and a mode with them must not lose
+  // them. `tool-jobs` is what registers `job_list`/`job_output`/`job_kill`.
   if (source.includes('str-replace-editor')) sawEditor = true
+  if (source.includes('tool-fs-search')) sawSearch = true
+  if (source.includes('tool-jobs')) sawJobs = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs))
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

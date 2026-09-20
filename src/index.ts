@@ -377,12 +377,98 @@ function publishVariant(staging: string, dest: string): void {
   rmSync(previous, { recursive: true, force: true })
 }
 
+/**
+ * Whether a host's terminal stack can allocate a PTY process *on this platform*.
+ *
+ * The world's `bash` is the host's persistent-shell stack, and on Windows that
+ * stack needs a platform process inspector. `@deepseek-ai/dsh-subprocess-local`
+ * only grew one in `0.1.0-rc.8`: in `0.1.0-rc.7` `spawnTerminal` throws
+ * `subprocess-local: terminal inspection is unsupported on platform win32`
+ * before the process is started, so *every* persistent shell fails there — a
+ * real session shows the model getting that error for each `bash` call while
+ * grep/glob (which never touch the PTY) keep working. The host itself ships the
+ * same gap: that release's Minimal preset mounts `persistent-bash` with no
+ * `disabled:` guard for Windows.
+ *
+ * The probe asks the substrate the question directly instead of pattern-matching
+ * a version: `spawnTerminal` builds its inspector before `node-pty` starts the
+ * program, so handing it a program that cannot exist reaches that check and
+ * nothing else — no process is created either way, and the failure message says
+ * which half failed. A release that can build the inspector reports an ordinary
+ * spawn failure instead, which is the "supported" answer.
+ * @param ctx - plugin context; the `subprocess` service is looked up with `get`
+ *   and waited for briefly, because the world is generated during profile boot.
+ * @returns true when the persistent shell may be mounted.
+ */
+async function supportsPersistentShell(ctx: Context): Promise<boolean> {
+  // POSIX hosts have an inspector on every declared release, and a WSL world is
+  // Windows-only anyway.
+  if (process.platform !== 'win32') return true
+  const subprocess = await waitForSubprocess(ctx)
+  if (subprocess?.spawnTerminal === undefined) return true
+  try {
+    const handle = await subprocess.spawnTerminal({
+      argv: ['dsh-wsl-workspace-pty-probe-does-not-exist'],
+      cwd: process.cwd(),
+      rows: 24,
+      cols: 80,
+      graceMs: 1_000,
+    })
+    // Unexpectedly alive: this host starts a PTY for a missing program, so the
+    // terminal stack works. Take the probe process down again.
+    await handle?.terminate?.()
+    return true
+  } catch (error) {
+    return !isTerminalInspectionUnsupported(error)
+  }
+}
+
+/**
+ * Whether one spawn failure is the missing-platform-inspector error.
+ * @param error - the rejection from `spawnTerminal`.
+ * @returns true when the host cannot inspect terminal processes here.
+ */
+export function isTerminalInspectionUnsupported(error: unknown): boolean {
+  return /terminal inspection is unsupported on platform/i.test(messageOf(error))
+}
+
+/** The `subprocess` service face the probe needs. */
+interface SubprocessProbeFace {
+  spawnTerminal(spec: {
+    argv: readonly string[]
+    cwd: string
+    rows: number
+    cols: number
+    graceMs: number
+  }): Promise<{ terminate?: () => Promise<void> | void } | undefined>
+}
+
+/**
+ * Look up the `subprocess` service, giving profile boot a moment to publish it.
+ *
+ * Bounded: the world is generated in a fire-and-forget effect, so this wait never
+ * blocks profile boot, and the service is normally already published by the base
+ * bundles the web app mounts before this plugin's own injection resolves. An
+ * absent service is answered as "supported" by the caller, which is the
+ * behaviour this plugin shipped before the probe existed.
+ * @param ctx - plugin context.
+ * @returns the service, or undefined when this deployment has none yet.
+ */
+async function waitForSubprocess(ctx: Context): Promise<SubprocessProbeFace | undefined> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const service = ctx.get('subprocess') as unknown as SubprocessProbeFace | undefined
+    if (service !== undefined) return service
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  return undefined
+}
+
 /** Materialize one WSL variant per healthy source preset. */
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  shellPath: string,
-  fsPath: string,
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string },
+  persistentShell: boolean,
 ): Promise<void> {
   const presets = await agentPresets.list()
   const userRoot = join(dshHome, '.agent-presets')
@@ -392,7 +478,11 @@ async function materializeVariants(
     if (isWslVariantId(preset.id)) continue
     const variantId = variantIdFor(preset.id)
     const source = await agentPresets.read(preset.id)
-    const transformed = transformPresetForWsl(source, shellPath, fsPath)
+    const transformed = transformPresetForWsl(source, paths.shell, paths.fs, persistentShell ? {
+      relayPath: paths.relay,
+      nodePath: paths.node,
+      sandboxPath: paths.sandbox,
+    } : undefined, paths.search, paths.jobs)
     const dir = join(userRoot, variantId)
     const staging = `${dir}.staging`
     rmSync(staging, { recursive: true, force: true })
@@ -472,11 +562,32 @@ export function apply(ctx: Context, config: Config): void {
   const packageRoot = fileURLToPath(new URL('..', import.meta.url))
   const shellPath = join(packageRoot, 'lib', 'shell.js').replace(/\\/g, '/')
   const fsPath = join(packageRoot, 'lib', 'fs.js').replace(/\\/g, '/')
+  // The persistent shell runs the host PTY backend on the relay, which starts
+  // `wsl.exe … bash` under that PTY: two paths the generated preset must carry.
+  const relayPath = join(packageRoot, 'lib', 'wsl-relay.js').replace(/\\/g, '/')
+  const sandboxPath = join(packageRoot, 'lib', 'wsl-sandbox.js').replace(/\\/g, '/')
+  // The in-distribution `grep`/`glob` twin that replaces the host search suite.
+  const searchPath = join(packageRoot, 'lib', 'wsl-search.js').replace(/\\/g, '/')
+  // The persistent shell has no `run_in_background` of its own; this is the
+  // producer that gives the world's `job_*` tools something to track.
+  const jobsPath = join(packageRoot, 'lib', 'wsl-jobs.js').replace(/\\/g, '/')
+  const nodePath = process.execPath.replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
   if (agentPresets !== undefined) {
     ctx.effect(() => {
-      void materializeVariants(agentPresets, dshHome, shellPath, fsPath).catch((error) => {
+      void (async () => {
+        const persistentShell = await supportsPersistentShell(ctx)
+        await materializeVariants(agentPresets, dshHome, {
+          shell: shellPath,
+          fs: fsPath,
+          relay: relayPath,
+          node: nodePath,
+          sandbox: sandboxPath,
+          search: searchPath,
+          jobs: jobsPath,
+        }, persistentShell)
+      })().catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or
         // unreadable source preset must not take the whole plugin down, but
         // the failure is surfaced loudly rather than hidden.

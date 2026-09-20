@@ -12,19 +12,23 @@
  * workspaces: it starts at the session cwd's nearest `.git` ancestor (the
  * host's project-root rule; the cwd itself when no ancestor has a `.git`
  * marker), then walks that root (depth- and budget-bounded). Directory
- * symlinks are followed when the substrate resolves them and pruned safely
- * when it does not — the `\\wsl.localhost` 9P share cannot resolve Linux
- * symlink targets, so linked-in projects stay undiscoverable there today.
- * The walk collects every
+ * symlinks are followed when the substrate resolves them, and — the case the
+ * `\\wsl.localhost` 9P share creates, where a link is listed but its Linux
+ * target cannot be resolved Windows-side — the distribution itself resolves
+ * them through bounded, concurrent `wsl.exe … readlink -f` calls. The walk
+ * collects every
  * `.dsh/skills` and `.agents/skills` directory it finds — including nested
- * projects — and publishes their skills with the same
- * project ranks and sources the host uses, so precedence and duplicate
+ * projects, linked-in projects anywhere on the Linux filesystem, and projects
+ * reachable through more than one path — and publishes their skills with the
+ * same project ranks and sources the host uses, so precedence and duplicate
  * resolution behave identically. Non-WSL lookups return nothing and leave
  * the host's own providers untouched.
  *
  * All filesystem reads go through `node:fs` against the `\\wsl.localhost\…`
- * 9P share (the same substrate `WslFileSystem` uses); an injectable IO face
- * keeps the discovery logic unit-testable without a live distro.
+ * 9P share (the same substrate `WslFileSystem` uses); the distribution-side
+ * resolution rides `wsl.exe` through `execFile` (no shell interpolation), and
+ * an injectable IO face keeps the discovery logic unit-testable without a
+ * live distro.
  *
  * @module dsh-wsl-workspace/host/wsl-skills
  */
@@ -32,7 +36,8 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { join as joinWindowsPath, posix } from 'node:path'
-import { joinUnc, parseWslUnc } from '../shared/paths.ts'
+import { isAbsoluteLinuxPath, joinUnc, parseWslUnc, uncToLinux } from '../shared/paths.ts'
+import { resolveLinuxSymlinks } from '../shared/links.ts'
 
 /** Project ranks copied from @deepseek-ai/dsh-skill-filesystem so WSL and host entries interleave identically. */
 const PROJECT_DSH_RANK = 100
@@ -44,12 +49,35 @@ const MAX_SCAN_DEPTH = 4
 const MAX_SKILL_ROOTS = 64
 /** Maximum directories visited per lookup (an absolute blast-radius cap). */
 const MAX_VISITED_DIRECTORIES = 4096
+/**
+ * How many Linux symlinks one lookup may hand to the distribution (a second
+ * blast-radius cap, and a latency cap: each resolution is a short `wsl.exe`
+ * call, so a tree with hundreds of links cannot stall the catalog).
+ */
+const MAX_LINK_RESOLUTIONS = 32
 /** How many parent levels above the session cwd are searched for a `.git` project marker. */
 const MAX_ANCESTOR_WALK = 64
-/** How long a completed lookup is served from cache before the next rescan. */
+/**
+ * How long a completed lookup is served from cache before the next rescan.
+ */
 const CACHE_TTL_MS = 10_000
 /** Maximum cached lookups (one entry per distinct scan root across sessions). */
 const CACHE_MAX_ENTRIES = 32
+/**
+ * How often a served scan root is re-checked for catalog changes: the skills
+ * directories it published, plus one modification stamp per skill file. This is
+ * the pass that makes a skill added — or a description edited — mid-session
+ * visible on the model's next request.
+ */
+const REFRESH_POLL_MS = 3_000
+/**
+ * How often the full re-discovery walk runs for a served scan root. Only a walk
+ * can find a skills directory that did not exist before (a new nested project,
+ * say), and it costs one `readdir` per visited directory, so it runs on its own
+ * slower cadence instead of on every poll. It used to be the only pass, at
+ * {@link REFRESH_POLL_MS}'s old value of 10 s.
+ */
+const DISCOVERY_POLL_MS = 30_000
 
 /** Kebab-case skill names, matching the host grammar. */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -114,7 +142,19 @@ export interface WslSkillsRegistryFace {
 export interface WslSkillIo {
   readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>
   readFile(path: string, options: { encoding: 'utf8' }): Promise<string>
-  stat(path: string): Promise<{ isDirectory(): boolean }>
+  /**
+   * Stat one path. `mtimeMs`/`size` are optional because the change detector
+   * uses them only where the substrate reports them: a face without them still
+   * lists skills, it just cannot notice an edit to an existing skill file.
+   */
+  stat(path: string): Promise<{ isDirectory(): boolean; mtimeMs?: number; size?: number }>
+  /**
+   * Resolve Linux symlink targets the share itself cannot follow, returning
+   * each real path in the same UNC spelling (`undefined` where a link cannot
+   * be resolved). Optional: a substrate that follows links locally leaves this
+   * unimplemented, and the walk then never pays for a distribution round trip.
+   */
+  resolveLinks?(uncPaths: readonly string[]): Promise<(string | undefined)[]>
 }
 
 /** The node:fs/promises implementation the provider uses in production. */
@@ -122,6 +162,7 @@ export const nodeSkillIo: WslSkillIo = {
   readdir: async (path, options) => readdir(path, options),
   readFile: async (path, options) => readFile(path, options),
   stat: async path => stat(path),
+  resolveLinks: async uncPaths => resolveLinuxSymlinks(uncPaths),
 }
 
 /** One discovered skill directory under a WSL workspace. */
@@ -177,11 +218,15 @@ async function nearestGitAncestor(distro: string, linuxDir: string, io: WslSkill
 async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkillIo): Promise<SkillRoot[]> {
   const roots: SkillRoot[] = []
   const visited = new Set<string>()
+  let linksResolved = 0
   // BFS layers so the budget prunes the widest, most redundant levels first
   // (shallow skill dirs matter most): [path, depth] pairs.
   let frontier: [string, number][] = [[linuxRoot, 0]]
   while (frontier.length > 0 && roots.length < MAX_SKILL_ROOTS) {
     const next: [string, number][] = []
+    // Symlink targets the share could not follow, resolved for this whole
+    // layer in one distribution round trip after the layer is enumerated.
+    const links: [string, number][] = []
     for (const [dir, depth] of frontier) {
       if (visited.size >= MAX_VISITED_DIRECTORIES) return roots
       if (visited.has(dir)) continue
@@ -207,17 +252,38 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
           next.push([childPath, depth + 1])
           continue
         }
-        if (entry.isSymbolicLink()) {
-          // A project may be linked into the workspace via a directory
-          // symlink; follow it when the target is a directory. Symlink
-          // cycles stay bounded: every hop increments the depth (capped by
-          // MAX_SCAN_DEPTH) and the walk as a whole by MAX_VISITED_DIRECTORIES.
-          try {
-            const target = await io.stat(joinUnc(distro, childPath))
-            if (target.isDirectory()) next.push([childPath, depth + 1])
-          } catch {
-            // Dangling symlink: nothing to traverse.
-          }
+        if (!entry.isSymbolicLink()) continue
+        // A project may be linked into the workspace via a directory symlink;
+        // follow it when the target is a directory. Symlink cycles stay
+        // bounded: every hop increments the depth (capped by MAX_SCAN_DEPTH)
+        // and the walk as a whole by MAX_VISITED_DIRECTORIES.
+        try {
+          const target = await io.stat(joinUnc(distro, childPath))
+          // A substrate that resolves Linux links itself answers here; a link
+          // to a file is not a project directory either way.
+          if (target.isDirectory()) next.push([childPath, depth + 1])
+          continue
+        } catch {
+          // The `\\wsl.localhost` 9P share reports the link entry but cannot
+          // resolve its Linux target; the distribution below can.
+        }
+        links.push([childPath, depth + 1])
+      }
+    }
+    if (links.length > 0 && io.resolveLinks !== undefined && linksResolved < MAX_LINK_RESOLUTIONS) {
+      const batch = links.slice(0, MAX_LINK_RESOLUTIONS - linksResolved)
+      linksResolved += batch.length
+      const resolved = await io.resolveLinks(batch.map(([path]) => joinUnc(distro, path)))
+      for (let index = 0; index < batch.length; index += 1) {
+        const real = resolved[index]
+        if (real === undefined) continue
+        // The walk continues at the link's real path, which also collapses a
+        // project reachable both directly and through a link onto one visit.
+        try {
+          const info = await io.stat(real)
+          if (info.isDirectory()) next.push([uncToLinux(real), batch[index]![1]])
+        } catch {
+          // The distribution resolved a target this share still cannot stat.
         }
       }
     }
@@ -268,6 +334,33 @@ async function listSkillEntries(root: SkillRoot, io: WslSkillIo): Promise<SkillE
     }
   }
   return entries.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * The published shape of one skills directory: its path, then each skill's name,
+ * kind and modification stamp.
+ *
+ * The stamp is what makes an edit to an *existing* skill visible: the catalog the
+ * model sees is rebuilt only when the registry's revision moves, and a directory
+ * listing alone cannot tell a rewritten `SKILL.md` from an untouched one. One
+ * `stat` per skill file (never a read) is the whole cost, and a file that cannot
+ * be stamped reports the same `gone` marker on every pass, so a substrate that
+ * does not expose modification times simply never triggers on content.
+ * @param root - the skills directory.
+ * @param entries - its entries, as just listed.
+ * @param io - filesystem face.
+ * @returns the deterministic shape string for this directory.
+ */
+async function shapeOfRoot(root: SkillRoot, entries: readonly SkillEntry[], io: WslSkillIo): Promise<string> {
+  const stamps = await Promise.all(entries.map(async (entry) => {
+    try {
+      const info = await io.stat(entry.path)
+      return `${entry.name}:${entry.kind}:${info.mtimeMs ?? 0}:${info.size ?? 0}`
+    } catch {
+      return `${entry.name}:${entry.kind}:gone`
+    }
+  }))
+  return `${root.path}\u0001${stamps.sort().join(',')}`
 }
 
 /** Read and parse one skill file; `undefined` when missing or unparsable. */
@@ -425,20 +518,49 @@ function frontmatterBoolean(fields: Map<string, string>, key: string, dflt = fal
  * Completed `list()` lookups are cached per scan root for CACHE_TTL_MS so
  * repeated catalog builds over the slow 9P share do not rescan the tree;
  * `get()` always re-reads the skill file so body edits are picked up
- * immediately. `control.invalidate` remains reserved for host-driven
- * invalidation; the provider self-invalidates through the TTL.
+ * immediately.
+ *
+ * A scan root that has been served is re-checked every REFRESH_POLL_MS: the
+ * host cannot watch a `\\wsl.localhost\…` path (which is why the generated
+ * preset pins `watch: false`), so this provider watches for it instead. A
+ * changed directory listing clears the cache and calls `control.invalidate()`,
+ * which bumps the registry's revision; the catalog middleware re-collects on
+ * the session's next request, so a skill added mid-session reaches the model
+ * without starting a new session.
  */
 export class WslSkillsProvider {
   readonly name = 'wsl-workspace'
   private readonly control: WslSkillProviderControl
   private readonly io: WslSkillIo
   private readonly now: () => number
+  private readonly refreshMs: number
+  /** Cheap polls between two full discovery walks (at least one). */
+  private readonly walkEveryPolls: number
   private readonly cache = new Map<string, { expiresAt: number; candidates: WslSkillCandidate[] }>()
+  /** One change detector per served scan root, keyed like {@link cache}. */
+  private readonly detectors = new Map<string, {
+    timer: ReturnType<typeof setInterval>
+    signature: string
+    roots: readonly SkillRoot[]
+    polls: number
+    /** True while a poll is still in flight, so a slow pass cannot stack up. */
+    busy: boolean
+  }>()
 
-  constructor(control: WslSkillProviderControl, io: WslSkillIo = nodeSkillIo, now: () => number = Date.now) {
+  constructor(
+    control: WslSkillProviderControl,
+    io: WslSkillIo = nodeSkillIo,
+    now: () => number = Date.now,
+    refreshMs: number = REFRESH_POLL_MS,
+    discoveryMs: number = DISCOVERY_POLL_MS,
+  ) {
     this.control = control
     this.io = io
     this.now = now
+    this.refreshMs = refreshMs
+    // Counted in polls rather than read off the clock: a poll is what the
+    // cadence is measured in, and an injected clock (tests) may stand still.
+    this.walkEveryPolls = Math.max(1, Math.round(discoveryMs / refreshMs))
   }
 
   /**
@@ -469,8 +591,14 @@ export class WslSkillsProvider {
     const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
     const candidates: WslSkillCandidate[] = []
     const seenSkills = new Set<string>()
+    // The catalog's shape (roots, entry names, kinds and one modification stamp
+    // per skill file) is collected as the candidates are built, so the change
+    // detector starts from what this lookup actually saw instead of paying for a
+    // second walk and a second round of stats.
+    const signature: string[] = []
     for (const root of roots) {
       const entries = await listSkillEntries(root, this.io)
+      signature.push(await shapeOfRoot(root, entries, this.io))
       for (const entry of entries) {
         options.signal?.throwIfAborted()
         const parsed = await readSkill(entry.path, this.io, options.signal)
@@ -505,7 +633,87 @@ export class WslSkillsProvider {
       if (oldest === undefined) break
       this.cache.delete(oldest)
     }
+    this.watch(cacheKey, unc.distro, scanRoot, signature.join('\u0002'), roots)
     return candidates
+  }
+
+  /**
+   * Keep one scan root's catalog honest for as long as this provider is
+   * registered: the host cannot watch a UNC workspace, so the provider polls the
+   * shape it just published and, on any difference, drops its own cache and asks
+   * the registry to re-collect for the session's next request.
+   *
+   * Two passes keep that affordable: the cheap one (every
+   * {@link REFRESH_POLL_MS}) re-reads the skills directories already published
+   * and re-stats their skill files, so an added, removed or edited skill is
+   * noticed on its own; the full re-discovery walk (every
+   * {@link DISCOVERY_POLL_MS}) is what can find a skills directory that did not
+   * exist before. Neither pass reads a skill file: the description the catalog
+   * shows changes only through the registry's revision.
+   * @param cacheKey - this provider's key for the scan root.
+   * @param distro - the WSL distribution.
+   * @param scanRoot - the Linux path the lookup scanned.
+   * @param signature - the shape the lookup just published.
+   * @param roots - the skills directories that lookup found.
+   */
+  private watch(cacheKey: string, distro: string, scanRoot: string, signature: string, roots: readonly SkillRoot[]): void {
+    const existing = this.detectors.get(cacheKey)
+    if (existing !== undefined) {
+      existing.signature = signature
+      existing.roots = roots
+      return
+    }
+    const detector = {
+      timer: setInterval(() => void this.detect(cacheKey, distro, scanRoot), this.refreshMs),
+      signature,
+      roots,
+      polls: 0,
+      busy: false,
+    }
+    // A pending poll must never hold the host process open (or outlive it).
+    if (typeof detector.timer.unref === 'function') detector.timer.unref()
+    this.detectors.set(cacheKey, detector)
+    this.control.signal.addEventListener('abort', () => {
+      clearInterval(detector.timer)
+      this.detectors.delete(cacheKey)
+    }, { once: true })
+  }
+
+  /** One poll: the cheap pass always, the discovery walk on its own cadence. */
+  private async detect(cacheKey: string, distro: string, scanRoot: string): Promise<void> {
+    const detector = this.detectors.get(cacheKey)
+    if (detector === undefined || this.control.signal.aborted) return
+    // A pass over a slow share can outlast the interval; letting the timer start
+    // another one would stack `wsl.exe` calls and make every later poll read a
+    // half-finished shape. One pass at a time per scan root.
+    if (detector.busy) return
+    detector.busy = true
+    try {
+      detector.polls += 1
+      const walk = detector.polls % this.walkEveryPolls === 0
+      let signature: string
+      try {
+        signature = await this.shape(distro, walk ? await discoverSkillRoots(distro, scanRoot, this.io) : detector.roots)
+      } catch {
+        // A transient read failure keeps the last known shape and retries.
+        return
+      }
+      if (signature === detector.signature) return
+      detector.signature = signature
+      this.cache.delete(cacheKey)
+      this.control.invalidate()
+    } finally {
+      detector.busy = false
+    }
+  }
+
+  /** The shape of one root set: paths, entry names, kinds and file stamps. */
+  private async shape(distro: string, roots: readonly SkillRoot[]): Promise<string> {
+    const parts: string[] = []
+    for (const root of roots) {
+      parts.push(await shapeOfRoot(root, await listSkillEntries(root, this.io), this.io))
+    }
+    return parts.join('\u0002')
   }
 
   /**
