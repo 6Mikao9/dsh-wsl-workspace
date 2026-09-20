@@ -13,7 +13,9 @@
     "build": "npm run clean && tsdown && node scripts/verify-lib.mjs",
     "verify": "node scripts/verify-lib.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepack": "npm run build"
+    "verify:install": "node scripts/verify-install.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "node scripts/verify-install.mjs"
   },
   "exports": {
     ".": "./lib/index.js",
