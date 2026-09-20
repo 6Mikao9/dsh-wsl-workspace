@@ -12,7 +12,8 @@
     "clean": "node scripts/clean-lib.mjs",
     "build": "npm run clean && tsdown && node scripts/verify-lib.mjs",
     "verify": "node scripts/verify-lib.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
   },
   "exports": {
     ".": "./lib/index.js",
