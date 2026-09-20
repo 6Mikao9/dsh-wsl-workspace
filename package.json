@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl-workspace",
   "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "type": "module",
   "repository": {
     "type": "git",
@@ -13,7 +13,9 @@
     "build": "npm run clean && tsdown && node scripts/verify-lib.mjs",
     "verify": "node scripts/verify-lib.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepack": "npm run build"
+    "verify:install": "node scripts/verify-install.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "node scripts/verify-install.mjs"
   },
   "exports": {
     ".": "./lib/index.js",
@@ -75,6 +77,18 @@
     "@deepseek-ai/dsh-tool-fs-search": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/dsh-fs": { "optional": true },
+    "@deepseek-ai/dsh-fs-local": { "optional": true },
+    "@deepseek-ai/dsh-sandbox": { "optional": true },
+    "@deepseek-ai/dsh-shell": { "optional": true },
+    "@deepseek-ai/dsh-subprocess": { "optional": true },
+    "@deepseek-ai/dsh-timeout": { "optional": true },
+    "@deepseek-ai/dsh-tool-fs-search": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/schemastery": { "optional": true }
   },
   "files": [
     "lib",
