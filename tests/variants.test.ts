@@ -215,11 +215,26 @@ test('a persistent world also mounts the background-job producer', () => {
   assert.ok(persistent.includes('    - id: jobs-wsl'), 'the persistent world mounts the producer')
   assert.ok(persistent.includes(`      name: '${JOBS}'`), 'it points at this installation')
   assert.ok(persistent.includes('- id: persistent-bash'), 'and the persistent shell it belongs to')
+  assert.ok(persistent.includes('- id: tool-jobs'), 'the mode that gets it also keeps the job control tools')
   const oneShot = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, undefined, SEARCH, JOBS)
   assert.ok(!oneShot.includes('jobs-wsl'), 'the one-shot fallback mounts no producer: its tool has run_in_background')
   assert.ok(oneShot.includes("      name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot tool is what provides it there')
   const noSearch = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
   assert.ok(noSearch.includes('jobs-wsl'), 'the producer does not depend on the search suite being mounted')
+})
+
+test('a producer is never mounted without the job tools that read it', () => {
+  // Minimal mode mounts neither: a job id nothing can read is worse than no
+  // producer, and the mode's own one-tool shell contract is not ours to widen.
+  const JOBS = 'D:/plugin/lib/wsl-jobs.js'
+  const minimal = transformPresetForWsl(MINIMAL_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
+  assert.ok(!minimal.includes('tool-jobs'), 'the source mounts no job control tools')
+  assert.ok(!minimal.includes('jobs-wsl'), 'so the world mounts no producer either')
+  assert.ok(minimal.includes('- id: persistent-bash'), 'while the persistent shell itself stays')
+  // A source that keeps the job tools but loses them another way still gets the
+  // producer only when the row survives the transform.
+  const withJobs = transformPresetForWsl(`${MINIMAL_LIKE}\n- id: tool-jobs\n  name: '@deepseek-ai/dsh-tool-jobs'\n`, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
+  assert.ok(withJobs.includes('jobs-wsl'), 'a mode that mounts the job tools gets the producer')
 })
 
 test('the persistent-shell group is indented validly for the loader', () => {

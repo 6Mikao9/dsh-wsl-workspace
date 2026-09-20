@@ -43,6 +43,59 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.7.0 — 2026-09-20
+
+The WSL world now matches the host everywhere a session can tell the difference,
+and the last two known issues are closed. Everything below ships together: a WSL
+variant gets Linux symlinks, the session's access mode, in-distribution search, a
+live skill catalog, a stateful shell, and tracked background jobs.
+
+- **The host's `bash` contract is stated in the tool description.** The persistent
+  tool wraps each command as `eval -- $'…'`, so a command ending in `&` backgrounds
+  the *whole* wrapped command — the call returns immediately with exit code 0 and
+  no output while the real output arrives later, possibly inside the next call's.
+  And the shell is one process for the whole Agent, so a `cd` carries into the next
+  call. The host default says neither, and DSH's own Minimal preset recommends the
+  hazardous form (`sleep 10 &`). The world now overrides `description` (a supported
+  key on every declared release) with both facts and the safe forms.
+- **`0.1.0-rc.7` falls back to a working one-shot shell.** That release's
+  `dsh-subprocess-local` has no Windows process inspector, so the host's PTY-backed
+  persistent shell cannot start on Windows at all — every `bash` call failed with
+  `subprocess-local: terminal inspection is unsupported on platform win32` (the
+  host ships the same gap: its Minimal preset mounts `persistent-bash` there with
+  no Windows guard). The plugin now *probes* the substrate instead of assuming —
+  it hands `spawnTerminal` a program that cannot exist, which reaches the inspector
+  check and nothing else — and when the answer is no, the world keeps the one-shot
+  `dsh-tool-bash` row: a working, stateless shell rather than an error per call.
+- **Tracked background jobs, restored.** Replacing the one-shot bash tool with the
+  persistent one also removed the only thing that started a registry job, so
+  `job_list` always answered "no background jobs" and a `run_in_background: true`
+  argument handed to `bash` was silently ignored (the parameter schema allows extra
+  properties, so nothing complained). The world now mounts `bash_background`
+  (`src/host/wsl-jobs.ts`), a thin producer over the host's own `ctx.jobs.start`
+  plus this plugin's `ctx.shell.start`: it returns a job id, and
+  `job_list`/`job_output`/`job_kill` work on it as usual. It is mounted only where
+  the source mode also mounts the `job_*` tools, and only alongside the persistent
+  shell.
+- **Six defects found by hunting the new code with worst-case input**: a hidden-file
+  guard that also applied to an explicitly named file (`grep path=.env` returned
+  nothing), a discarded `find` exit status (`glob path=/nope-missing` looked like an
+  empty directory), a line-terminated glob header (a root whose name contains a
+  newline came back truncated), untranslated Windows paths (`grep path='D:\proj'`
+  failed where `read` worked), a closed spill schema (which would have failed the
+  tool's own output validation on every capped search), and a catalog detector that
+  could stack polls on a slow share. Plus two in the new producer: it was mounted in
+  a mode with no `job_*` tools to read its ids, and it defaulted a job's working
+  directory to the host process's rather than the session workspace.
+- **Verification**: thirteen checks on each of the eight declared releases
+  (`0.1.0-rc.7` … `0.1.5-rc.2`) — `search-real` drives the real tools against a real
+  distribution fixture — leaving only the two pre-existing baseline failures
+  (`typecheck`, and `host-api` which needs a live server). 152 unit tests, including
+  a parity check of every renderer against the host suite's own formatters. Real
+  browser sessions on five releases, with the session log as evidence for the tool
+  set, the search results, the catalog replacement, the shell fallback and the
+  background-job lifecycle.
+
 ### 0.6.0 — 2026-09-19
 
 - **WSL sessions get `grep` and `glob`**: the host suite spawns the packaged Windows ripgrep and every path the model hands it is a Linux one, so the generated world dropped `tool-fs-search` and left the model to grep through the shell — the last bullet of the panel's known issues. The world now mounts an in-distribution twin that keeps the host suite's contract: the same tool names, parameter schemas, inline caps (250 matches / 100 paths), output schema, `Line N:` grouping, found-count header, capped-result footer, search card and formatted-result spill — the rendering comes from `@deepseek-ai/dsh-tool-fs-search`'s own exported formatters, and the two projections that package keeps private (the card metadata and the glob page) are reproduced and compared against it in unit tests. `grep` runs GNU grep inside the distribution (`-rnIEH -Z`, POSIX ERE, hidden entries and `node_modules` skipped like ripgrep's defaults, no `.gitignore` support), `glob` uses GNU `find` with in-process gitignore-style matching and ripgrep's oldest-first modification order. Model-controlled values travel as separate argv elements after a fixed script, so nothing the model types is ever parsed by a shell.

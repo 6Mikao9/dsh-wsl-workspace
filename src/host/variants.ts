@@ -131,6 +131,7 @@ function wslWorldGroup(
   persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
   searchPath?: string,
   jobsPath?: string,
+  sawJobs = false,
 ): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
@@ -178,9 +179,11 @@ function wslWorldGroup(
     // only `command`: nothing here can start a tracked background job, so the
     // host's `job_*` tools would always answer "no background jobs" and a
     // `run_in_background` argument would be silently ignored. This row restores
-    // the producer. A world that keeps the one-shot bash row needs no such row —
-    // that tool carries `run_in_background` itself.
-    ...(jobsPath === undefined || persistent === undefined
+    // the producer — but only for a source that also mounts the `job_*` control
+    // tools, because a producer without a reader hands out ids nothing can use
+    // (Minimal mode mounts neither). A world that keeps the one-shot bash row
+    // needs no producer either: that tool carries `run_in_background` itself.
+    ...(jobsPath === undefined || persistent === undefined || !sawJobs
       ? []
       : [
           '    - id: jobs-wsl',
@@ -421,6 +424,7 @@ export function transformPresetForWsl(
   const seen = new Set<string>()
   let sawEditor = false
   let sawSearch = false
+  let sawJobs = false
   let personaAppended = false
   for (const span of spans) {
     const id = spanId(lines, span)
@@ -452,13 +456,15 @@ export function transformPresetForWsl(
   }
   // An editor mounted inside a source group (a copied variant, say) also means
   // the composition expects one, so the injected world keeps its editor row. The
-  // search tools follow the same rule: a mode without them (minimal) must not
-  // gain them, and a mode with them must not lose them.
+  // search tools and the background-job producer follow the same rule: a mode
+  // without them (minimal) must not gain them, and a mode with them must not lose
+  // them. `tool-jobs` is what registers `job_list`/`job_output`/`job_kill`.
   if (source.includes('str-replace-editor')) sawEditor = true
   if (source.includes('tool-fs-search')) sawSearch = true
+  if (source.includes('tool-jobs')) sawJobs = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs))
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

@@ -566,7 +566,7 @@ different ways in a real session, which is why the session was driven at all:
   persistent-shell group versus the world's own), which was fixed in the same
   commit and re-run green on all six; `parity-02` ran the final code everywhere.
 
-## Search tools and a live catalog (2026-09-19, plugin 0.6.0)
+## Search tools and a live catalog (2026-09-20, plugin 0.7.0)
 
 The two remaining known issues from the 0.5.0 panel, closed with the mechanism
 each needed:
@@ -655,7 +655,7 @@ Every one of these passed the host-side suite at some point:
   skills directory lands within about 3 s; a new project's *first* skills
   directory waits for the next walk, up to 30 s.
 
-## Worst-case pass over the new code (2026-09-19, plugin 0.6.0)
+## Worst-case pass over the new code (2026-09-20, plugin 0.7.0)
 
 A second sweep over what this release added — hunting inputs that could break it
 rather than confirming the happy path — found six defects. Every one of them had
@@ -746,7 +746,7 @@ Two more came from reading the contracts rather than probing:
   release: `0.1.0-rc.7` gets the one-shot row and no producer, `0.1.0-rc.8` and
   later get the persistent shell plus `bash_background`.
 
-## The background-job producer (2026-09-19, plugin 0.6.0)
+## The background-job producer (2026-09-20, plugin 0.7.0)
 
 An operator's own session surfaced the last one, and it was this plugin's doing —
 twice over.
@@ -800,6 +800,24 @@ one release earlier. Both entries now keep their defaults in one `DEFAULTS` obje
 the schema also reads, and both have a unit test that mounts with `undefined` and
 with `{}`. That two entries made the identical mistake in one release is the
 argument for the test rather than the convention.
+
+**Two more, found by auditing the new tool before shipping it.**
+
+- **A producer without a reader.** The world mounted `bash_background` whenever the
+  persistent shell was mounted, but Minimal mode's source preset has no
+  `tool-jobs` row — so a WSL Minimal session would have handed out job ids with no
+  `job_output` or `job_kill` to read them. The row is now gated on the source
+  mounting `tool-jobs`, the same `sawSearch`/`sawEditor` rule the other rows
+  follow: a mode never gains a capability it did not have.
+- **The job's working directory.** `bash_background` passed only the caller's
+  `workdir`, so an omitted one fell through to this plugin's shell provider, whose
+  fallback is its own configured cwd — in a WSL world, the *host process's*
+  Windows directory, which the distribution cannot use. The persistent `bash`
+  starts in the session workspace (the relay's `cd`), so the producer now defaults
+  to the session cwd (`exec.agent.session.header.cwd`) and matches it. Verified in
+  a real session: `bash_background` with no `workdir` reported
+  `/home/mille/manualtest`, and `job_kill` on a long loop returned
+  `[status: killed, exit code: 1]` with no further output.
 
 
 

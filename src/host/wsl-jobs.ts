@@ -59,7 +59,9 @@ export const inject = ['tools']
 /** The tool-execution face this tool reads. */
 interface ToolExecution {
   signal?: AbortSignal
-  agent?: unknown
+  agent?: {
+    session?: { header?: { cwd?: string } }
+  }
 }
 
 /** The `ctx.tools` face. */
@@ -180,11 +182,21 @@ export function apply(ctx: Context, config?: Config): void {
       if (shell === undefined || typeof shell.start !== 'function' || typeof shell.resolve !== 'function') {
         throw new Error('background jobs unavailable: the WSL world provides no shell with background support')
       }
+      if (exec.signal?.aborted === true) {
+        const error = new Error('tool call aborted')
+        error.name = 'AbortError'
+        throw error
+      }
       const shellEnv = ctx.get('shellEnv') as unknown as ShellEnvFace | undefined
       const dshEnv = typeof shellEnv?.collect === 'function' ? shellEnv.collect(exec) : undefined
+      // The session workspace is the default, exactly as the persistent `bash`
+      // tool's shell starts there: this plugin's shell provider falls back to its
+      // own configured cwd (or the host process's), which in a WSL world is a
+      // Windows directory the distribution cannot use.
+      const workdir = args.workdir ?? exec.agent?.session?.header?.cwd
       const request = {
         command: args.command,
-        ...args.workdir === undefined ? {} : { workdir: args.workdir },
+        ...workdir === undefined ? {} : { workdir },
         ...dshEnv === undefined ? {} : { dshEnv },
       }
       const jobId = jobs.start({

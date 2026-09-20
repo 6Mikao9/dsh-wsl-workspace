@@ -94,6 +94,29 @@ test('the producer runs through this world\u2019s shell, with the caller\u2019s 
   assert.equal(calls.started_.length, 1, 'run() starts exactly one process')
 })
 
+test('defaults the workdir to the session workspace, not the host process', async () => {
+  // The world's shell provider falls back to its own configured cwd (or the
+  // host process's), which in a WSL world is a Windows directory the
+  // distribution cannot use. The persistent `bash` starts in the session
+  // workspace, so a background job must too.
+  const { tool, calls } = harness()
+  await tool.execute({ command: 'pwd' }, EXEC)
+  calls.started[0].run()
+  assert.equal(calls.resolved[0].workdir, EXEC.agent.session.header.cwd)
+  const bare = harness()
+  await bare.tool.execute({ command: 'pwd' }, {})
+  bare.calls.started[0].run()
+  assert.equal('workdir' in bare.calls.resolved[0], false, 'no cwd anywhere: let the provider decide')
+})
+
+test('refuses an aborted call before starting anything', async () => {
+  const { tool, calls } = harness()
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(tool.execute({ command: 'x' }, { ...EXEC, signal: controller.signal }), error => error.name === 'AbortError')
+  assert.equal(calls.started.length, 0, 'nothing was registered')
+})
+
 test('the hooks bridge cancel, done and readOutput to the registry', async () => {
   let killed = 0
   const { tool, calls } = harness({

@@ -44,6 +44,16 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 英文完整历史见 [README.md](README.md)，本节为对应中文记录（0.4.3 及更早为摘要）。
 
+### 0.7.0 — 2026-09-20
+
+WSL 世界现在在"会话能察觉到的每一处"都与宿主一致，最后两条已知问题也关掉了。以下内容一起发布：WSL 变体拿到 Linux 符号链接、会话的访问模式、发行版内的搜索、实时的技能目录、有状态的 shell，以及可跟踪的后台任务。
+
+- **把宿主 `bash` 的契约写进工具描述**：持久工具把每条命令包成 `eval -- $'…'`，所以命令以 `&` 结尾会把**整条**包装命令后台化——调用立刻返回 exit code 0、没有输出，真正的输出晚到，甚至落进下一次调用的输出里；而整轮会话只有这一只 shell，`cd` 会带到下一次调用。宿主默认描述两条都没提，DSH 自己的极简模式还建议危险写法（`sleep 10 &`）。世界现在覆盖 `description`（八个已声明版本都支持这个键），写明这两点与安全写法。
+- **`0.1.0-rc.7` 回退到能用的无状态 shell**：那个版本的 `dsh-subprocess-local` 没有 Windows 进程检查器，宿主的 PTY 持久 shell 在 Windows 上根本起不来——每次 `bash` 都报 `subprocess-local: terminal inspection is unsupported on platform win32`（宿主自己也有这个缺口：它那个版本的极简模式挂 `persistent-bash` 时没有 Windows 守卫）。插件改为在启动时**探测**底座——把一个不存在的程序交给 `spawnTerminal`，只会走到检查器那一步——答案是否就保留一次性的 `dsh-tool-bash` 行：一个能用的无状态 shell，而不是每次调用都报错。
+- **可跟踪的后台任务回来了**：用持久 shell 取代一次性 bash 工具时，也把唯一会启动注册表任务的东西去掉了，于是 `job_list` 永远回答"没有后台任务"，而传给 `bash` 的 `run_in_background: true` 被静默忽略（参数 schema 允许额外属性，没人报错）。世界现在挂 `bash_background`（`src/host/wsl-jobs.ts`），一个架在宿主 `ctx.jobs.start` 与本插件 `ctx.shell.start` 之上的薄生产者：返回 job id，`job_list`/`job_output`/`job_kill` 照常工作。只在源模式本身挂了 `job_*` 工具、且持久 shell 存在时才挂载。
+- **按最坏输入复查新代码抓到六个缺陷**：显式点名的隐藏文件被守卫排掉（`grep path=.env` 返回 0 条）、`find` 退出码被丢弃（`glob path=/nope-missing` 看起来像空目录）、glob 头部按行结尾（名字含换行的根被截断）、Windows 路径没翻译（`grep path='D:\proj'` 失败而 `read` 能读）、落盘 schema 闭合（会让每次"超限且有落盘后端"的调用在返回时校验失败）、技能变更探测会叠加慢 pass。外加新生产者里的两个：它曾被挂在没有 `job_*` 工具的模式里、并且把任务的工作目录默认成了宿主进程而不是会话工作区。
+- **验证**：八个已声明版本（`0.1.0-rc.7` … `0.1.5-rc.2`）各跑十三项门禁，`search-real` 用真实发行版夹具驱动真实工具，只剩既有的两项基线失败（`typecheck` 与需要在线服务的 `host-api`）。152 例单测，含"每个渲染器与宿主套件自己的格式化函数逐字节对比"的平价检查。五个版本的浏览器真实会话，以会话日志为证据覆盖工具集、搜索结果、目录替换、shell 回退与后台任务生命周期。
+
 ### 0.6.0 — 2026-09-19
 
 - **WSL 会话补上了 `grep` 与 `glob`**：宿主的搜索套件跑的是打包的 Windows ripgrep，而模型给的路径全是 Linux 路径，于是生成的世界干脆丢掉了 `tool-fs-search`，让模型自己在 shell 里搜——这正是面板已知问题里的最后一条。现在世界挂上发行版内的同类实现，并保留宿主套件的契约：同样的工具名、参数 schema、条数上限（250 条命中 / 100 个路径）、输出 schema、`Line N:` 分组、命中数表头、超限尾部提示、搜索卡片与超限结果落盘；渲染直接调用 `@deepseek-ai/dsh-tool-fs-search` 自己导出的格式化函数，只有该包未导出的两处投影（卡片元数据与 glob 分页）在本插件里复刻，并有单测与它逐字节对比。`grep` 在发行版内跑 GNU grep（`-rnIEH -Z`、POSIX ERE、像 ripgrep 默认那样跳过隐藏项与 `node_modules`、不读 `.gitignore`），`glob` 用 GNU `find` 列文件并在插件内按 gitignore 风格匹配、按 ripgrep 的"最旧优先"修改时间排序。模型给的每个值都作为独立 argv 传给固定脚本，任何输入都不会被 shell 解析。
