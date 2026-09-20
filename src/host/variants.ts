@@ -78,8 +78,48 @@ function persistentShellRows(relayPath: string, nodePath: string): string[] {
     "          name: '@deepseek-ai/dsh-tool-bash-persistent'",
     '          config:',
     '            backendType: wsl',
+    ...SHELL_DESCRIPTION_ROWS,
   ]
 }
+
+/**
+ * The persistent tool's model-facing description, replacing the host default.
+ *
+ * The host tool's default says only that state persists, and its own Minimal
+ * preset goes further in the wrong direction by suggesting `sleep 10 &`. Both
+ * facts a WSL session needs are missing, and both were learned the hard way:
+ *
+ *  - The shell is one process for the whole Agent, so a `cd` in one call decides
+ *    where the *next* call starts. A model that read the one-shot tool's contract
+ *    ("each call runs in a fresh shell — pass `workdir` instead of using `cd`")
+ *    will be surprised, and a probe left in `/tmp` makes every later relative path
+ *    resolve somewhere it never named.
+ *  - The host wraps each command as `eval -- $'…'`. A trailing `&` therefore
+ *    backgrounds the *whole* wrapped command: the tool's completion marker is
+ *    printed before the work runs, so the call reports no output and exit code 0
+ *    while the real output arrives later and can land inside the next call's
+ *    output window. `( … ) &` on its own line keeps the `&` on the subshell and
+ *    leaves the wrapper's sequencing intact.
+ *
+ * `description` is a supported key on every declared release (its `Config` schema
+ * carries it from 0.1.0-rc.7 on), so the override is version-safe.
+ */
+const SHELL_DESCRIPTION_ROWS = [
+  '            description: |-',
+  '              Run commands in a persistent bash shell inside this WSL distribution. State, including',
+  '              the current directory and exported environment variables, persists across calls: use',
+  '              absolute paths or an explicit `cd` at the start of a command instead of relying on where',
+  '              the previous call left the shell. The shell runs as the workspace\'s Linux user; Windows',
+  '              files are reachable as /mnt/<drive>, and no toolchain install is required.',
+  '              * To leave work running in the background, put it in a subshell with the `&` on its own',
+  '              line - `( long-job > log 2>&1 ) &` - or use the background-job tool',
+  '              (`run_in_background: true`) when the mode provides it.',
+  '              * Never end a `&&` chain with `&`. That backgrounds the whole command, so the call',
+  '              returns immediately with no output and exit code 0, and the real output arrives later,',
+  '              possibly inside the next call\'s output.',
+  '              * Avoid commands that wait for stdin: an interactive foreground child can run until the',
+  '              command timeout, and a timeout resets the shell and discards its state.',
+]
 
 /** The injected WSL world group: providers + the bash/fs consumers, entry-local. */
 function wslWorldGroup(

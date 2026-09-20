@@ -243,8 +243,14 @@ const assert = (condition, label) => {
 assert(registrations.length === 1 && registrations[0].kind === 'exact' && registrations[0].path === '/wsl-workspace/api', 'route registered')
 
 // ── variants: generated asynchronously by the apply effect ─────────────────
-// Wait for the fire-and-forget generation to settle.
-await new Promise(resolve => setTimeout(resolve, 300))
+// Wait for the fire-and-forget generation to settle. It is not a fixed delay:
+// generation first probes whether this host's terminal stack can allocate a PTY
+// on this platform, so the settle time depends on the host.
+const variantDeadline = Date.now() + 15_000
+while (!existsSync(join(home, '.agent-presets', 'wsl-standard', 'agent.cordis.yml')) && Date.now() < variantDeadline) {
+  await new Promise(resolve => setTimeout(resolve, 50))
+}
+assert(existsSync(join(home, '.agent-presets', 'wsl-standard', 'agent.cordis.yml')), 'variant generation settles')
 
 assert(!existsSync(join(home, '.agent-presets', 'wsl')), 'legacy standalone wsl preset removed')
 
@@ -319,6 +325,21 @@ assert(minYaml.includes('- id: terminal-wsl'), 'the host PTY backend is mounted 
 assert(minYaml.includes('- id: pty'), 'the terminals service it needs is provided')
 assert(minYaml.includes('terminals: true'), 'the registry keeps its own terminals realm')
 assert(minYaml.includes('backendType: wsl'), 'the persistent shell uses the WSL backend')
+// The persistent tool's own description is what the model reads, and the host
+// default mentions neither the cross-call `cd` nor the wrapper's `&` hazard, so
+// the generated row must carry the override — and it must survive real YAML
+// parsing (a mis-indented block scalar would silently become a sibling key).
+const minParsed = yaml.load(minYaml)
+const world = minParsed.find(row => row.id === 'wsl-world')
+const shellGroup = world.config.find(row => row.id === 'persistent-shell')
+const shellTool = shellGroup.config.find(row => row.id === 'persistent-bash')
+assert(shellTool !== undefined, 'the parsed world carries the persistent tool row')
+assert(shellTool.config.backendType === 'wsl', 'its parsed backendType survives YAML')
+assert(typeof shellTool.config.description === 'string' && shellTool.config.description.includes('persists across calls'),
+  'the shell description parses as one string and warns about cross-call state')
+assert(shellTool.config.description.includes('Never end a `&&` chain with `&`'), 'the & footgun is spelled out for the model')
+assert(shellTool.config.description.includes('( long-job > log 2>&1 ) &'), 'the safe backgrounding form is given')
+assert(Object.keys(shellTool.config).length === 2, `the tool row carries only backendType and description: ${Object.keys(shellTool.config).join(',')}`)
 assert(minYaml.includes('wsl-relay.js'), 'the backend runs this installation\'s relay')
 assert(minYaml.includes('wsl-sandbox.js'), 'the world provides its own sandbox capability')
 assert(minYaml.includes('sandbox: true'), 'the sandbox capability is world-local')
@@ -364,7 +385,12 @@ writeFileSync(join(home, '.agent-presets', 'wsl-ghost', 'agent.cordis.yml'), '- 
 // Rerun apply to exercise cleanup.
 rmSync(join(home, 'src-third-party', 'plugin-data', 'trajectory.bin'))
 apply(fakeCtx, { route: '/wsl-workspace/api' })
-await new Promise(resolve => setTimeout(resolve, 300))
+// Poll instead of sleeping a fixed span: each apply re-runs the platform probe,
+// so the settle time is the host's, not a constant this test may assume.
+const cleanupDeadline = Date.now() + 15_000
+while (existsSync(join(home, '.agent-presets', 'wsl-ghost')) && Date.now() < cleanupDeadline) {
+  await new Promise(resolve => setTimeout(resolve, 50))
+}
 assert(!existsSync(join(home, '.agent-presets', 'wsl-ghost')), 'stale variant cleaned up')
 assert(existsSync(join(home, '.agent-presets', 'wsl-standard')), 'kept variant survives rerun')
 assert(!existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'removed source asset does not survive regeneration')
@@ -373,7 +399,7 @@ assert(!existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'remov
 sources['third-party-local'].text = `${PREFAB_SRC}\n# incomplete-update-must-not-publish\n`
 sources['third-party-local'].path = join(home, 'missing-source', 'agent.cordis.yml')
 apply(fakeCtx, { route: '/wsl-workspace/api' })
-await new Promise(resolve => setTimeout(resolve, 300))
+await new Promise(resolve => setTimeout(resolve, 3_000))
 assert(!readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8').includes('incomplete-update-must-not-publish'), 'failed regeneration preserves the previous complete variant')
 
 rmSync(home, { recursive: true, force: true })

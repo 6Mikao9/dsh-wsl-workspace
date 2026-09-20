@@ -655,5 +655,92 @@ Every one of these passed the host-side suite at some point:
   skills directory lands within about 3 s; a new project's *first* skills
   directory waits for the next walk, up to 30 s.
 
+## Worst-case pass over the new code (2026-09-19, plugin 0.6.0)
+
+A second sweep over what this release added — hunting inputs that could break it
+rather than confirming the happy path — found six defects. Every one of them had
+passed the host-side suite.
+
+### Four in the search tools
+
+| input | what happened | fix |
+|---|---|---|
+| `grep path=.env` | **zero matches** for a file the caller named: the hidden-file guard (`--include='[!.]*'`) applied to file targets too | the guard is added only when the target is a directory (the script tracks `dir`); a file the caller names is what it asked for |
+| `glob path=/nope-missing` | `{root, paths: []}` with **no error** — `find`'s non-zero exit was swallowed by the pipeline, so an unreadable target looked like an empty directory | both scripts now `exit "${PIPESTATUS[0]}"`, and `acceptRun` treats exit 1 as success **only** for grep, where it means "searched, no match" |
+| a search root whose name contains a newline | `root: "od"` and every returned path wrong — the header was `<mode> <root>\n`, so the newline split it | the header is NUL terminated (`G<root>\0`), like every record after it |
+| `grep path='D:\proj'` | `SEARCH_FAILED … No such file or directory`, while `read D:\proj\a.ts` opens the same file | `linuxTarget` maps a drive path through the shared `windowsToMntPath`, so search and the file tools open one tree |
+
+Two more came from reading the contracts rather than probing:
+
+- **The spill schema was closed.** The canonical value is validated against
+  `tool.output.schema` (`createSuccessResult` throws `ToolOutputError` on a
+  violation), and `@deepseek-ai/dsh-spill`'s `SpillRef` is
+  `{locator, bytes, retrievalHint}` — so `additionalProperties: false` on the
+  `spill` field would have failed the tool's own result on *every capped search
+  with a spill backend mounted*, exactly when the model needs the recovery path.
+  The field is now open (extra fields belong to the backend) and `normalizeSpill`
+  narrows it to the two fields the footer prints.
+- **The catalog detector could stack polls.** A pass over a slow share can outlast
+  the 3 s interval, and the interval callback was fire-and-forget, so walks would
+  pile up on the 9P share and later polls could read a half-finished shape. One
+  pass in flight per scan root now.
+
+### Two in the shell — both the host's, both reported by the operator
+
+1. **The host's wrapper and a trailing `&`.**
+   `@deepseek-ai/dsh-tool-bash-persistent` wraps every command as
+   `printf …START; eval -- $'…'; status=$?; printf …END`. A command ending in `&`
+   backgrounds the *whole* eval'd command, so the END marker and its status are
+   printed before the work runs: the call returns exit code 0 with no output, and
+   the real output arrives later — it can land inside the next call's output
+   window. Reproduced inside a real PTY with the host's own `wrapCommand`, which
+   shows `__START__ / [1] 459 / __END__:0 / one` — the output arriving *after* the
+   marker; the same harness shows the documented form (`( … ) &` on its own line)
+   keeping the sequencing intact. **Every release from `0.1.0-rc.7` on carries the
+   identical wrapper**, and the host's own Minimal preset recommends exactly the
+   hazardous form (`sleep 10 &`). `description` is a supported config key on all
+   eight releases, so the world now overrides it with both facts (state carries
+   over across calls; background a subshell) plus the safe form. Confirmed in a
+   real `0.1.0-rc.7` session: the model quoted the override verbatim.
+
+2. **`0.1.0-rc.7` cannot run a PTY shell on Windows at all.** Its
+   `@deepseek-ai/dsh-subprocess-local` builds a process inspector inside
+   `spawnTerminal` and supports only `linux`/`darwin`, throwing
+   `subprocess-local: terminal inspection is unsupported on platform win32`
+   before any process starts. A real session on that release showed the model
+   getting exactly that error for every `bash` call, while grep/glob — which never
+   touch the PTY — kept working. The capability arrived in `0.1.0-rc.8`
+   (`createWindowsProcessInspector`), which the host itself relies on: that
+   release's Minimal preset mounts `persistent-bash` with no Windows guard, so the
+   host ships the same gap.
+
+   The plugin now **probes the substrate instead of assuming**: it hands
+   `spawnTerminal` a program that cannot exist, which reaches the inspector check
+   and nothing else — no process is created either way, and the rejection says
+   which half failed (`isTerminalInspectionUnsupported`). When the answer is "no
+   inspector", the world keeps the one-shot `dsh-tool-bash` row, which runs
+   through this plugin's own `ctx.shell` and never touches the PTY.
+
+   Verified per release by booting each prepared case and reading the generated
+   preset: `0.1.0-rc.7` gets the one-shot row, `0.1.0-rc.8` and `0.1.5-rc.2` get
+   the persistent group with the description override. A real session on
+   `0.1.0-rc.7` then showed `pwd && echo BASH_OK && uname -s` returning
+   `/home/mille/manualtest`, `BASH_OK`, `Linux` (exit 0) — previously every call
+   failed — and a follow-up pair of calls confirming the fallback is stateless
+   (`cd /tmp` in one call, `pwd` in the next → `/home/mille/manualtest`), which is
+   what that tool's own description tells the model.
+
+### Verification of the fixes
+
+- 137 unit tests green, including the new cases pinning each defect: framing
+  around a newline in a root, the explicit dot-file, the `/mnt` mapping, the spill
+  schema shape, the description block, and the poll-stacking guard.
+- `search-real` gained six regressions (explicit dot-file, unreadable root, root
+  name with a newline, `/mnt` path, cooperative timeout → `SEARCH_ABORTED`,
+  raw-output overflow) alongside the existing framing, include, cap, spill, card
+  and argv-safety checks.
+- Thirteen checks × eight declared releases re-run with the fixes, each 11/13 with
+  only the two documented baselines.
+
 
 

@@ -172,6 +172,38 @@ test('the world mounts a persistent WSL shell when the relay paths are supplied'
   assert.equal(new Set(ids).size, ids.length, `duplicate loader entry id in ${ids.join(',')}`)
 })
 
+test('the persistent shell tells the model how state and backgrounding behave', () => {
+  // The host tool's default description mentions neither fact, and DSH's own
+  // Minimal preset suggests the exact form that trips the host wrapper
+  // (`sleep 10 &`): a trailing `&` backgrounds the whole wrapped command, so the
+  // call reports exit code 0 and no output while the work is still to come.
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const block = /            description: \|-\n((?:              .*\n)+)/.exec(out)
+  assert.ok(block !== null, 'the persistent tool carries an explicit description')
+  const description = (block[1] ?? '').split('\n').map(line => line.trim()).join('\n')
+  assert.ok(description.startsWith('Run commands in a persistent bash shell inside this WSL distribution'),
+    'it replaces the host default rather than appending to it')
+  assert.ok(description.includes('persists across calls'), 'it warns that cwd and exports carry over')
+  assert.ok(description.includes('explicit `cd`'), 'it tells the model to cd explicitly')
+  assert.ok(description.includes('( long-job > log 2>&1 ) &'), 'it gives the safe backgrounding form')
+  assert.ok(description.includes('Never end a `&&` chain with `&`'), 'it names the footgun explicitly')
+  assert.ok(description.includes('run_in_background'), 'it points at the background-job tool')
+  assert.ok(description.includes('resets the shell and discards its state'), 'it warns that a timeout loses state')
+  // Every line of the block scalar is indented past its key, so the loader reads
+  // it as one folded string instead of a sibling key.
+  for (const line of (block[1] ?? '').split('\n').filter(Boolean)) {
+    assert.ok(line.startsWith('              '), `block scalar line is indented: ${line.slice(0, 40)}`)
+  }
+})
+
+test('the description override does not disturb the rest of the row', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  assert.ok(/- id: persistent-bash\n          name: '@deepseek-ai\/dsh-tool-bash-persistent'\n          config:\n            backendType: wsl\n            description: \|-/.test(out),
+    'backendType stays the first config key of the tool row')
+  assert.equal((out.match(/backendType: wsl/g) ?? []).length, 2, 'the backend/tool pair still agrees')
+  assert.equal((out.match(/description: \|-/g) ?? []).length, 1, 'only the tool row gains a description')
+})
+
 test('the persistent-shell group is indented validly for the loader', () => {
   const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
   const lines = out.split('\n')
@@ -197,6 +229,14 @@ test('without relay paths the world keeps its previous shape', () => {
   const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS)
   assert.ok(!out.includes('terminal-wsl'), 'no PTY backend row')
   assert.ok(!out.includes('persistent-bash'), 'no persistent tool row')
+  // A host whose terminal stack cannot allocate a PTY on this platform (the
+  // 0.1.0-rc.7 window-inspection gap) must still get a working shell tool, which
+  // is what the one-shot row is: every command runs through this plugin's own
+  // `ctx.shell` provider, never through the host PTY seam.
+  assert.ok(out.includes("      name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot bash tool is mounted instead')
+  assert.equal((out.match(/name: '@deepseek-ai\/dsh-tool-bash('|-persistent')/g) ?? []).length, 1,
+    'exactly one bash-capable row, never both')
+  assert.ok(!out.includes('sandbox: true'), 'no sandbox realm is needed without the PTY backend')
 })
 
 /** A prefab-family composition: win32-only custom bash + local fs group. */
