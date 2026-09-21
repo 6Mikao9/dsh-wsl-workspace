@@ -50,6 +50,7 @@ export default defineConfig([
     platform: 'node',
     target: 'es2024',
     fixedExtension: false,
+    hash: false,
     dts: false,
     clean: false,
     sourcemap: true,

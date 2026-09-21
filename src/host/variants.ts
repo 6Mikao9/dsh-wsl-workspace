@@ -18,6 +18,26 @@ const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search
 /** Execution-world rows that register the model-facing editor tool. */
 const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
 
+/**
+ * Rows whose apply() side-effects are process-wide and therefore must not run
+ * twice (e.g. tool-cordis registers inspect providers into a single global
+ * registry).  We keep the row so the entry is still visible in the model's
+ * tool catalogue, but inject `disabled: true` to prevent the loader from
+ * invoking apply().
+ */
+const COLLISION_ROWS = new Set(['tool-cordis'])
+
+function disableRow(block: string[]): string[] {
+  return block.map(l => {
+    const m = l.match(/^(\s*)(- id:)/)
+    if (m) return m[1] + '- id:' + l.slice(m[0].length)
+    // insert disabled: true after the name: line (first property after - id:)
+    if (l.match(/^\s+name:/)) return l + '\n  disabled: true'
+    return l
+  })
+}
+
+
 /** The row ids this generator mounts inside its own world group. */
 const WSL_WORLD_PROVIDER_IDS = ['shell-wsl', 'fs-wsl']
 
@@ -452,6 +472,11 @@ export function transformPresetForWsl(
       personaAppended = true
       continue
     }
+    if (COLLISION_ROWS.has(id)) {
+      kept.push(...disableRow(block))
+      continue
+    }
+    
     kept.push(...block)
   }
   // An editor mounted inside a source group (a copied variant, say) also means
