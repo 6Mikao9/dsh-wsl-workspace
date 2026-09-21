@@ -58,9 +58,15 @@ const MAX_LINK_RESOLUTIONS = 32
 /** How many parent levels above the session cwd are searched for a `.git` project marker. */
 const MAX_ANCESTOR_WALK = 64
 /**
- * How long a completed lookup is served from cache before the next rescan.
+ * How many directories one discovery layer may probe at once.
+ *
+ * A `readdir` over the `\\wsl.localhost\…` share measured 15.6 ms against 1.6 ms
+ * for a `stat`, and a budget-sized walk is 4096 directories: probing one
+ * directory at a time costs 20-30 s, which is what a turn in a large workspace
+ * used to wait for. The layer stays bounded so the share is never flooded; node's
+ * own filesystem thread pool is what ultimately caps the real parallelism.
  */
-const CACHE_TTL_MS = 10_000
+const WALK_CONCURRENCY = 16
 /** Maximum cached lookups (one entry per distinct scan root across sessions). */
 const CACHE_MAX_ENTRIES = 32
 /**
@@ -208,8 +214,80 @@ async function nearestGitAncestor(distro: string, linuxDir: string, io: WslSkill
   return undefined
 }
 
+/** What one walk step learns about one directory. */
+interface DirectoryProbe {
+  /** The skill roots the directory publishes, `.dsh` before `.agents`. */
+  readonly roots: SkillRoot[]
+  /** Its child directories to descend into, as `[linux path, depth]`. */
+  readonly children: [string, number][]
+  /** Links its listing showed that the share itself could not follow. */
+  readonly links: [string, number][]
+}
+
+/**
+ * Everything the walk learns from one directory, in the order the round trips
+ * are worth paying for: the listing first — it also says which skill markers can
+ * exist there at all — then the markers it showed.
+ * @param distro - the WSL distribution name.
+ * @param dir - the directory's Linux path.
+ * @param depth - its depth below the scan root.
+ * @param io - filesystem face.
+ * @returns the directory's roots, child directories and unresolved links.
+ */
+async function probeDirectory(distro: string, dir: string, depth: number, io: WslSkillIo): Promise<DirectoryProbe> {
+  let entries: Dirent[] | undefined
+  if (depth < MAX_SCAN_DEPTH) {
+    try {
+      entries = await io.readdir(joinUnc(distro, dir), { withFileTypes: true })
+    } catch {
+      // An unreadable directory (permissions, vanished mid-walk) prunes its
+      // subtree, but the directory's own markers may still be worth probing.
+    }
+  }
+  const listed = entries ?? []
+  const allMarkers = PROJECT_SKILL_MARKERS.map(([marker]) => marker)
+  const markers = entries === undefined
+    ? allMarkers
+    : allMarkers.filter(marker => listed.some(entry => entry.name === marker))
+  const roots = await skillRootsOfDirectory(distro, dir, io, markers)
+  const children: [string, number][] = []
+  const links: [string, number][] = []
+  for (const entry of listed) {
+    if (PRUNED_DIRECTORY_NAMES.has(entry.name)) continue
+    if (entry.name.startsWith('.') && entry.name !== '.dsh' && entry.name !== '.agents') continue
+    if (entry.name === '.dsh' || entry.name === '.agents') continue
+    const childPath = posix.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      children.push([childPath, depth + 1])
+      continue
+    }
+    if (!entry.isSymbolicLink()) continue
+    // A project may be linked into the workspace via a directory symlink;
+    // follow it when the target is a directory. Symlink cycles stay
+    // bounded: every hop increments the depth (capped by MAX_SCAN_DEPTH)
+    // and the walk as a whole by MAX_VISITED_DIRECTORIES.
+    try {
+      const target = await io.stat(joinUnc(distro, childPath))
+      // A substrate that resolves Linux links itself answers here; a link
+      // to a file is not a project directory either way.
+      if (target.isDirectory()) children.push([childPath, depth + 1])
+      continue
+    } catch {
+      // The `\\wsl.localhost` 9P share reports the link entry but cannot
+      // resolve its Linux target; the distribution below can.
+    }
+    links.push([childPath, depth + 1])
+  }
+  return { roots, children, links }
+}
+
 /**
  * Scan a WSL workspace root for nested skill directories.
+ *
+ * A layer is probed concurrently but published in frontier order, so the
+ * catalog never depends on which probe happened to finish first, and the budget
+ * is claimed before any probe starts: concurrency must not change what is
+ * visited, only how long it takes.
  * @param distro - the WSL distribution name.
  * @param linuxRoot - the workspace's absolute Linux path.
  * @param io - filesystem face.
@@ -223,53 +301,38 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
   // (shallow skill dirs matter most): [path, depth] pairs.
   let frontier: [string, number][] = [[linuxRoot, 0]]
   while (frontier.length > 0 && roots.length < MAX_SKILL_ROOTS) {
-    const next: [string, number][] = []
+    const layer: [string, number][] = []
+    for (const item of frontier) {
+      if (visited.size >= MAX_VISITED_DIRECTORIES) break
+      if (visited.has(item[0])) continue
+      visited.add(item[0])
+      layer.push(item)
+    }
+    if (layer.length === 0) return roots
+    const probes = new Array<DirectoryProbe | undefined>(layer.length)
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(WALK_CONCURRENCY, layer.length) }, async () => {
+      for (let index = next; index < layer.length; index = next) {
+        next += 1
+        const [dir, depth] = layer[index]!
+        probes[index] = await probeDirectory(distro, dir, depth, io)
+      }
+    }))
+    const nextLayer: [string, number][] = []
     // Symlink targets the share could not follow, resolved for this whole
     // layer in one distribution round trip after the layer is enumerated.
     const links: [string, number][] = []
-    for (const [dir, depth] of frontier) {
-      if (visited.size >= MAX_VISITED_DIRECTORIES) return roots
-      if (visited.has(dir)) continue
-      visited.add(dir)
+    for (const probe of probes) {
+      if (probe === undefined) continue
       if (roots.length < MAX_SKILL_ROOTS) {
-        const directoryRoots = await skillRootsOfDirectory(distro, dir, io)
-        roots.push(...directoryRoots.slice(0, MAX_SKILL_ROOTS - roots.length))
+        roots.push(...probe.roots.slice(0, MAX_SKILL_ROOTS - roots.length))
       }
-      if (depth >= MAX_SCAN_DEPTH) continue
-      let entries: Dirent[]
-      try {
-        entries = await io.readdir(joinUnc(distro, dir), { withFileTypes: true })
-      } catch {
-        // An unreadable directory (permissions, vanished mid-walk) prunes its subtree.
-        continue
-      }
-      for (const entry of entries) {
-        if (PRUNED_DIRECTORY_NAMES.has(entry.name)) continue
-        if (entry.name.startsWith('.') && entry.name !== '.dsh' && entry.name !== '.agents') continue
-        if (entry.name === '.dsh' || entry.name === '.agents') continue
-        const childPath = posix.join(dir, entry.name)
-        if (entry.isDirectory()) {
-          next.push([childPath, depth + 1])
-          continue
-        }
-        if (!entry.isSymbolicLink()) continue
-        // A project may be linked into the workspace via a directory symlink;
-        // follow it when the target is a directory. Symlink cycles stay
-        // bounded: every hop increments the depth (capped by MAX_SCAN_DEPTH)
-        // and the walk as a whole by MAX_VISITED_DIRECTORIES.
-        try {
-          const target = await io.stat(joinUnc(distro, childPath))
-          // A substrate that resolves Linux links itself answers here; a link
-          // to a file is not a project directory either way.
-          if (target.isDirectory()) next.push([childPath, depth + 1])
-          continue
-        } catch {
-          // The `\\wsl.localhost` 9P share reports the link entry but cannot
-          // resolve its Linux target; the distribution below can.
-        }
-        links.push([childPath, depth + 1])
-      }
+      nextLayer.push(...probe.children)
+      links.push(...probe.links)
     }
+    // The budget ran out inside this layer: stop where the walk stops, without
+    // paying for this layer's link resolution either.
+    if (visited.size >= MAX_VISITED_DIRECTORIES) return roots
     if (links.length > 0 && io.resolveLinks !== undefined && linksResolved < MAX_LINK_RESOLUTIONS) {
       const batch = links.slice(0, MAX_LINK_RESOLUTIONS - linksResolved)
       linksResolved += batch.length
@@ -281,16 +344,22 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
         // project reachable both directly and through a link onto one visit.
         try {
           const info = await io.stat(real)
-          if (info.isDirectory()) next.push([uncToLinux(real), batch[index]![1]])
+          if (info.isDirectory()) nextLayer.push([uncToLinux(real), batch[index]![1]])
         } catch {
           // The distribution resolved a target this share still cannot stat.
         }
       }
     }
-    frontier = next
+    frontier = nextLayer
   }
   return roots
 }
+
+/** The two project skill markers, with the source and rank each publishes. */
+const PROJECT_SKILL_MARKERS = [
+  ['.dsh', 'project-dsh', PROJECT_DSH_RANK],
+  ['.agents', 'project-agents', PROJECT_AGENTS_RANK],
+] as const
 
 /**
  * Publish the skill roots of one scanned directory (its `.dsh/skills` and
@@ -298,14 +367,20 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
  * @param distro - the WSL distribution name.
  * @param linuxDir - the scanned directory's Linux path.
  * @param io - filesystem face.
+ * @param markers - the markers worth probing. The walk narrows this to the ones
+ *   its listing actually showed, because each probe is a round trip and a
+ *   directory without a `.dsh` entry cannot hold `.dsh/skills`.
  * @returns the directory's skill roots that exist.
  */
-async function skillRootsOfDirectory(distro: string, linuxDir: string, io: WslSkillIo): Promise<SkillRoot[]> {
+async function skillRootsOfDirectory(
+  distro: string,
+  linuxDir: string,
+  io: WslSkillIo,
+  markers: readonly string[] = PROJECT_SKILL_MARKERS.map(([marker]) => marker),
+): Promise<SkillRoot[]> {
   const result: SkillRoot[] = []
-  for (const [marker, source, rank] of [
-    ['.dsh', 'project-dsh', PROJECT_DSH_RANK],
-    ['.agents', 'project-agents', PROJECT_AGENTS_RANK],
-  ] as const) {
+  for (const [marker, source, rank] of PROJECT_SKILL_MARKERS) {
+    if (!markers.includes(marker)) continue
     const path = joinUnc(distro, posix.join(linuxDir, marker, 'skills'))
     try {
       const info = await io.stat(path)
@@ -515,9 +590,10 @@ function frontmatterBoolean(fields: Map<string, string>, key: string, dflt = fal
  * The WSL workspace skill provider. Registered on the host's `ctx.skills`
  * registry; serves only lookups whose cwd is a WSL UNC workspace path.
  *
- * Completed `list()` lookups are cached per scan root for CACHE_TTL_MS so
- * repeated catalog builds over the slow 9P share do not rescan the tree;
- * `get()` always re-reads the skill file so body edits are picked up
+ * Completed `list()` lookups are cached per scan root and served as-is: a lookup
+ * is on the session's request path, and re-walking the tree there is what made
+ * every turn in a large workspace wait for a 4096-directory scan of the 9P
+ * share. `get()` always re-reads the skill file so body edits are picked up
  * immediately.
  *
  * A scan root that has been served is re-checked every REFRESH_POLL_MS: the
@@ -526,17 +602,18 @@ function frontmatterBoolean(fields: Map<string, string>, key: string, dflt = fal
  * changed directory listing clears the cache and calls `control.invalidate()`,
  * which bumps the registry's revision; the catalog middleware re-collects on
  * the session's next request, so a skill added mid-session reaches the model
- * without starting a new session.
+ * without starting a new session, and the cache is only ever refilled by a
+ * lookup the detector has already invalidated.
  */
 export class WslSkillsProvider {
   readonly name = 'wsl-workspace'
   private readonly control: WslSkillProviderControl
   private readonly io: WslSkillIo
-  private readonly now: () => number
   private readonly refreshMs: number
   /** Cheap polls between two full discovery walks (at least one). */
   private readonly walkEveryPolls: number
-  private readonly cache = new Map<string, { expiresAt: number; candidates: WslSkillCandidate[] }>()
+  /** The published catalog per scan root, served until its detector drops it. */
+  private readonly cache = new Map<string, WslSkillCandidate[]>()
   /** One change detector per served scan root, keyed like {@link cache}. */
   private readonly detectors = new Map<string, {
     timer: ReturnType<typeof setInterval>
@@ -550,13 +627,11 @@ export class WslSkillsProvider {
   constructor(
     control: WslSkillProviderControl,
     io: WslSkillIo = nodeSkillIo,
-    now: () => number = Date.now,
     refreshMs: number = REFRESH_POLL_MS,
     discoveryMs: number = DISCOVERY_POLL_MS,
   ) {
     this.control = control
     this.io = io
-    this.now = now
     this.refreshMs = refreshMs
     // Counted in polls rather than read off the clock: a poll is what the
     // cadence is measured in, and an injected clock (tests) may stand still.
@@ -583,10 +658,13 @@ export class WslSkillsProvider {
     const scanRoot = (await nearestGitAncestor(unc.distro, unc.linuxPath, this.io)) ?? unc.linuxPath
     const cacheKey = `${unc.distro}\u0000${scanRoot}`
     const cached = this.cache.get(cacheKey)
-    if (cached !== undefined && cached.expiresAt > this.now()) {
+    if (cached !== undefined) {
+      // Published already: serve it without touching the share again. The
+      // detector this lookup once started is what notices a change, and it
+      // drops this entry before the next request can be served from it.
       this.cache.delete(cacheKey)
       this.cache.set(cacheKey, cached)
-      return [...cached.candidates]
+      return [...cached]
     }
     const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
     const candidates: WslSkillCandidate[] = []
@@ -627,14 +705,15 @@ export class WslSkillsProvider {
         })
       }
     }
-    this.cache.set(cacheKey, { expiresAt: this.now() + CACHE_TTL_MS, candidates })
+    this.cache.set(cacheKey, candidates)
     while (this.cache.size > CACHE_MAX_ENTRIES) {
       const oldest = this.cache.keys().next().value
       if (oldest === undefined) break
       this.cache.delete(oldest)
     }
     this.watch(cacheKey, unc.distro, scanRoot, signature.join('\u0002'), roots)
-    return candidates
+    // A copy, so a caller that mutates the list it got cannot poison the cache.
+    return [...candidates]
   }
 
   /**

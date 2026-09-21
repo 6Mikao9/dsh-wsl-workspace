@@ -848,5 +848,94 @@ argument for the test rather than the convention.
   `/home/mille/manualtest`, and `job_kill` on a long loop returned
   `[status: killed, exit code: 1]` with no further output.
 
+## The per-turn stall in a UNC workspace (2026-09-21, plugin 0.7.2, issue #25)
+
+The first defect on this project reported by someone other than the operator, and
+it was this plugin's doing.
+
+**What they saw** (DSH `0.1.6-alpha`): a conversation whose workspace is a UNC path
+finished *every* request in about 30 seconds, with the UI showing the thinking
+state for the whole time. The same conversation on a normal Windows folder path was
+unaffected.
+
+**Why.** The host rebuilds the skill catalog during a request and awaits each
+provider's `list()`, and this plugin's provider for WSL UNC workspaces served a
+completed lookup from cache for `CACHE_TTL_MS = 10 s` only — so every re-collection
+(a new session or scope, or simply a lookup more than 10 s after the last one) paid
+a full re-discovery walk, on the request path, and that walk was sequential: for
+each directory one `stat` for `.dsh/skills`, one for `.agents/skills`, then one
+`readdir`. Measured on this machine against `\\wsl.localhost\Ubuntu`:
+
+```
+readdir (9P share)                                        3.34 - 15.55 ms/op
+stat    (9P share)                                        1.18 -  1.61 ms/op
+list()  69-directory tree                                  1.5 - 2.7 s
+list()  budget-sized tree (/usr, 4096 directories)        20.4 s, 0 skills found
+repeat  list() of one cached root, before the fix          132 ms (a full re-walk)
+repeat  list() of one cached root, after the fix             1-3 ms (no I/O)
+```
+
+The walk's budget (`MAX_VISITED_DIRECTORIES = 4096`) is what made the delay
+*constant* rather than proportional to the workspace: any tree large enough to
+reach it paid the same 20-30 s, which is exactly the "fixed 30 seconds" in the
+report. One part of the report was not ours: `parseWslUnc` accepts only the
+`\\wsl.localhost\…` and `\\wsl$\…` hosts, so a plain SMB workspace never reaches
+this provider — `list()` returns `[]` before any I/O.
+
+**Fix, in two parts.**
+
+1. A published catalog is served as-is. The provider already runs a change detector
+   per served scan root (`REFRESH_POLL_MS = 3 s` over the roots it published,
+   `DISCOVERY_POLL_MS = 30 s` for the full re-discovery walk), and that detector is
+   what drops the cache and bumps the registry's revision: the request-path rescan
+   was redundant with it and *was* the stall. The freshness contract is unchanged —
+   an added, removed or edited skill is still visible within 3 s, and a new nested
+   skills directory within 30 s, which is what the panel has always documented.
+2. The walk itself is cheaper. One BFS layer is probed concurrently
+   (`WALK_CONCURRENCY = 16`, bounded so the share is not flooded) and published in
+   frontier order, so the catalog does not depend on which probe finishes first; the
+   4096-directory budget is claimed before any probe starts, so concurrency cannot
+   change *what* is visited, only how long it takes. A directory's markers are
+   probed only when its own listing showed them, which removes two round trips per
+   directory for the common case. The budget-sized walk went from 20.4 s to 4.8 s;
+   node's filesystem thread pool (4 threads by default) is what caps the real
+   parallelism.
+
+**Verification.**
+
+- The numbers above come from `node --experimental-strip-types
+  .test-runs/probe-skills-walk.mjs`, against the same share, before and after.
+- `tests/wsl-skills.test.ts` gained the regression test the defect deserved: a
+  served lookup must cost *zero* further `readdir` calls across repeated requests,
+  and may only move once its watcher has invalidated it (32/32 in that file, 139/139
+  across the suite).
+- The published `0.7.1` tarball was confirmed to carry the old code —
+  `CACHE_TTL_MS = 1e4`, `expiresAt`, and the sequential
+  `for (const [dir, depth] of frontier)` loop — so the version the reporter runs is
+  the one this fixes.
+- The eight-release matrix re-ran the real-9P `skills-real` check — the same walk,
+  against a real distribution — on every declared release: green on all eight, with
+  the two documented red baselines unchanged (11/13 each: `typecheck` and the
+  `host-api` check, which needs a live server).
+- The host chain that puts the walk on the request path is in `dsh-skill` itself:
+  `list()` → `snapshot()` → `collect()`, and a collect-cache miss reaches
+  `collectFresh()`, whose `collectLayer` does
+  `await waitWithAbort(provider.list(options), options.signal)`
+  (`dsh-skill/lib/index.js:350`).
+
+**What did not reproduce here.** The reporter's *per-turn* shape did not. With the
+published 0.7.1 installed on `0.1.0-rc.7` and on `0.1.6-alpha.2`, against the same
+budget-sized workspace (4204 directories), a repeat turn inside one session was
+already fast — 253 ms then 807 ms on rc.7, 1415 ms then ~1 s on 0.1.6-alpha.2 — and
+a newly created session reached a usable composer in 202 ms. The host's own collect
+cache (`dsh-skill`, keyed by cwd + scope + revision) absorbs later turns, so this
+provider is only asked when that cache misses. What this release fixes is what was
+actually measured: the walk's cost (20.4 s → 4.8 s) and the fact that a
+re-collection no longer pays it at all. Whether that closes the report depends on
+what the reporter's sessions re-collect on, so the next step is to ask them for the
+exact workspace path form (a `\\wsl.localhost\…` or `\\wsl$\…` path reaches this
+provider, a plain SMB share never does — `parseWslUnc` returns null and `list()`
+answers `[]` before any I/O) and whether the delay is per turn or per session.
+
 
 
