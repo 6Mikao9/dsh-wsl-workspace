@@ -43,6 +43,26 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.7.2 — 2026-09-21
+
+- **The WSL skill catalog is no longer re-walked on the request path (issue #25).**
+  The host rebuilds the catalog during a request and awaits each provider's
+  `list()`, and this provider kept its own answer for only 10 s — so every time the
+  catalog was re-collected (a new session or scope, or simply a lookup more than
+  10 s after the last one) that request paid a full walk of the workspace, one
+  directory at a time: two `stat`s and one `readdir` each. A `readdir` over the
+  `\\wsl.localhost\…` 9P share measures 3-16 ms here and the walk's budget is 4096
+  directories, which is why a large workspace cost 20.4 s, on the request path. A
+  published catalog is now served as-is, and only the provider's own change detector
+  can drop it: a repeat lookup costs 1-3 ms and no filesystem traffic. The freshness
+  contract is unchanged — a new nested skills directory still appears within 30 s,
+  and an added, removed or edited skill within 3 s.
+- The walk itself is cheaper: one BFS layer is probed concurrently (bounded) and
+  published in frontier order, so the catalog stays deterministic, and a
+  directory's `.dsh/skills` / `.agents/skills` are probed only when its own listing
+  showed that marker. The budget-sized walk went from 20.4 s to 4.8 s on the same
+  machine; node's filesystem thread pool caps the real parallelism.
+
 ### 0.7.1 — 2026-09-20
 
 - **`npm install dsh-wsl-workspace` no longer fails.** Verifying the published

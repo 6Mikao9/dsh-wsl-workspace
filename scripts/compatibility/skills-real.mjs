@@ -77,7 +77,6 @@ try {
   const watcher = new WslSkillsProvider(
     {signal: watched.signal, invalidate() { invalidations += 1; }},
     nodeSkillIo,
-    Date.now,
     200,
     1_000_000,
   );

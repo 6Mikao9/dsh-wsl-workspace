@@ -416,7 +416,7 @@ test('never publishes more than the skill-root budget', async () => {
   assert.ok(!skills.some(skill => skill.name === 'agents'))
 })
 
-test('caches a completed lookup and serves it until the TTL expires', async () => {
+test('serves a completed lookup from cache until its watcher invalidates it', async () => {
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])
   file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'brainstorming', 'SKILL.md'],
@@ -432,15 +432,22 @@ test('caches a completed lookup and serves it until the TTL expires', async () =
     readFile: io.readFile,
     stat: io.stat,
   }
-  let clock = 1_000_000
-  const provider = new WslSkillsProvider(control(), countingIo, () => clock)
+  const lifecycle = new AbortController()
+  let invalidations = 0
+  const provider = new WslSkillsProvider(
+    { signal: lifecycle.signal, invalidate: () => { invalidations += 1 } },
+    countingIo,
+    10,
+  )
 
   const first = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   const readsAfterFirst = readdirCalls
   assert.equal(first.length, 1)
   assert.ok(readsAfterFirst > 0)
 
-  // Served from cache: no additional filesystem traffic.
+  // Served from cache: no additional filesystem traffic, however many requests
+  // are built from it. A request-path rescan is what made every turn in a large
+  // WSL workspace wait for a full walk of the 9P share.
   const second = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   assert.equal(readdirCalls, readsAfterFirst)
   assert.deepEqual(second.map(skill => skill.name), ['brainstorming'])
@@ -449,14 +456,18 @@ test('caches a completed lookup and serves it until the TTL expires', async () =
   second.push({ ...second[0]!, name: 'poison' })
   const third = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   assert.deepEqual(third.map(skill => skill.name), ['brainstorming'])
+  assert.equal(readdirCalls, readsAfterFirst)
 
-  // After the TTL the provider rescans and sees new content.
+  // Only the watcher can move the catalog: it drops the cache, and the next
+  // lookup — and only that lookup — walks the tree again.
   file(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills', 'late.md'],
     SKILL_MD('late', 'Added after caching'))
-  clock += 10_001
+  await delay(60)
+  assert.equal(invalidations, 1)
   const fourth = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   assert.ok(readdirCalls > readsAfterFirst)
   assert.deepEqual(fourth.map(skill => skill.name).sort(), ['brainstorming', 'late'])
+  lifecycle.abort()
 })
 
 test('get() re-reads the body instead of serving a cached one', async () => {
@@ -675,9 +686,9 @@ test('re-checks a served scan root and invalidates when a skill appears', async 
   dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
   file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'first.md'], SKILL_MD('first', 'First skill'))
   const control = countingControl()
-  // A fixed clock keeps the TTL from expiring, so only the detector can
-  // explain a fresh catalog; a short poll keeps the test quick.
-  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10)
+  // Only the detector can explain a fresh catalog; a short poll keeps the test
+  // quick.
+  const provider = new WslSkillsProvider(control, createIo(root), 10)
   assert.deepEqual((await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.name), ['first'])
 
   // Nothing changed yet: a few polls must not disturb the registry.
@@ -712,7 +723,6 @@ test('stops watching when the registration is disposed', async () => {
   const provider = new WslSkillsProvider(
     { signal: lifecycle.signal, invalidate: () => { invalidations += 1 } },
     createIo(root),
-    () => 1_000_000,
     10,
   )
   await provider.list({ cwd: CWD_WORKSPACE_ROOT })
@@ -726,7 +736,7 @@ test('publishes a project skill added mid-session as a new scan root too', async
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root'])
   const control = countingControl()
-  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 10)
+  const provider = new WslSkillsProvider(control, createIo(root), 10, 10)
   assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
 
   dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
@@ -749,7 +759,7 @@ test('invalidates when an existing skill file is edited, without a directory cha
   const control = countingControl()
   // The discovery walk is out of reach, so only the cheap pass can explain a
   // fresh catalog: this is the case a directory listing alone cannot see.
-  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 1_000_000)
+  const provider = new WslSkillsProvider(control, createIo(root), 10, 1_000_000)
   assert.deepEqual((await provider.list({ cwd: CWD_WORKSPACE_ROOT })).map(skill => skill.description), ['Original description'])
 
   await delay(40)
@@ -773,7 +783,7 @@ test('a brand-new skills directory waits for the discovery cadence, not the chea
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root'])
   const control = countingControl()
-  const provider = new WslSkillsProvider(control, createIo(root), () => 1_000_000, 10, 1_000_000)
+  const provider = new WslSkillsProvider(control, createIo(root), 10, 1_000_000)
   assert.deepEqual(await provider.list({ cwd: CWD_WORKSPACE_ROOT }), [])
 
   dir(root, ['home', 'mille', 'repro-ws-root', 'late-project', '.dsh', 'skills'])
@@ -806,7 +816,7 @@ test('a slow poll never stacks up behind itself', async () => {
       return base.readdir(path, options)
     },
   }
-  const provider = new WslSkillsProvider(control, io, () => 1_000_000, 10)
+  const provider = new WslSkillsProvider(control, io, 10)
   await provider.list({ cwd: CWD_WORKSPACE_ROOT })
   stalling = true
   await delay(80)
