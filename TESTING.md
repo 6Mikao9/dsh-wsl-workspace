@@ -1,6 +1,6 @@
 # Testing
 
-This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the preset-materialization integration test, a real-WSL smoke test, and a post-build lib verification gate.
+This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the two preset-channel integration tests (the retired directory generation and the declaration generation), a real-WSL smoke test, and a post-build lib verification gate.
 
 ## Prerequisites
 
@@ -39,7 +39,19 @@ Boots the host plugin's `apply()` against a fake context with `DSH_HOME` pointed
 node tests/host-materialize.mjs
 ```
 
-This covers variant generation, opaque source-directory mirroring (third-party assets travel with the variant), atomic publication (a failed regeneration preserves the previous complete variant), stale-variant cleanup, and legacy `wsl` preset removal.
+This covers variant generation, opaque source-directory mirroring (third-party assets travel with the variant), atomic publication (a failed regeneration preserves the previous complete variant), stale-variant cleanup, and legacy `wsl` preset removal. Its fake roster face is the **directory generation** (`list()` reporting a `path`, `read()` returning text), i.e. the channel every release up to `0.1.5-rc.2` uses.
+
+## Preset declaration integration test
+
+Boots the same `apply()` against the **declaration generation** of the roster face — `list()` reporting metadata without a directory, `readDocument()` returning a composition document, `register()` publishing a declaration — which is the channel `0.1.7-alpha.1` and later use, because that line stopped scanning `$DSH_HOME/.agent-presets/`:
+
+```powershell
+node tests/host-declare.mjs
+```
+
+This covers the capability switch, one declaration per healthy source (broken sources and existing `wsl-*` presets skipped), display name/description/order taken from the roster face rather than a `preset.yml`, the declaration's row list being an importable entry list (the world group, its isolating realm, the `!!js` disabled expression that must round-trip as an expression node, config values such as the relay and interpreter paths that must *not* become `file:` URLs), the world's own providers named as `file:` URLs pointing at real built files, that the retired root is neither written nor left holding stale leftovers, and that disposing the plugin retires every declaration it published.
+
+Run both before a release: the two files are the two halves of the same generator, and a change to either channel must not silently break the other.
 
 ## Real-WSL smoke test
 
@@ -87,7 +99,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    node scripts/repro-e2e.mjs
    ```
 
-   The script hardcodes `\\wsl.localhost\Ubuntu\home\mille\repro-ws-root`; adjust the two paths at the top when running as another user or distro.
+   The script hardcodes `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; adjust the two paths at the top when running as another user or distro.
 3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
 4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
 
@@ -106,14 +118,15 @@ After installing the plugin into a profile and restarting `dsh web`:
 
 1. `pnpm build` — clears `lib/`, rebuilds it, and runs the verification gate.
 2. `node --experimental-strip-types --test tests/*.test.ts` — all green (locales, variants, paths, shell, fs execution context, fs policy, wsl skills, wsl search).
-3. `node tests/host-materialize.mjs` — all assertions pass.
-4. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
-5. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
-6. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
-7. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE`.
-8. `npm run verify:install` — packs the tree and installs the tarball with **plain npm** into a scratch directory, with no pnpm and no host packages present. This is the gate that would have caught 0.7.0, whose `peerDependencies` made npm auto-install an unpublished package (`E404 @deepseek-ai/dsh-retention`): every other check and every real session goes through `dsh plugin add` (pnpm), which only *warns* about unmet peers and installs anyway. `prepublishOnly` runs it, so `npm publish` now refuses to ship a package that npm users cannot install.
-9. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
-10. For a release, install the *published* version by name into one isolated case per declared release and confirm each boots (the launcher only reports ready once the plugin's API route answers) — the check that proves the artifact on the registry, not just the local tree.
+3. `node tests/host-materialize.mjs` — all assertions pass (the directory channel).
+4. `node tests/host-declare.mjs` — all assertions pass (the declaration channel).
+5. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
+6. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
+7. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
+8. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE`.
+9. `npm run verify:install` — packs the tree and installs the tarball with **plain npm** into a scratch directory, with no pnpm and no host packages present. This is the gate that would have caught 0.7.0, whose `peerDependencies` made npm auto-install an unpublished package (`E404 @deepseek-ai/dsh-retention`): every other check and every real session goes through `dsh plugin add` (pnpm), which only *warns* about unmet peers and installs anyway. `prepublishOnly` runs it, so `npm publish` now refuses to ship a package that npm users cannot install.
+10. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
+11. For a release, install the *published* version by name into one isolated case per declared release and confirm each boots (the launcher only reports ready once the plugin's API route answers) — the check that proves the artifact on the registry, not just the local tree.
 
 ### The multi-release check harness
 
