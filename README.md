@@ -66,6 +66,14 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
   unlike the boot-time Include — does not turn an absolute path into a `file:` URL.
   Without the rewrite the provider rows never started, the audit reported each as
   `never started`, and the whole variant was refused as unusable.
+- **The PTC variant is named again on `0.1.7`.** The label table that gives the
+  shipped modes their bilingual `WSL · …` names carried the mode's older id
+  (`code`) but not `ptc`, the id it has used since `0.1.1`. That stayed invisible
+  as long as the release published its own display name, because the lookup fell
+  through to it — but `0.1.7` publishes none, so the mode reached the picker as
+  `WSL · ptc` with the generic `WSL execution world for ptc: …` description. Both
+  ids are covered now, and the variant reads `WSL · PTC mode（PTC 模式）` on every
+  channel, like the other three shipped modes.
 - `dsh.compatibility.dshReleases` declares `0.1.7-rc.1`. The two modules the
   declaration channel needs (`@deepseek-ai/cordis-plugin-include`, `js-yaml`) are
   resolved at call time and declared as **optional** peers, so a release that lacks

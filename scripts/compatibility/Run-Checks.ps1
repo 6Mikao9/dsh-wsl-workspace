@@ -21,6 +21,7 @@ try{
   Run-Node 'lib' @((Join-Path $r.plugin 'scripts/verify-lib.mjs'))
   Run-Node 'typecheck' @((Join-Path $repo '.test-runs/tooling/node_modules/typescript/bin/tsc'),'--project',(Join-Path $r.plugin 'tsconfig.json'),'--noEmit')
   Run-Node 'materialize' @((Join-Path $r.plugin 'tests/host-materialize.mjs'))
+  Run-Node 'declare' @((Join-Path $r.plugin 'tests/host-declare.mjs'))
   Run-Node 'rank' @((Join-Path $r.plugin 'scripts/check-rank-parity.mjs'),'--strict')
   Run-Node 'smoke-source' @('--experimental-strip-types',(Join-Path $r.plugin 'tests/smoke.ts'))
   $built=(Get-Content (Join-Path $r.plugin 'tests/smoke.ts') -Raw).Replace("'../src/fs.ts'","'../lib/fs.js'").Replace("'../src/shell.ts'","'../lib/shell.js'")

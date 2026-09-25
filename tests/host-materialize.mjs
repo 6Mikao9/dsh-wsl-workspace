@@ -189,6 +189,7 @@ const COPIED_VARIANT_SRC = `# user preset copied from a generated WSL variant
 
 const sources = {
   standard: { path: join(home, 'src-standard', 'agent.cordis.yml'), text: STANDARD_SRC },
+  ptc: { path: join(home, 'src-ptc', 'agent.cordis.yml'), text: STANDARD_SRC },
   minimal: { path: join(home, 'src-minimal', 'agent.cordis.yml'), text: MINIMAL_SRC },
   'third-party-local': { path: join(home, 'src-third-party', 'agent.cordis.yml'), text: PREFAB_SRC },
   'standard-new': { path: join(home, 'src-standard-new', 'agent.cordis.yml'), text: SUFFIX_PREFIX_SRC },
@@ -197,9 +198,11 @@ const sources = {
 }
 // Source display metadata with declared roster order (the shipped layout).
 mkdirSync(join(home, 'src-standard'), { recursive: true })
+mkdirSync(join(home, 'src-ptc'), { recursive: true })
 mkdirSync(join(home, 'src-minimal'), { recursive: true })
 mkdirSync(join(home, 'src-third-party'), { recursive: true })
 writeFileSync(join(home, 'src-standard', 'preset.yml'), 'name: 标准模式\norder: 1\n', 'utf8')
+writeFileSync(join(home, 'src-ptc', 'preset.yml'), 'name: PTC 模式\norder: 2\n', 'utf8')
 writeFileSync(join(home, 'src-minimal', 'preset.yml'), 'name: 极简模式\norder: 3\n', 'utf8')
 writeFileSync(join(home, 'src-third-party', 'preset.yml'), 'name: Third Party Local\norder: 8\n', 'utf8')
 mkdirSync(join(home, 'src-standard-new'), { recursive: true })
@@ -262,6 +265,12 @@ assert(existsSync(join(stdVariant, 'preset.yml')), 'wsl-standard metadata genera
 assert(stdMeta.includes("name: 'WSL · Standard mode（标准模式）'"), 'shipped modes get bilingual display names')
 assert(stdMeta.includes("description: 'WSL execution world for Standard mode（标准模式）"), 'variant description is bilingual')
 assert(stdMeta.includes('order: 1'), 'variant inherits the source roster order')
+// The `ptc` id is the one the mode carries from 0.1.1 on: a label table with
+// only the older `code` entry left this variant named after its bare id (and
+// `0.1.7` publishes no display name to fall back on at all).
+const ptcMeta = readFileSync(join(home, '.agent-presets', 'wsl-ptc', 'preset.yml'), 'utf8')
+assert(ptcMeta.includes("name: 'WSL · PTC mode（PTC 模式）'"), 'the ptc id gets its shipped label rather than its bare id')
+assert(ptcMeta.includes('order: 2'), 'the ptc variant inherits its source order')
 // Regression guard: a `: ` inside an unquoted plain scalar makes the whole
 // preset.yml unparsable, silently dropping name/description/order.
 const yaml = require('js-yaml')
