@@ -49,6 +49,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **插件在 DSH `0.1.7-rc.1` 上重新可加载，模式也回来了**。`0.1.7` 这条线改了宿主预设接口——`read()` 变为 `readDocument()`，返回的是文档（`{agentPreset, content, name, description}`）而不是组合文本，且 `AgentPreset` 不再有 `path`——于是变体生成器每次启动都抛 `agentPresets.read is not a function`，选择器里一个 `wsl-*` 模式都不会出现。现在改按**能力探测** roster 接口，两代都服务：有 `readDocument()` 就用它，否则回退 `read()`。
 - **在这条线上，变体是一条声明行**。`0.1.7` 不再扫描 `$DSH_HOME/.agent-presets/`——那里的预设是一条声明式的 `@deepseek-ai/dsh-agent-preset` 行，而插件原先写变体的那个目录已经**没有任何代码会读**。生成器现在把组合好的变体展开回 entry list，通过 `ctx.agentPresets.register()` 发布；注销器由插件的 effect 持有，因此卸载或热重载会注销这些变体，而不是留下下一次 apply 无法替换的孤儿（`Duplicate agent preset: wsl-<mode>`）。更早的版本仍走原来的目录通道，行为不变。
 - **该通道下，世界自己的提供者要以 `file:` URL 命名**。由声明挂载的预设由注册表自己的 entry tree 导入，而它——与启动期的 Include 不同——不会把绝对路径翻译成 `file:` URL。没有这层改写时那些提供者行根本不会启动，审计会逐条报 `never started`，整个变体被判为不可用而拒绝。
+- **`0.1.7` 上 PTC 变体重新有名字了**。给已发布模式拼双语 `WSL · …` 名字的那张表里，PTC 这个模式只登记了旧 id（`code`），没有 `0.1.1` 起在用的 `ptc`。只要版本自己发布了显示名就看不出来——查不到会落到那个名字上——但 `0.1.7` 根本不发布显示名，于是模式以 `WSL · ptc` 和通用描述 `WSL execution world for ptc: …` 进了选择器。现在两个 id 都登记了，变体在各条通道上都显示为 `WSL · PTC mode（PTC 模式）`，与其余三个已发布模式一致。
 - `dsh.compatibility.dshReleases` 增加 `0.1.7-rc.1`。声明通道需要的两个模块（`@deepseek-ai/cordis-plugin-include`、`js-yaml`）在调用时动态解析，并声明为**可选**同伴依赖：万一某个版本没有它们，只让一个变体失败，而不是让整个插件无法加载。
 
 ### 0.7.2 — 2026-09-21

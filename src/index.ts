@@ -50,10 +50,18 @@ export const DEFAULT_ROUTE = '/wsl-workspace/api'
  * preset.yml text verbatim, so the plugin writes one bilingual string so
  * both locales can identify each variant. Custom presets keep their own
  * name.
+ *
+ * This table is consulted before anything the release publishes, so every id
+ * the mode has ever carried needs an entry. `code` was the id up to
+ * `0.1.0-rc.8` and `ptc` is the id from `0.1.1` on; without the `ptc` entry the
+ * lookup returned undefined and the variant fell through to the release's own
+ * display name — which `0.1.7` does not publish at all, leaving the mode named
+ * `WSL · ptc` with the generic description `WSL execution world for ptc: …`.
  */
 const MODE_DISPLAY_LABELS: Readonly<Record<string, { en: string; zh: string }>> = {
   standard: { en: 'Standard mode', zh: '标准模式' },
   code: { en: 'Code mode', zh: 'PTC 模式' },
+  ptc: { en: 'PTC mode', zh: 'PTC 模式' },
   minimal: { en: 'Minimal mode', zh: '极简模式' },
   cordis: { en: 'Creator mode', zh: '创造模式' },
 }

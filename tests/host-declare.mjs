@@ -94,8 +94,18 @@ const DATA_SRC = `- id: persona
   name: '@deepseek-ai/dsh-tool-fs'
 `
 
+const PTC_SRC = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a PTC agent.
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+`
+
 const sources = {
   standard: { name: 'Standard mode', order: 1, text: STANDARD_SRC },
+  ptc: { name: 'PTC 模式', order: 2, text: PTC_SRC },
   minimal: { name: '极简模式', order: 3, text: MINIMAL_SRC },
   data: { name: 'Data mode', order: 8, text: DATA_SRC },
 }
@@ -160,17 +170,22 @@ while (registered.length < Object.keys(sources).length && Date.now() < deadline)
 assert(registered.length === Object.keys(sources).length, 'one declaration per healthy source')
 
 const byId = new Map(registered.map(definition => [definition.id, definition]))
-assert([...byId.keys()].sort().join(',') === 'wsl-data,wsl-minimal,wsl-standard', 'variant ids derive from the source ids')
+assert([...byId.keys()].sort().join(',') === 'wsl-data,wsl-minimal,wsl-ptc,wsl-standard', 'variant ids derive from the source ids')
 assert(!byId.has('wsl-already'), 'a source that is already a variant is skipped')
 assert(byId.size === registered.length, 'no source is registered twice')
 
 // ── display metadata now comes from the roster face, not a preset.yml ───────
 assert(byId.get('wsl-standard').name === 'WSL · Standard mode（标准模式）', 'shipped modes get bilingual display names')
+assert(byId.get('wsl-ptc').name === 'WSL · PTC mode（PTC 模式）',
+  'the `ptc` id gets a shipped label, not its bare id (0.1.7 publishes no display name to fall back on)')
 assert(byId.get('wsl-minimal').name === 'WSL · Minimal mode（极简模式）', 'the shipped label wins over the published name')
 assert(byId.get('wsl-data').name === 'WSL · Data mode', 'a custom preset keeps the display name it published')
-assert(byId.get('wsl-standard').order === 1 && byId.get('wsl-minimal').order === 3 && byId.get('wsl-data').order === 8,
+assert(byId.get('wsl-standard').order === 1 && byId.get('wsl-ptc').order === 2
+  && byId.get('wsl-minimal').order === 3 && byId.get('wsl-data').order === 8,
   'each variant inherits the source roster order')
 assert(byId.get('wsl-standard').description.includes('WSL execution world for Standard mode（标准模式）'), 'the description is bilingual')
+assert(byId.get('wsl-ptc').description.includes('WSL execution world for PTC mode（PTC 模式）'),
+  'a labelled mode gets a labelled description instead of its bare id')
 assert(!existsSync(join(home, '.agent-presets', 'wsl-standard', 'preset.yml')), 'no preset.yml is written on this channel')
 
 // ── the declaration is an importable entry list ────────────────────────────
@@ -242,7 +257,7 @@ assert(!existsSync(join(home, '.agent-presets', 'wsl')), 'the legacy standalone 
 // every declaration it published instead of leaving orphans in the roster.
 assert(disposers.length >= 1, 'apply installs effect disposers')
 for (const dispose of disposers) dispose()
-assert(disposed.sort().join(',') === 'wsl-data,wsl-minimal,wsl-standard', 'disposing the plugin retires every declaration')
+assert(disposed.sort().join(',') === 'wsl-data,wsl-minimal,wsl-ptc,wsl-standard', 'disposing the plugin retires every declaration')
 
 rmSync(home, { recursive: true, force: true })
 console.log('HOST DECLARE PASSED')
