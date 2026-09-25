@@ -43,6 +43,34 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.7.3 — 2026-09-23
+
+- **The plugin loads on DSH `0.1.7-rc.1` again, and its modes come back.** The
+  `0.1.7` line renamed the host preset face — `read()` became `readDocument()`, which
+  returns a document (`{agentPreset, content, name, description}`) instead of the
+  composition text, and `AgentPreset` lost its `path` — so the variant generator
+  threw `agentPresets.read is not a function` on every boot and no `wsl-*` mode
+  ever reached the picker. The roster face is now probed by capability and both
+  generations are served: `readDocument()` where it exists, `read()` behind it.
+- **A variant is a declaration row on that line.** `0.1.7` stopped scanning
+  `$DSH_HOME/.agent-presets/` — a preset there is a declarative
+  `@deepseek-ai/dsh-agent-preset` row, and the directory a variant used to be
+  written to is read by nothing at all. The generator now expands the composed
+  variant back into an entry list and publishes it through
+  `ctx.agentPresets.register()`; the plugin's effect owns the returned disposers, so
+  an unload or hot reload retires the variants instead of leaving orphans the next
+  apply could not replace (`Duplicate agent preset: wsl-<mode>`). Earlier releases
+  keep the directory channel, unchanged.
+- **The world's own providers are named as `file:` URLs on that channel.** A preset
+  mounted from a declaration is imported by the registry's entry tree, which —
+  unlike the boot-time Include — does not turn an absolute path into a `file:` URL.
+  Without the rewrite the provider rows never started, the audit reported each as
+  `never started`, and the whole variant was refused as unusable.
+- `dsh.compatibility.dshReleases` declares `0.1.7-rc.1`. The two modules the
+  declaration channel needs (`@deepseek-ai/cordis-plugin-include`, `js-yaml`) are
+  resolved at call time and declared as **optional** peers, so a release that lacks
+  them fails one variant rather than refusing to load the plugin.
+
 ### 0.7.2 — 2026-09-21
 
 - **The WSL skill catalog is no longer re-walked on the request path (issue #25).**

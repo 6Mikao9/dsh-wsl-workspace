@@ -1,15 +1,18 @@
 /**
  * Host half of dsh-wsl-workspace. Three responsibilities:
  *
- * 1. Materialize a `wsl-<mode>` variant for every healthy roster preset
- *    under `<dshHome>/.agent-presets/` (the roster's auto-scanned user
- *    root), so the WSL execution world — `shell-wsl` + `fs-wsl` behind one
- *    entry-local realm, with `tool-bash`/`tool-fs` consumers — composes with
- *    ANY mode instead of being a mode itself; the legacy standalone `wsl`
- *    preset directory and stale variants are removed on boot. The preset
- *    rows name THIS package's built lib files by absolute path, which the
- *    preset mount resolves to `file:` URLs without relying on bare specifier
- *    resolution from the preset's home directory.
+ * 1. Publish a `wsl-<mode>` variant for every healthy roster preset, so the
+ *    WSL execution world — `shell-wsl` + `fs-wsl` behind one entry-local
+ *    realm, with `tool-bash`/`tool-fs` consumers — composes with ANY mode
+ *    instead of being a mode itself. The channel follows the release:
+ *    `0.1.7-alpha.1+` stopped scanning any user preset root and builds its roster
+ *    from declarative `@deepseek-ai/dsh-agent-preset` rows, so there a variant
+ *    is a *declaration registered through `ctx.agentPresets`* — and only that
+ *    path rewrites the absolute provider specifiers below into `file:` URLs,
+ *    because a registered preset's entry tree does not translate them the way
+ *    the boot-time Include does; earlier releases still get a variant directory
+ *    under `<dshHome>/.agent-presets/`, whose legacy standalone `wsl` directory
+ *    and stale variants are removed on boot.
  *
  * 2. Serve the browser dialog's data route (`/wsl-workspace/api`):
  *    distribution discovery, one-level directory listing, path checks, and
@@ -26,8 +29,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { cpSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { dirname, isAbsolute, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
@@ -352,10 +355,149 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
   }
 }
 
-/** The `ctx.agentPresets` roster face this plugin consumes (optional service). */
+/** One roster entry as the `ctx.agentPresets` face reports it. */
+interface AgentPresetRosterEntry {
+  id: string
+  name?: string
+  description?: string
+  /** Roster position; `list()` sorts by it. */
+  order?: number
+  broken?: string
+  /** Legacy (≤ 0.1.6-alpha.2) only: the source preset's directory. */
+  path?: string
+}
+
+/** One preset's declared composition, as the declaration channel reports it. */
+interface AgentPresetDocument {
+  agentPreset: string
+  /** The declared child plugin list as entry-list YAML, `!!js` expressions included. */
+  content: string
+  name?: string
+  description?: string
+}
+
+/** A declaration this plugin publishes; mirrors the Host's `PresetDefinition`. */
+interface PresetDeclaration {
+  id: string
+  name?: string
+  description?: string
+  order?: number
+  plugins: readonly unknown[]
+}
+
+/**
+ * The `ctx.agentPresets` roster face this plugin consumes (optional service).
+ *
+ * Two generations sit behind this one shape, so both are probed by capability
+ * rather than by version:
+ *
+ *  - `0.1.0-rc.7 … 0.1.6-alpha.2`: `list()` reports each preset's directory in
+ *    `path`, and `read(id)` returns the composition text. A variant is a
+ *    *directory* under the roster's scanned user root (`$DSH_HOME/.agent-presets/`).
+ *  - `0.1.7-alpha.1+`: `read()` is renamed `readDocument()` and returns a document
+ *    instead of a bare string, `AgentPreset.path` is gone, and **nothing scans
+ *    the user root any more** — the roster is built from declarative
+ *    `@deepseek-ai/dsh-agent-preset` rows carried by bundle patches. A variant
+ *    is therefore a declaration row published through `register()`.
+ */
 interface AgentPresetsService {
-  list(): Promise<{ id: string; broken?: string; path: string }[]>
-  read(id: string): Promise<string>
+  list(): Promise<AgentPresetRosterEntry[]>
+  /** Legacy (≤ 0.1.6-alpha.2): the source composition text. */
+  read?(id: string): Promise<string>
+  /** 0.1.7-alpha.1+: the declared composition beside its published metadata. */
+  readDocument?(id: string): Promise<AgentPresetDocument>
+  /** 0.1.7-alpha.1+: publish a declaration; the returned disposer retires it. */
+  register?(definition: PresetDeclaration): Promise<() => Promise<void>>
+}
+
+/**
+ * Read one preset's declared composition across both roster generations.
+ * @param agentPresets - the roster face.
+ * @param preset - the roster entry to read.
+ * @returns the composition text, plus the display name when the face publishes it.
+ */
+async function readPresetComposition(
+  agentPresets: AgentPresetsService,
+  preset: AgentPresetRosterEntry,
+): Promise<{ content: string; name?: string }> {
+  if (typeof agentPresets.readDocument === 'function') {
+    const document = await agentPresets.readDocument(preset.id)
+    return document.name === undefined
+      ? { content: document.content }
+      : { content: document.content, name: document.name }
+  }
+  if (typeof agentPresets.read === 'function') return { content: await agentPresets.read(preset.id) }
+  throw new Error(
+    `agentPresets: this DSH release exposes neither readDocument() nor read() (preset "${preset.id}")`,
+  )
+}
+
+/**
+ * Parse one transformed composition back into declaration rows.
+ *
+ * The composition is the entry-list YAML dialect, whose `!!js` scalars are
+ * expression nodes the Loader evaluates when it activates the row.
+ * `@deepseek-ai/cordis-plugin-include` exports `entryListSchema` precisely so
+ * config tooling can round-trip that dialect, and it is the same schema the
+ * harness parses preset patches with. Parsing the text back is what lets the
+ * (text-level) WSL transform keep working unchanged now that a variant is a
+ * declaration row instead of a directory of YAML.
+ *
+ * Both modules are resolved at call time rather than at module load: they are
+ * Host-provided (`dsh` depends on `cordis-plugin-include`, which depends on
+ * `js-yaml`), and a release that ever drops them must fail this one variant
+ * rather than refuse to load the whole plugin.
+ * @param content - the variant composition text.
+ * @returns the declaration's plugin rows.
+ */
+async function parseVariantComposition(content: string): Promise<unknown[]> {
+  const includeSpecifier = '@deepseek-ai/cordis-plugin-include'
+  const yamlSpecifier = 'js-yaml'
+  const [include, yamlModule] = await Promise.all([
+    import(includeSpecifier) as Promise<{ entryListSchema: unknown }>,
+    import(yamlSpecifier) as Promise<{
+      load?(source: string, options: { schema: unknown }): unknown
+      default?: { load(source: string, options: { schema: unknown }): unknown }
+    }>,
+  ])
+  const load = yamlModule.load ?? yamlModule.default?.load
+  if (typeof load !== 'function') throw new Error('js-yaml: no load() export')
+  const rows = load(content, { schema: include.entryListSchema })
+  if (!Array.isArray(rows)) throw new Error('the transformed composition did not parse as an entry list')
+  return toImportableSpecifiers(rows)
+}
+
+/**
+ * Rewrite every absolute local module specifier as a `file:` URL.
+ *
+ * The generated world names THIS package's built providers (`shell.js`,
+ * `fs.js`, …) by absolute path. That is what the directory mechanism needed:
+ * those rows sat in an Include-backed tree, and the boot-time Include
+ * translates an absolute path into a `file:` URL before importing it. A preset
+ * mounted from a *declaration* is loaded by the registry's own entry tree,
+ * which has no such translation — handing it `C:/…/lib/shell.js` leaves those
+ * rows without a fiber, the audit reports them "never started", and the whole
+ * variant is refused. Rewriting the specifier is therefore part of adapting to
+ * the declaration mechanism, not a change to what the variant mounts.
+ *
+ * Only `name` is touched: config values (the relay path handed to the PTY
+ * backend, the interpreter path in `shellPath`) must stay native filesystem
+ * paths. Group rows carry their children in a `config` array, so those are
+ * walked too.
+ * @param rows - the parsed declaration rows.
+ * @returns the same rows with their module specifiers made importable.
+ */
+function toImportableSpecifiers(rows: unknown[]): unknown[] {
+  const rewrite = (row: unknown): unknown => {
+    if (row === null || typeof row !== 'object') return row
+    const entry = row as { name?: unknown; config?: unknown }
+    if (typeof entry.name === 'string' && isAbsolute(entry.name)) {
+      entry.name = pathToFileURL(entry.name).href
+    }
+    if (Array.isArray(entry.config)) entry.config = entry.config.map(rewrite)
+    return row
+  }
+  return rows.map(rewrite)
 }
 
 /**
@@ -469,6 +611,7 @@ async function materializeVariants(
   dshHome: string,
   paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string },
   persistentShell: boolean,
+  track: (dispose: unknown) => void,
 ): Promise<void> {
   const presets = await agentPresets.list()
   const userRoot = join(dshHome, '.agent-presets')
@@ -477,12 +620,33 @@ async function materializeVariants(
     if (preset.broken !== undefined) continue
     if (isWslVariantId(preset.id)) continue
     const variantId = variantIdFor(preset.id)
-    const source = await agentPresets.read(preset.id)
-    const transformed = transformPresetForWsl(source, paths.shell, paths.fs, persistentShell ? {
+    const composition = await readPresetComposition(agentPresets, preset)
+    const transformed = transformPresetForWsl(composition.content, paths.shell, paths.fs, persistentShell ? {
       relayPath: paths.relay,
       nodePath: paths.node,
       sandboxPath: paths.sandbox,
     } : undefined, paths.search, paths.jobs)
+    // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
+    // already the exact entry-list dialect the declaration wants, so the only
+    // conversion is YAML back to rows); earlier releases still discover one as
+    // a directory under the roster's scanned user root.
+    if (typeof agentPresets.register === 'function') {
+      const plugins = await parseVariantComposition(transformed)
+      // A shipped mode keeps its bilingual label; a custom preset keeps the
+      // display name it published, falling back to its id.
+      const declaration: PresetDeclaration = {
+        id: variantId,
+        name: variantName(preset.id, composition.name ?? preset.name ?? preset.id),
+        description: variantDescription(preset.id),
+        ...(preset.order === undefined ? {} : { order: preset.order }),
+        plugins,
+      }
+      track(await agentPresets.register(declaration))
+      continue
+    }
+    if (preset.path === undefined) {
+      throw new Error(`agentPresets: roster entry "${preset.id}" carries no path on this release`)
+    }
     const dir = join(userRoot, variantId)
     const staging = `${dir}.staging`
     rmSync(staging, { recursive: true, force: true })
@@ -524,15 +688,20 @@ async function materializeVariants(
     publishVariant(staging, dir)
     generated.add(variantId)
   }
-  for (const entry of readdirSync(userRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    if (entry.name === 'wsl') {
-      // The legacy standalone WSL mode: folded into the variants above.
+  // Clean up the retired directory mechanism. `generated` holds the
+  // directories the directory path wrote on THIS boot; from 0.1.7-alpha.1 on it is
+  // always empty, because a variant is a declaration row and the roster no
+  // longer scans this root at all — so every `wsl*` entry left here (the legacy
+  // standalone `wsl` mode included) is inert leftover, and a `wsl-<mode>/`
+  // beside a registered `wsl-<mode>` declaration would only mislead. An absent
+  // root (a fresh install that never used the old mechanism) is not a failure.
+  if (existsSync(userRoot)) {
+    for (const entry of readdirSync(userRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      if (!/^wsl(-[a-z0-9-]+)?$/.test(entry.name)) continue
+      if (generated.has(entry.name)) continue
       rmSync(join(userRoot, entry.name), { recursive: true, force: true })
-      continue
     }
-    if (!/^wsl-[a-z0-9-]+$/.test(entry.name)) continue
-    if (!generated.has(entry.name)) rmSync(join(userRoot, entry.name), { recursive: true, force: true })
   }
 }
 
@@ -576,6 +745,21 @@ export function apply(ctx: Context, config: Config): void {
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
   if (agentPresets !== undefined) {
     ctx.effect(() => {
+      // On 0.1.7-alpha.1+ the variants are declaration rows in Host state rather
+      // than files, so the effect owns their disposers: a plugin unload or hot
+      // reload retires them instead of leaving orphans the next apply could not
+      // replace (`Duplicate agent preset: wsl-<mode>`).
+      let stopped = false
+      const disposers: (() => Promise<void>)[] = []
+      const track = (dispose: unknown): void => {
+        if (typeof dispose !== 'function') return
+        const retire = dispose as () => Promise<void>
+        if (stopped) {
+          void Promise.resolve(retire()).catch(() => {})
+          return
+        }
+        disposers.push(retire)
+      }
       void (async () => {
         const persistentShell = await supportsPersistentShell(ctx)
         await materializeVariants(agentPresets, dshHome, {
@@ -586,14 +770,19 @@ export function apply(ctx: Context, config: Config): void {
           sandbox: sandboxPath,
           search: searchPath,
           jobs: jobsPath,
-        }, persistentShell)
+        }, persistentShell, track)
       })().catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or
         // unreadable source preset must not take the whole plugin down, but
         // the failure is surfaced loudly rather than hidden.
         console.error(`dsh-wsl-workspace: WSL preset-variant generation failed: ${messageOf(error)}`)
       })
-      return () => {}
+      return () => {
+        stopped = true
+        for (const retire of disposers.splice(0, disposers.length)) {
+          void Promise.resolve(retire()).catch(() => {})
+        }
+      }
     }, 'dsh-wsl-workspace: WSL preset variants')
   }
 

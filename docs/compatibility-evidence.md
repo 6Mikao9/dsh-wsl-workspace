@@ -937,5 +937,145 @@ exact workspace path form (a `\\wsl.localhost\…` or `\\wsl$\…` path reaches 
 provider, a plain SMB share never does — `parseWslUnc` returns null and `list()`
 answers `[]` before any I/O) and whether the delay is per turn or per session.
 
+## The preset channel moved from directories to declarations (2026-09-23, plugin 0.7.3, DSH 0.1.7-rc.1)
+
+The first upstream change that stopped the plugin **loading** rather than breaking a
+session. Its own load path is guarded (one unreadable source preset must not take the
+plugin down), so the failure was one log line and a silently empty mode roster.
+
+**What the host logged** (`0.1.7-rc.1`, at every boot):
+
+```
+dsh-wsl-workspace: WSL preset-variant generation failed: agentPresets.read is not a function
+```
+
+`$DSH_HOME/.agent-presets/` kept only the user's own entries; every `wsl-*` mode the
+picker used to offer was gone, and nothing else in the boot log said why.
+
+**Why, in four parts.** The first three are the host API moving; the fourth only
+becomes visible once the first three are adapted.
+
+1. **`read()` became `readDocument()`.** The host preset service is now
+   `@deepseek-ai/dsh-agent-preset-registry` (the key is still `agentPresets`). It
+   exposes `list()`, `resolve()`, `readDocument()`, `select()`, `register()` — and no
+   `read()`. `readDocument(id)` returns an `AgentPresetDocument`
+   (`{agentPreset, content, name, description}`) rather than the composition text.
+   Note the Remote face kept the *method* name `read` (`@Remote('read')
+   readDocument(...)`), so the browser half is unaffected; this is a host-side rename.
+2. **`AgentPreset` no longer carries `path`.** Its shape is now
+   `{id, name?, description?, order?, broken?}`. The generator used `path` for two
+   things — mirroring the source preset directory and reading its `preset.yml` for
+   `name`/`order` — and both are gone. Display metadata now comes from the roster face
+   itself (`name`, `order` on the entry; `readDocument().name`).
+3. **The directory root is no longer scanned at all.** `0.1.7-rc.1`'s own skill says it
+   outright: *"Before declaration rows, a user preset was a directory
+   `$DSH_HOME/.agent-presets/<id>/` holding `preset.yml` … and `agent.cordis.yml` …
+   **Nothing reads that directory any more.**"* Shipped presets moved to
+   `dsh-web-app/presets/*.patch.yml`, each declaring one
+   `@deepseek-ai/dsh-agent-preset` row with `config: {id, plugins: […], name?,
+   description?, order?}`. A variant therefore has to be **registered** — the API for
+   that is `ctx.agentPresets.register(definition)`, which returns a disposer.
+   The boundary is exact in the published packages: `@deepseek-ai/dsh-agent-preset` and
+   `@deepseek-ai/dsh-agent-preset-registry` first ship in `0.1.7-alpha.1`, and the old
+   plural `@deepseek-ai/dsh-agent-presets` ends at `0.1.6-alpha.2`. The release verified
+   here is `0.1.7-rc.1`; `0.1.7-alpha.1`/`alpha.2` carry the same shape but are not
+   declared, because they have not been run through the matrix.
+4. **A registered declaration's rows are imported by a tree that does not resolve
+   absolute paths.** Only the boot-time root Include rewrites an absolute specifier to
+   a `file:` URL before importing it (`dsh-app-boot/lib/index.js`, `class
+   HostResolvedRootInclude extends Include { import(name) { const specifier =
+   isAbsolute(name) ? pathToFileURL(name).href : name … } }`). The directory channel
+   inherited that because its rows lived in an Include-backed tree; a preset mounted
+   through `register()` is loaded by the registry's own `PresetTree`, whose import is
+   the plain one. Handing it `C:/…/lib/shell.js` leaves every provider row without a
+   fiber, `auditRows` reports it as `never started`, `mountPreset` throws, and
+   `activate()` records the whole variant as broken. Observed on the first working
+   declaration build:
+
+   ```
+   wsl-standard: "shell-wsl (…/lib/shell.js): never started
+                  fs-wsl (…/lib/fs.js): never started
+                  sandbox-wsl (…/lib/wsl-sandbox.js): never started
+                  search-wsl (…/lib/wsl-search.js): never started
+                  jobs-wsl (…/lib/wsl-jobs.js): never started"
+   ```
+
+**Fix.** `src/index.ts`: the roster face is probed by capability
+(`readDocument`/`register` present ⇒ declaration channel; otherwise `read` + `path` ⇒
+the directory channel, unchanged). On the declaration channel the plugin expands the
+composed variant back into an entry list with the very schema the harness uses for that
+dialect (`@deepseek-ai/cordis-plugin-include`'s exported `entryListSchema`, whose
+docblock says it exists so config tooling can round-trip the format), rewrites every
+absolute `name` to a `file:` URL while leaving config values (the relay path, the
+interpreter path) native, and publishes the declaration. The plugin's `ctx.effect`
+collects the returned disposers, so an unload or hot reload retires the variants rather
+than leaving orphans the next apply cannot replace. The retired root is swept: nothing
+reads it any more, so a leftover `wsl-<mode>/` beside a registered `wsl-<mode>`
+declaration would only mislead. `transformPresetForWsl` (the text-level transform) is
+untouched — the entry-list text is the same in both channels, so only the channel that
+carries it changed.
+
+**Verification.**
+
+- **Isolated case, `@deepseek-ai/dsh@0.1.7-rc.1`** (own npm prefix, own `DSH_HOME`, own
+  port; never the live installation) — the procedure of
+  `scripts/verify-dsh-compat.sh`, run with the local tarball because the published
+  0.7.2 predates this change:
+  - **install** — `dsh plugin --profile web add <tarball>` exit 0, and
+    `$DSH_HOME/profiles/web/package.json` lists the plugin.
+  - **start** — boot is clean (`stderr` carried only the disposable roster probe below),
+    the server listens, and `POST /wsl-workspace/api {"method":"listDistros"}` answers
+    **200** with `{"ok":true,"value":["Ubuntu-24.04","docker-desktop"]}`.
+  - **preset roster in that isolated case** (disposable probe added to the *installed
+    copy only*, since the runner has no roster probe): four variants registered
+    (`wsl-standard` 16 rows, `wsl-ptc` 17, `wsl-minimal` 2, `wsl-cordis` 17) and the
+    roster reads
+    `standard(1) / wsl-standard(1) / ptc(2) / wsl-ptc(2) / minimal(3) / wsl-minimal(3) / cordis(4) / wsl-cordis(4)`
+    — every `wsl-*` entry `broken: null`, and each inherits its source's roster order.
+  - **uninstall** — `remove` exit 0, the profile manifest no longer lists the plugin,
+    and after a re-boot the plugin route answers **405** (not 200), which is the
+    script's clean-uninstall criterion.
+- **Live profile on the same release** — the operator's own `web` profile, with the
+  patched plugin: identical roster (four healthy variants, same order), clean boot, and
+  the route answering 200 with the same two distributions.
+- **`tests/host-declare.mjs`** (new, 50 assertions) — the declaration channel against a
+  fake roster face: the capability switch, one declaration per healthy source (broken
+  sources and existing `wsl-*` presets skipped), metadata taken from the roster rather
+  than a `preset.yml`, the row list being an importable entry list (world group and its
+  isolating realm, a `!!js` disabled expression that must round-trip as an expression
+  node, the relay/interpreter paths that must *not* become `file:` URLs), the world's
+  providers named as `file:` URLs pointing at real built files, no write to the retired
+  root plus its leftovers removed, and disposal retiring every declaration.
+- **Unchanged channels** — `tests/host-materialize.mjs` (the directory channel, 73
+  assertions) still passes untouched, confirming the older releases' path is intact.
+- **Gates** — unit suite 139/139, `tests/client-lifecycle.test.mjs` 13/13,
+  `scripts/verify-lib.mjs` OK (11 entries), `scripts/check-rank-parity.mjs` OK, and
+  `tsc --noEmit` at exactly its previous count (232 errors, all pre-existing in the
+  harness's own declarations and the test files; the only moving lines are the two
+  `@deepseek-ai/*` module-resolution errors that shift with the longer docblock).
+- **Plain-npm installability** — the gate's question is whether plain npm can install
+  this tarball and whether it pulls the new peers. `npm install
+  dsh-wsl-workspace-0.7.3.tgz` into an empty directory: exit 0, version 0.7.3 on disk,
+  and **neither** `@deepseek-ai/cordis-plugin-include` nor `js-yaml` installed (both are
+  optional peers), so the 0.7.1 `E404` class cannot come back.
+  `scripts/verify-install.mjs` performs that same install as the published-artifact gate
+  and runs in `prepublishOnly`.
+
+**Note on the committed `lib/`.** The rebuild that ships with this change moves every
+chunk hash and reflows comments in files this change does not touch, because `tsdown`
+depends on `rolldown: "latest"` and neither lockfile is committed (`.gitignore` excludes
+`package-lock.json` and `pnpm-lock.yaml`). A build of the **unmodified** tree churns the
+same way, so the churn is the toolchain's, not this change's; `lib/index.js` is the only
+entry whose *code* differs.
+
+**Legacy directory presets: the host's migration.** `$DSH_HOME/.agent-presets/` stops being
+read for *every* legacy user preset, not just the variants this plugin generated — a
+hand-written preset left there is now invisible to the roster, and so gets no `wsl-<mode>`
+variant. That migration belongs to the host, whose own skill documents the route: turn the
+legacy directory into a bundle declaration (`preset.yml` → `name`/`description`/`order`,
+`agent.cordis.yml` → `plugins`), install it, then delete the directory. This plugin only
+sweeps the `wsl*` entries in that root, which its own directory channel wrote.
+
+
 
 
