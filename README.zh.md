@@ -44,6 +44,14 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 英文完整历史见 [README.md](README.md)，本节为对应中文记录（0.4.3 及更早为摘要）。
 
+### 0.7.4 — 2026-09-28
+
+- **在 DSH Desktop 上对话框又能用了（issue #35、#36）**。Desktop 宿主会在插件加载**之前**包装 `child_process`：它装上普通的 `exec`/`execFile` 包装函数，再用 `syncBuiltinESMExports()` 把它们回写到内建模块。这份 `execFile` 上没有 `util.promisify.custom`，于是 `promisify(execFile)` 退回通用实现——它只用回调的**第一个**参数 resolve，也就是 stdout 字符串——结果每次调用拿到的 `result.stdout` 都是 `undefined`。发行版查询去读 `.stdout`，抛出 `Cannot read properties of undefined (reading 'includes')`，前端把它吞掉、渲染出一个空的发行版列表：对话框能打开、下拉框里却一个发行版都没有，「创建并打开」走不完；而同一台机器上 `wsl.exe -l -q` 在终端里列得好好的。三处调用现在都改用 `execFile` 的**回调**形式，任何包装都改不了这个签名。
+- **`wsl.exe` 的查找改成候选列表**。先试 `PATH` 上的 `wsl.exe`，再试绝对路径 `%SystemRoot%\System32\wsl.exe`；查找失败时报出它试过的每一个候选以及各自的原因，而不是从解码器里冒出一个类型错误。
+- 新增 `tests/exec-shape.mjs`：它复刻 Desktop 的包装方式（普通包装 + `syncBuiltinESMExports()`），分别带与不带 `--import` 起一个探针进程，断言被包装的形态确实是坏的、新助手是对的，并把真实的 `listDistros`/`defaultDistro`/`resolveLinuxSymlink` 在两种形态下各跑一遍。它注册为 `scripts/compatibility/Run-Checks.ps1` 里的 `exec-shape` 检查，避免以后有人又把它改回 promisify 写法。
+- `dsh.compatibility.dshReleases` 也声明了 `0.1.7-rc.2`，这份构建声明的版本从九个变成十个。
+- **验证**：十个已声明版本各跑十五项 harness 检查（一律 13/15，两项失败是既有基线：`typecheck`，以及需要**运行中前端**的 `host-api`——对着真实实例单独跑是 12/12）；十个版本各跑一遍 runbook 的六项前端验收（发行版下拉、创建并打开、写、读、一次性 bash、持久 bash、skills），`web.err` 全为 0 字节，文件在 Linux 侧独立复核。Desktop 包装的复现过程、pack 一致性哈希与纯 npm 安装门禁都记在 `docs/compatibility-evidence.md`。
+
 ### 0.7.3 — 2026-09-23
 
 - **插件在 DSH `0.1.7-rc.1` 上重新可加载，模式也回来了**。`0.1.7` 这条线改了宿主预设接口——`read()` 变为 `readDocument()`，返回的是文档（`{agentPreset, content, name, description}`）而不是组合文本，且 `AgentPreset` 不再有 `path`——于是变体生成器每次启动都抛 `agentPresets.read is not a function`，选择器里一个 `wsl-*` 模式都不会出现。现在改按**能力探测** roster 接口，两代都服务：有 `readDocument()` 就用它，否则回退 `read()`。

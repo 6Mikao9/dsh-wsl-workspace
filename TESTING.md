@@ -108,11 +108,42 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
 After installing the plugin into a profile and restarting `dsh web`:
 
 1. The **W** button appears beside Settings at the sidebar foot.
-2. Open "Add WSL workspace…", browse to a directory (e.g. `/home`), and click "Create & open" — the workspace must be created without a "path does not exist" error.
+2. Open "Add WSL workspace…" and check the **distribution picker really lists the
+   distributions of this machine**. An empty picker, or one stuck on "Loading…", is a
+   failure: the frontend swallows a rejected `listDistros` and renders the dialog anyway
+   (that is exactly how issues #35/#36 looked — the dialog opened, the picker was empty,
+   and `wsl.exe -l -q` worked fine in a terminal). Browse to a directory (e.g. `/home`)
+   and click "Create & open" — the workspace must be created without a "path does not
+   exist" error.
 3. In the new session, the mode picker shows the WSL variant (e.g. `WSL · Standard mode（标准模式）`); the bash tool runs inside the distribution (`pwd` returns a Linux path, `uname -s` returns `Linux`).
 4. `read`/`write`/`edit` operate on WSL files; Windows files stay reachable under `/mnt/<drive>`.
 5. Switch modes (Standard / PTC / Minimal / Creative) — each lands on its WSL variant and the tool catalog matches the mode.
 6. The plugin API responds correctly: `POST /wsl-workspace/api` with `{"method":"check","params":{"distro":"<distro>","path":"/home"}}` returns `{"ok":true,"value":{"exists":true,"isDirectory":true}}`.
+7. **Open the WSL workspace from the frontend** — the workspace must be visible in the
+   sidebar, clicking it must enter a session, and a **page reload (F5) must still open
+   it**. `POST /wsl-workspace/api` with `{"method":"listWorkspaces","params":{}}` must
+   report the `\\wsl.localhost\<distro>\…` path, and neither the console nor `web.err` may
+   contain a `wsl-workspace:` error. This is the only check that covers the client half
+   end to end; a script-level harness cannot see it.
+
+### The compatibility pass on every declared release
+
+Whenever compatibility testing is requested, each release under test must cover **all six
+items**, not just the harness checks: (1) the dialog lists the distributions and
+"Create & open" produces a session, (2) a file-tool write, (3) a file-tool read,
+(4) `bash` one-shot *and* its persistence across two separate calls (record which of the
+two it is — `0.1.0-rc.7` has no Windows process inspector and keeps a one-shot shell),
+(5) `skills` loading a fixture skill and reporting its token, and (6) the frontend
+open/reload check in step 7 above. Re-read the written file independently on the Linux
+side (`wsl.exe … cat`), and keep `web.err` at 0 bytes. The version *count* is conditional
+(spread it out before a release or when asked); the six items are not.
+
+Because issue #35/#36 only reproduce under the Desktop host, a release that touches the
+`wsl.exe` call path should also be exercised with the wrapper simulated: load
+`.test-runs/child-process-hide.mjs` (plain `exec`/`execFile` wrappers plus
+`syncBuiltinESMExports()`, the same shape as the Desktop hook) into a real `dsh web` via
+`NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`, and compare the published
+release against the fixed build through `POST /wsl-workspace/api`.
 
 ## Release checklist
 
@@ -127,6 +158,8 @@ After installing the plugin into a profile and restarting `dsh web`:
 9. `npm run verify:install` — packs the tree and installs the tarball with **plain npm** into a scratch directory, with no pnpm and no host packages present. This is the gate that would have caught 0.7.0, whose `peerDependencies` made npm auto-install an unpublished package (`E404 @deepseek-ai/dsh-retention`): every other check and every real session goes through `dsh plugin add` (pnpm), which only *warns* about unmet peers and installs anyway. `prepublishOnly` runs it, so `npm publish` now refuses to ship a package that npm users cannot install.
 10. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
 11. For a release, install the *published* version by name into one isolated case per declared release and confirm each boots (the launcher only reports ready once the plugin's API route answers) — the check that proves the artifact on the registry, not just the local tree.
+12. For a release, drive the **six-item frontend pass** on every declared release (see "The compatibility pass on every declared release" above), and — when the `wsl.exe` call path changed — the Desktop-wrapper comparison as well.
+13. Confirm the artifact identity before publishing: the tarball from the release path, a fresh `npm pack`, and `npm pack --ignore-scripts` over the committed `lib/` must hash identically, and `npm run verify:install` must print `verify-install: OK`.
 
 ### The multi-release check harness
 
@@ -143,6 +176,11 @@ node .test-runs/harness.mjs <runId> --checks 0.1.5-rc.2      # re-check an exist
 Four checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
 `search-real`); they build their own fixtures under `/tmp/dsh-wsl-compat` (override
 with `WSL_COMPAT_ROOT`, and the distribution with `WSL_COMPAT_DISTRO`) and remove
-them again. `host-api` needs a running `dsh web` for the case, so it is expected to
-fail in a sweep. The `typecheck` baseline is two pre-existing errors from the
-harness's own type declarations.
+them again. `exec-shape` reproduces the DSH Desktop `child_process` wrapper (plain
+`exec`/`execFile` wrappers + `syncBuiltinESMExports()`, which strips
+`util.promisify.custom`) in a probe process and asserts both the wrapped and the plain
+shapes produce a correct `{ stdout, stderr }`. `host-api` needs a running `dsh web` for
+the case, so it is expected to fail in a sweep — point it at a live instance's
+`runtime.json` instead (an absolute path; it is 12/12 there). The `typecheck` check exits
+non-zero because of the pre-existing `tsc --noEmit` errors in this tree; the gate is that
+the count does not grow.

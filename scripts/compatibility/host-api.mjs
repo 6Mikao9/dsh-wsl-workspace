@@ -5,7 +5,7 @@ const distro=process.env.WSL_COMPAT_DISTRO || 'Ubuntu';
 const linux=process.env.WSL_COMPAT_ROOT || '/tmp/dsh-wsl-compat';
 const unc=`\\\\wsl.localhost\\${distro}${linux.replaceAll('/','\\')}`;
 await fs.mkdir(path.join(unc,'.agents'),{recursive:true});
-const windows=path.join(path.dirname(process.argv[2]),'windows-fixture');
+const windows=path.resolve(path.join(path.dirname(process.argv[2]),'windows-fixture'));
 await fs.mkdir(windows,{recursive:true});
 const drive=/^([A-Za-z]):[\\/](.*)$/.exec(path.resolve(windows));
 if(!drive)throw new Error('The Windows fixture must be on a drive');

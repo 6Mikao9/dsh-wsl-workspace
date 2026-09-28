@@ -1,0 +1,28 @@
+import { Context } from '@deepseek-ai/cordis';
+import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local';
+import { WslShellExecutor } from '../lib/shell.js';
+import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const linux = (process.env.WSL_COMPAT_ROOT || "/tmp/dsh-wsl-compat") + "/space and ' quote";
+const unc = '\\\\wsl.localhost\\' + (process.env.WSL_COMPAT_DISTRO || 'Ubuntu') + linux.replaceAll('/', '\\');
+await fs.mkdir(unc, {recursive:true});
+const ctx = new Context();
+await ctx.plugin(LocalSubprocessRuntime);
+await ctx.plugin(WslShellExecutor, {distro:process.env.WSL_COMPAT_DISTRO || 'Ubuntu',graceMs:100,timeoutMs:10000});
+const run = request => ctx.shell.run(ctx.shell.resolve({workdir:unc,...request}));
+const quoted = await run({command:'pwd'});
+assert.equal(quoted.exitCode,0); assert.equal(quoted.stdout.text.trim(),linux);
+console.log('PASS quoted-space cwd');
+const user = await run({command:'id -un',dshEnv:{DSH_WSL_USER:process.env.WSL_COMPAT_USER || 'root'}});
+assert.equal(user.exitCode,0); assert.equal(user.stdout.text.trim(),process.env.WSL_COMPAT_USER || 'root');
+console.log('PASS explicit Linux user root');
+const timed = await run({command:'sleep 2',timeoutMs:150});
+assert.equal(timed.timedOut,true); assert.equal(timed.aborted,false);
+console.log('PASS foreground timeout');
+const abort = new AbortController();
+const pending = run({command:'sleep 2',signal:abort.signal});
+setTimeout(()=>abort.abort(),150);
+const cancelled=await pending;
+assert.equal(cancelled.aborted,true); assert.equal(cancelled.timedOut,false);
+console.log('PASS foreground cancellation');
+

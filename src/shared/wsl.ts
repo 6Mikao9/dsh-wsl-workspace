@@ -7,9 +7,7 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process'
-import { promisify } from 'node:util'
-
-const execFileAsync = promisify(execFile)
+import type { ExecFileOptions } from 'node:child_process'
 
 /** Executable timeout for the short discovery calls. */
 const DISCOVERY_TIMEOUT_MS = 10_000
@@ -21,13 +19,86 @@ function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
 }
 
+/** One `execFile` outcome: the two streams, as `encoding` asked for them. */
+export interface ExecFileResult {
+  stdout: Buffer | string
+  stderr: Buffer | string
+}
+
+/**
+ * Run `execFile` through its callback API and resolve `{ stdout, stderr }`.
+ *
+ * `util.promisify(execFile)` only resolves that object because `execFile`
+ * carries `util.promisify.custom`. A host that replaces
+ * `child_process.execFile` with a plain wrapper loses that metadata, and
+ * `promisify` then falls back to "resolve the first callback value" — which is
+ * stdout itself, so `result.stdout` is `undefined` (issue #35: DSH Desktop
+ * injects `windowsHide: true` that way, and `listDistros()` died with
+ * `Cannot read properties of undefined (reading 'includes')`).
+ *
+ * The callback form is what every such wrapper preserves, so this does not
+ * depend on how the host patched the module.
+ * @param file - the executable.
+ * @param args - its arguments.
+ * @param options - `execFile` options, including the requested encoding.
+ * @returns both streams; the caller narrows them by the encoding it asked for.
+ */
+export function execFileResult(
+  file: string,
+  args: readonly string[],
+  options: ExecFileOptions,
+): Promise<ExecFileResult> {
+  // `settle`/`fail` rather than `resolve`/`reject`, matching
+  // `src/host/wsl-search.ts`; `scripts/verify-lib.mjs` reads a bare
+  // `resolve(` call as an unbound `node:path` export.
+  return new Promise<ExecFileResult>((settle, fail) => {
+    execFile(file, [...args], options, (error, stdout, stderr) => {
+      if (error !== null && error !== undefined) {
+        fail(error)
+        return
+      }
+      settle({ stdout, stderr })
+    })
+  })
+}
+
+/** Read a captured stream as text, whichever way the encoding arrived. */
+export function textOf(stream: Buffer | string): string {
+  return typeof stream === 'string' ? stream : stream.toString('utf8')
+}
+
+/**
+ * The `wsl.exe` spellings to try, in order.
+ *
+ * The bare name relies on `PATH`. A host whose `PATH` omits `System32` can run
+ * every other part of this plugin — `listDir`/`check` go through the
+ * `\\wsl.localhost\…` share and never spawn anything — while `listDistros`
+ * reports that WSL is missing, which is what issue #36 describes. The
+ * absolute fallback removes that failure mode.
+ * @param wslPath - the configured executable.
+ * @returns the candidates, without duplicates.
+ */
+export function wslExecutableCandidates(wslPath: string): string[] {
+  if (wslPath !== 'wsl.exe') return [wslPath]
+  const root = process.env.SystemRoot ?? process.env.windir
+  if (root === undefined || root === '') return [wslPath]
+  const absolute = `${root.replace(/[\\/]+$/, '')}\\System32\\wsl.exe`
+  return [wslPath, absolute]
+}
+
 /**
  * Decode `wsl.exe -l -q` output. Newer builds emit UTF-8; most emit UTF-16LE
- * with NUL bytes interleaved — the NUL probe picks the right one.
+ * with NUL bytes interleaved — the NUL probe picks the right one. A host that
+ * handed back something other than the captured stream is reported as such
+ * instead of throwing `Cannot read properties of undefined`.
  * @param buffer - the raw captured output.
  * @returns the decoded text.
  */
-export function decodeWslOutput(buffer: Buffer): string {
+export function decodeWslOutput(buffer: Buffer | string): string {
+  if (typeof buffer === 'string') return buffer
+  if (!(buffer instanceof Uint8Array)) {
+    throw new Error(`wsl-workspace: expected captured output, got ${typeof buffer}`)
+  }
   return buffer.includes(0) ? buffer.toString('utf16le') : buffer.toString('utf8')
 }
 
@@ -37,12 +108,25 @@ export function decodeWslOutput(buffer: Buffer): string {
  * @returns distribution names, blank lines dropped.
  */
 export async function listDistros(wslPath = 'wsl.exe'): Promise<string[]> {
-  let stdout: Buffer
-  try {
-    const result = await execFileAsync(wslPath, ['-l', '-q'], { encoding: 'buffer', timeout: DISCOVERY_TIMEOUT_MS })
-    stdout = result.stdout as Buffer
-  } catch (error) {
-    throw new Error(`wsl-workspace: cannot list WSL distributions (${messageOf(error)}); is WSL installed?`)
+  const candidates = wslExecutableCandidates(wslPath)
+  let stdout: Buffer | string | undefined
+  let lastError: unknown
+  for (const candidate of candidates) {
+    try {
+      const result = await execFileResult(candidate, ['-l', '-q'], {
+        encoding: 'buffer',
+        timeout: DISCOVERY_TIMEOUT_MS,
+      })
+      stdout = result.stdout
+      break
+    } catch (error) {
+      lastError = error
+    }
+  }
+  if (stdout === undefined) {
+    throw new Error(
+      `wsl-workspace: cannot list WSL distributions (tried ${candidates.join(' and ')}: ${messageOf(lastError)}); is WSL installed?`,
+    )
   }
   return decodeWslOutput(stdout)
     .split(/\r?\n/)
@@ -58,15 +142,15 @@ export async function listDistros(wslPath = 'wsl.exe'): Promise<string[]> {
  */
 export async function defaultDistro(): Promise<string | undefined> {
   try {
-    const value = await execFileAsync('reg.exe', ['query', LXSS_KEY, '/v', 'DefaultDistribution'], {
+    const value = await execFileResult('reg.exe', ['query', LXSS_KEY, '/v', 'DefaultDistribution'], {
       timeout: DISCOVERY_TIMEOUT_MS,
     })
-    const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(value.stdout)?.[1]
+    const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(textOf(value.stdout))?.[1]
     if (guid === undefined) return undefined
-    const name = await execFileAsync('reg.exe', ['query', `${LXSS_KEY}\\${guid}`, '/v', 'DistributionName'], {
+    const name = await execFileResult('reg.exe', ['query', `${LXSS_KEY}\\${guid}`, '/v', 'DistributionName'], {
       timeout: DISCOVERY_TIMEOUT_MS,
     })
-    const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(name.stdout)?.[1]?.trim()
+    const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(textOf(name.stdout))?.[1]?.trim()
     return distro === undefined || distro === '' ? undefined : distro
   } catch {
     return undefined

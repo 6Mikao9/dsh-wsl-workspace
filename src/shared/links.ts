@@ -18,11 +18,8 @@
  * @module dsh-wsl-workspace/shared/links
  */
 
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execFileResult, textOf, wslExecutableCandidates } from './wsl.ts'
 import { isAbsoluteLinuxPath, joinUnc, parseWslUnc } from './paths.ts'
-
-const execFileAsync = promisify(execFile)
 
 /** How many `readlink` calls may be in flight at once. */
 export const LINK_RESOLVE_CONCURRENCY = 4
@@ -75,13 +72,25 @@ export async function resolveLinuxSymlink(
   // the path itself would come back mangled by that trim.
   if (unc === null || /[\r\n]/.test(unc.linuxPath)) return undefined
   try {
-    const output = await execFileAsync(
-      wslPath,
-      ['-d', unc.distro, '--', 'readlink', '-f', unc.linuxPath],
-      { encoding: 'utf8', timeout: LINK_RESOLVE_TIMEOUT_MS, windowsHide: true },
-    )
-    const target = String(output.stdout).trim()
-    return isAbsoluteLinuxPath(target) ? joinUnc(unc.distro, target) : undefined
+    // `execFileResult` is the callback form on purpose: a host that replaces
+    // `child_process.execFile` with a plain wrapper (DSH Desktop's
+    // `windowsHide` injection) strips the metadata `promisify` needs, and the
+    // promisified call would hand back stdout instead of `{ stdout, stderr }`
+    // — making this silently return `undefined` for every link (issue #35).
+    for (const candidate of wslExecutableCandidates(wslPath)) {
+      try {
+        const output = await execFileResult(
+          candidate,
+          ['-d', unc.distro, '--', 'readlink', '-f', unc.linuxPath],
+          { encoding: 'utf8', timeout: LINK_RESOLVE_TIMEOUT_MS, windowsHide: true },
+        )
+        const target = textOf(output.stdout).trim()
+        return isAbsoluteLinuxPath(target) ? joinUnc(unc.distro, target) : undefined
+      } catch {
+        // try the next spelling of wsl.exe
+      }
+    }
+    return undefined
   } catch {
     // Missing intermediate components, an unreadable link, a stopped
     // distribution or a missing `readlink` all land here.
