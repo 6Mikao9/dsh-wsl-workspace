@@ -1145,11 +1145,62 @@ run from the harness, which needs a *running* frontend (`manifest.port` is `unde
 there; pointed at the live instances it is 12/12 on every release). The first pass also
 caught a real one: the new help-panel news body had a 433/453-character bullet, over the
 320-character limit `tests/locales.test.ts` enforces, so the bullets were split. Pack
-identity was verified (the release tarball, a fresh `npm pack`, and
-`npm pack --ignore-scripts` over the committed `lib/` all hash to
+identity was verified at that point (the tarball, a fresh `npm pack`, and
+`npm pack --ignore-scripts` over the committed `lib/` all hashed to
 `C34F317F86526289A0EE47059CDD2912744312DBFEAE1CDA5FDB0183244D9AA7`), and the plain-npm gate
 (`scripts/verify-install.mjs`, also `prepublishOnly`) reports
 `verify-install: OK - plain npm installs dsh-wsl-workspace@0.7.4`.
+
+## The published artifact, installed the way a user installs it (2026-09-28, plugin 0.7.4)
+
+`npm publish --tag next` uploaded 0.7.4 and the registry needed a couple of minutes to
+serve it (`npm view dsh-wsl-workspace@0.7.4` answered `E404` at first, and the packument
+only listed it at `2026-09-28T16:18:23Z`). The published artifact is:
+
+```
+version  0.7.4
+shasum   1d797509cf3eb0d916aa4366ceebd333b5ad7a3a
+sha256   182F78CF2311C53F7E28F0BD61AA48FEE190F2011493C0F440B056BADDCDD802
+57 files, unpacked 3,135,851 B
+dist-tags: next = 0.7.4, latest = 0.7.3
+```
+
+**It differs from the tarball the compatibility pass ran on in exactly three files.**
+Comparing the published tarball against the one packed before the last documentation
+edits: `README.md`, `README.zh.md` and `TESTING.md` are the only entries whose hash
+differs — the published copies are the *newer* ones, carrying the 0.7.4 changelog, the
+six-item compatibility rule and the harness notes. **Every code entry is byte-identical**
+(`lib/index.js`, `lib/wsl-*.js`, `lib/links-*.js`, `lib/shell.js`, `lib/fs.js`,
+`lib/wsl-search.js`, `lib/client.js`, the maps, and `src/`), so the ten-release pass above
+describes the published behaviour. The same delta also explains why the earlier
+`C34F317F…` pack is not the published byte sequence: the doc edits landed after it, and
+the publish's own `prepublishOnly`/`prepack` rebuild left `lib/` unchanged.
+
+**Install, the way a user does it** — both paths into the registry, on an empty directory
+with no pnpm and no host packages present:
+
+| Command | Result |
+|---|---|
+| `npm install dsh-wsl-workspace@0.7.4` | exit 0, `added 1 package`, version 0.7.4, 10 declared releases, 11 `lib/*.js` chunks |
+| `npm install dsh-wsl-workspace@next` | exit 0, resolves to 0.7.4 |
+
+**Behaviour of the published bytes** — five isolated `dsh web` instances, each installed
+by name from the registry (the launcher asserts the installed version is the requested
+one), one of them wrapped the way DSH Desktop wraps `child_process`:
+
+| Port | Release | `listDistros` | Dialog | Six-item pass | `host-api` | `web.err` | Linux re-read |
+|---|---|---|---|---|---|---|---|
+| 3390 | 0.1.0-rc.7 | ok (Ubuntu, docker-desktop) | lists + creates | 6/6 (one-shot bash, expected) | 12/12 | 0 B | 14 B ✓ |
+| 3391 | 0.1.2-rc.1 | ok | lists + creates | 6/6 (persistent bash `/tmp`) | 12/12 | 0 B | 14 B ✓ |
+| 3392 | 0.1.5-rc.2 | ok | lists + creates | 6/6 (persistent bash `/tmp`) | 12/12 | 0 B | 14 B ✓ |
+| 3393 | 0.1.7-rc.2 | ok | lists + creates | 6/6 (declaration channel, persistent bash) | 12/12 | 0 B | 14 B ✓ |
+| 3394 | 0.1.5-rc.2 + Desktop wrapper | ok | lists + creates | 6/6 (persistent bash `/tmp`) | **12/12** | 0 B | 14 B ✓ |
+
+The help panel on the published build reports **v0.7.4**, "本次更新（0.7.4）" and **10**
+release chips; the same wrapper against the published **0.7.3** answers `listDistros` with
+`{"ok":false,"error":"Cannot read properties of undefined (reading 'includes')"}`, an empty
+picker and 11/12 `host-api` checks — the before/after of issues #35/#36, now measured on
+the artifact users actually install.
 
 
 
