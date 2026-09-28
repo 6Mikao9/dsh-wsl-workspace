@@ -43,6 +43,44 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 
 ## Changelog
 
+### 0.7.4 — 2026-09-28
+
+- **The dialog works in DSH Desktop again (issues #35, #36).** The Desktop host
+  wraps `child_process` before the plugin is loaded: it installs plain
+  `exec`/`execFile` wrappers and re-exports them with
+  `syncBuiltinESMExports()`. That copy of `execFile` carries no
+  `util.promisify.custom`, so `promisify(execFile)` fell back to the generic
+  implementation, which resolves with the **first** callback argument only —
+  the stdout string — and `result.stdout` was `undefined` on every call. The
+  distro lookup read `.stdout` and threw
+  `Cannot read properties of undefined (reading 'includes')`, the frontend
+  caught it and rendered an empty picker: the dialog opened, the distribution
+  list stayed empty, and "Create & open" could not be completed, while
+  `wsl.exe -l -q` in a terminal listed the distribution normally. All three
+  call sites now use the **callback** form of `execFile`, which no wrapper can
+  reshape.
+- **The `wsl.exe` lookup is a candidate list.** `wsl.exe` is tried on `PATH`
+  first, then the absolute `%SystemRoot%\System32\wsl.exe`, and a lookup that
+  fails now names every candidate it tried and the error each one produced,
+  instead of a type error from inside the decoder.
+- `tests/exec-shape.mjs` reproduces the Desktop wrapper (plain wrappers plus
+  `syncBuiltinESMExports()`), spawns a probe with and without `--import`,
+  asserts the wrapped shape is broken and the new helpers are right, and runs
+  the real `listDistros`/`defaultDistro`/`resolveLinuxSymlink` through both
+  shapes. It is registered as the `exec-shape` check in
+  `scripts/compatibility/Run-Checks.ps1` so a future refactor cannot
+  reintroduce the promisified call.
+- `dsh.compatibility.dshReleases` declares `0.1.7-rc.2` as well, so this build
+  claims ten releases instead of nine.
+- **Verification**: fifteen harness checks on each of the ten declared releases
+  (13/15 everywhere — the two failures are the documented baseline: `typecheck`
+  and `host-api`, which needs a *running* frontend and passes 12/12 when pointed
+  at one), plus the runbook's six-item frontend pass on all ten (dialog distro
+  list, create & open, write, read, one-shot bash, persistent bash, skills) with
+  `web.err` at 0 bytes and the file re-read independently on the Linux side.
+  The Desktop-wrapper reproduction is in `docs/compatibility-evidence.md`,
+  together with the pack-identity hash and the plain-npm install gate.
+
 ### 0.7.3 — 2026-09-23
 
 - **The plugin loads on DSH `0.1.7-rc.1` again, and its modes come back.** The

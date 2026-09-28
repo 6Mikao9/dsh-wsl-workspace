@@ -1076,6 +1076,132 @@ legacy directory into a bundle declaration (`preset.yml` → `name`/`description
 `agent.cordis.yml` → `plugins`), install it, then delete the directory. This plugin only
 sweeps the `wsl*` entries in that root, which its own directory channel wrote.
 
+## The Desktop host wrapper stripped `execFile`'s promisify metadata (2026-09-28, plugin 0.7.4, issues #35/#36)
+
+The first report that the plugin was **installed and mounted but unusable in DSH Desktop**:
+the "Add WSL workspace" dialog opened, the distribution picker stayed empty, and
+"Create & open" could not be completed — while `wsl.exe -l -q` listed the distribution
+normally in a terminal, which is what made the report look like "the plugin cannot find
+WSL2" (issue #36). Issue #35 reported the same flow failing from the dialog side.
+
+**The failure is a host-side patch, not a missing WSL.** DSH Desktop loads a Node
+`--import` hook (`resources/windows-child-process-hide.mjs`) *before* any plugin module
+runs. It replaces `child_process.exec`/`execFile` with plain function wrappers that only
+inject `windowsHide: true`, then re-exports them with
+`syncBuiltinESMExports()`. The replacement function carries no
+`util.promisify.custom`, so `util.promisify(execFile)` falls back to the generic
+implementation — which resolves with the **first callback argument only**, i.e. the
+stdout value itself. Every call therefore produced a string where the plugin expected
+`{ stdout, stderr }`, and the distribution lookup read `result.stdout`:
+
+```
+{"ok":false,"error":"Cannot read properties of undefined (reading 'includes')"}
+```
+
+That is the exact body the dialog's own API route returned on the published `0.7.3`
+under a Desktop-equivalent wrapper, and `web.err` stayed at **0 bytes** — the frontend
+catches the rejection and renders an empty picker, so nothing reaches the log. The plugin
+was not "finding no WSL"; the *shape* of the `execFile` result had been changed by the host
+it runs under.
+
+**The fix.** All three call sites (`listDistros`, `defaultDistro`, `resolveLinuxSymlink`)
+now go through `execFileResult()` in `src/shared/wsl.ts`, which calls `execFile` in its
+**callback** form — a signature no wrapper can reshape — and resolves `{ stdout, stderr }`
+itself; `textOf()` narrows either stream shape to text. The `wsl.exe` lookup also became a
+candidate list (`wsl.exe` on `PATH`, then `%SystemRoot%\System32\wsl.exe`), and a lookup
+that fails now names every candidate it tried with the error each produced, instead of
+surfacing a type error from inside the decoder.
+
+**Reproduction, before and after** — `NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`
+on a real `dsh web` process, with a stand-in that reproduces the Desktop wrapper
+(plain wrappers + `syncBuiltinESMExports()`), all on `0.1.5-rc.2`:
+
+| Instance | Installed artifact | `POST /wsl-workspace/api` → `listDistros` | Dialog picker | Create & open | Six-item pass | `host-api.mjs` |
+|---|---|---|---|---|---|---|
+| port 3380 | registry `0.7.3` | `{"ok":false,"error":"Cannot read properties of undefined (reading 'includes')"}` | **empty** | fails | fails | 11/12 (only `distros`) |
+| port 3381 | `0.7.4` (first pack) | `{"ok":true,"value":["Ubuntu","docker-desktop"]}` | `Ubuntu`, `docker-desktop` | works | 6/6 | — |
+| port 3382 | `0.7.4` (release tarball) | same | same | works | 6/6 | 12/12 |
+
+**Regression test.** `tests/exec-shape.mjs` writes a Desktop-equivalent wrapper, spawns a
+probe process with and without `--import`, asserts the wrapped shape really is broken
+(otherwise the test proves nothing) and that the helpers are right, then runs the three
+real functions through both shapes and asserts the two runs agree on the distribution list.
+It is registered as the `exec-shape` check in `scripts/compatibility/Run-Checks.ps1`, so a
+future refactor cannot quietly go back to `promisify(execFile)`.
+
+**The frontend pass, six items on every declared release.** The runbook's §3 gained an
+unconditional item 6 ("open the WSL workspace from the frontend"): the picker must list the
+distribution, `listWorkspaces` must report the `\\wsl.localhost\…` path, the workspace row
+must appear in the sidebar, and a page reload must still open it — none of which the
+script-level harness can see. All ten declared releases (`0.1.0-rc.7` … `0.1.7-rc.2`, the
+last one newly declared here) plus a Desktop-wrapped instance of the release artifact passed
+all six with `web.err` at 0 bytes, and the written file was re-read independently on the
+Linux side (`COMPAT_<port>_OK`, 14 bytes). `0.1.0-rc.7` keeps its documented one-shot bash
+(that release has no Windows process inspector).
+
+**Harness and gates.** Ten releases × 15 checks: 13/15 each, the two failures being the
+documented baseline — `typecheck` (the pre-existing `tsc --noEmit` errors) and `host-api`
+run from the harness, which needs a *running* frontend (`manifest.port` is `undefined`
+there; pointed at the live instances it is 12/12 on every release). The first pass also
+caught a real one: the new help-panel news body had a 433/453-character bullet, over the
+320-character limit `tests/locales.test.ts` enforces, so the bullets were split. Pack
+identity was verified at that point (the tarball, a fresh `npm pack`, and
+`npm pack --ignore-scripts` over the committed `lib/` all hashed to
+`C34F317F86526289A0EE47059CDD2912744312DBFEAE1CDA5FDB0183244D9AA7`), and the plain-npm gate
+(`scripts/verify-install.mjs`, also `prepublishOnly`) reports
+`verify-install: OK - plain npm installs dsh-wsl-workspace@0.7.4`.
+
+## The published artifact, installed the way a user installs it (2026-09-28, plugin 0.7.4)
+
+`npm publish --tag next` uploaded 0.7.4 and the registry needed a couple of minutes to
+serve it (`npm view dsh-wsl-workspace@0.7.4` answered `E404` at first, and the packument
+only listed it at `2026-09-28T16:18:23Z`). The published artifact is:
+
+```
+version  0.7.4
+shasum   1d797509cf3eb0d916aa4366ceebd333b5ad7a3a
+sha256   182F78CF2311C53F7E28F0BD61AA48FEE190F2011493C0F440B056BADDCDD802
+57 files, unpacked 3,135,851 B
+dist-tags: next = 0.7.4, latest = 0.7.3
+```
+
+**It differs from the tarball the compatibility pass ran on in exactly three files.**
+Comparing the published tarball against the one packed before the last documentation
+edits: `README.md`, `README.zh.md` and `TESTING.md` are the only entries whose hash
+differs — the published copies are the *newer* ones, carrying the 0.7.4 changelog, the
+six-item compatibility rule and the harness notes. **Every code entry is byte-identical**
+(`lib/index.js`, `lib/wsl-*.js`, `lib/links-*.js`, `lib/shell.js`, `lib/fs.js`,
+`lib/wsl-search.js`, `lib/client.js`, the maps, and `src/`), so the ten-release pass above
+describes the published behaviour. The same delta also explains why the earlier
+`C34F317F…` pack is not the published byte sequence: the doc edits landed after it, and
+the publish's own `prepublishOnly`/`prepack` rebuild left `lib/` unchanged.
+
+**Install, the way a user does it** — both paths into the registry, on an empty directory
+with no pnpm and no host packages present:
+
+| Command | Result |
+|---|---|
+| `npm install dsh-wsl-workspace@0.7.4` | exit 0, `added 1 package`, version 0.7.4, 10 declared releases, 11 `lib/*.js` chunks |
+| `npm install dsh-wsl-workspace@next` | exit 0, resolves to 0.7.4 |
+
+**Behaviour of the published bytes** — five isolated `dsh web` instances, each installed
+by name from the registry (the launcher asserts the installed version is the requested
+one), one of them wrapped the way DSH Desktop wraps `child_process`:
+
+| Port | Release | `listDistros` | Dialog | Six-item pass | `host-api` | `web.err` | Linux re-read |
+|---|---|---|---|---|---|---|---|
+| 3390 | 0.1.0-rc.7 | ok (Ubuntu, docker-desktop) | lists + creates | 6/6 (one-shot bash, expected) | 12/12 | 0 B | 14 B ✓ |
+| 3391 | 0.1.2-rc.1 | ok | lists + creates | 6/6 (persistent bash `/tmp`) | 12/12 | 0 B | 14 B ✓ |
+| 3392 | 0.1.5-rc.2 | ok | lists + creates | 6/6 (persistent bash `/tmp`) | 12/12 | 0 B | 14 B ✓ |
+| 3393 | 0.1.7-rc.2 | ok | lists + creates | 6/6 (declaration channel, persistent bash) | 12/12 | 0 B | 14 B ✓ |
+| 3394 | 0.1.5-rc.2 + Desktop wrapper | ok | lists + creates | 6/6 (persistent bash `/tmp`) | **12/12** | 0 B | 14 B ✓ |
+
+The help panel on the published build reports **v0.7.4**, "本次更新（0.7.4）" and **10**
+release chips; the same wrapper against the published **0.7.3** answers `listDistros` with
+`{"ok":false,"error":"Cannot read properties of undefined (reading 'includes')"}`, an empty
+picker and 11/12 `host-api` checks — the before/after of issues #35/#36, now measured on
+the artifact users actually install.
+
 
 
 

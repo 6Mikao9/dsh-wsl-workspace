@@ -195,6 +195,17 @@ function collectLocalBindings(code) {
   // them elsewhere in the same module is a method invocation on `this`.
   const methodRe = /(?<![\w$.])(?:async\s+)?(?:static\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g
   while ((match = methodRe.exec(code)) !== null) bindings.add(match[1])
+  // Function parameters: `function (a, b) {`, `function name(a, b) {`,
+  // `(a, b) => {`, and `new Promise((resolve, reject) => {`. Without this a
+  // bare `resolve(...)` call inside a Promise executor is indistinguishable
+  // from a call to `node:path`'s `resolve`, and correct code fails the build.
+  const paramRe = /(?:\bfunction\s*[A-Za-z_$][\w$]*\s*)?\(([^()]*)\)\s*(?:=>|\{)/g
+  while ((match = paramRe.exec(code)) !== null) {
+    for (const part of match[1].split(',')) {
+      const name = part.trim().split(/[=:]/)[0].trim()
+      if (name !== '' && /^[A-Za-z_$][\w$]*$/.test(name)) bindings.add(name)
+    }
+  }
   return bindings
 }
 
