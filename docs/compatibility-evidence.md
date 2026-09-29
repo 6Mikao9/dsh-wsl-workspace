@@ -1202,6 +1202,26 @@ release chips; the same wrapper against the published **0.7.3** answers `listDis
 picker and 11/12 `host-api` checks — the before/after of issues #35/#36, now measured on
 the artifact users actually install.
 
+**The older versions are deprecated on the registry.** The defect predates the fix by the
+whole published history — the earliest release, `0.1.0`, already shipped the
+`promisify(execFile)` lookup (checked by unpacking its tarball) — so all **16** versions
+before 0.7.4 carry it, and 0.7.4 is the only clean one:
+
+```powershell
+npm deprecate "dsh-wsl-workspace@<0.7.4" "DSH Desktop 下对话框发行版列表为空（issues #35/#36）。Fixed in 0.7.4 - upgrade: npm i dsh-wsl-workspace@latest"
+```
+
+Registry state afterwards: `dist-tags` = `latest: 0.7.4`, `next: 0.7.4`; 16 of 17 versions
+carry the message and 0.7.4 carries none (`npm view dsh-wsl-workspace@0.7.3 deprecated`
+prints it). The warning reaches the user on the npm path — `npm install
+dsh-wsl-workspace@0.7.3` prints `npm warn deprecated dsh-wsl-workspace@0.7.3: …` and still
+installs, while installing by name resolves to 0.7.4 with no warning — and on the pnpm path
+when pnpm actually fetches the metadata (`[WARN] deprecated …`, plus a `deprecated` marker
+and "0.7.4 is available" in the dependency list). `dsh plugin add` shows it only then: with
+a warm pnpm metadata cache it printed no warning in testing, which is why the release note
+and the issue comments matter as well. Deprecation is advisory — it never blocks an install
+— and is reversible with an empty message.
+
 
 
 
