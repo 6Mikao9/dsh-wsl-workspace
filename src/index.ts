@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
@@ -594,6 +595,68 @@ interface SubprocessProbeFace {
 }
 
 /**
+ * Resolve a genuine node executable for the PTY relay.
+ *
+ * On DSH Desktop the host process is the packaged Electron binary in node
+ * mode (`ELECTRON_RUN_AS_NODE=1`), and that binary silently drops its stdout
+ * when spawned under a ConPTY — verified on 0.1.7-rc.1: the relay exits 0
+ * with zero output bytes, so the PTY backend's readiness probe never sees
+ * evidence and every persistent shell fails with "PTY shell exited during
+ * startup". A real node.exe (the Desktop-bundled runtime node or a system
+ * node) works correctly under the same ConPTY.
+ *
+ * Candidate chain, first hit wins:
+ *  1. `DSH_DESKTOP_NODE_EXECUTABLE` — the env the Desktop shell launcher
+ *     (`resources/runtime/bin/node.cmd`) exports for exactly this purpose.
+ *  2. The Desktop-bundled runtime node next to the running binary:
+ *     `<exeDir>/resources/runtime/primary-runtime/dependencies/node/bin/node.exe`.
+ *  3. A `node.exe` (win32) or `node` (posix) found on PATH and verified by
+ *     running `--version` (Desktop's `runtime/bin` may or may not be on PATH).
+ *  4. `process.execPath` — correct on plain `dsh web`, where execPath is
+ *     already a real node, so this chain changes nothing there.
+ * @returns an absolute path to a real node executable.
+ */
+function resolveNodeExecutable(): string {
+  const fromEnv = process.env.DSH_DESKTOP_NODE_EXECUTABLE
+  if (fromEnv !== undefined && fromEnv !== '' && isRealNode(fromEnv)) return fromEnv
+  // The Desktop layout: <install>/DeepSeek Harness.exe plus <install>/resources/...
+  const exeDir = dirname(process.execPath)
+  const bundled = join(exeDir, 'resources', 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin', 'node.exe')
+  if (isRealNode(bundled)) return bundled
+  const onPath = findNodeOnPath()
+  if (onPath !== undefined) return onPath
+  return process.execPath
+}
+
+/** Whether a path exists and names an executable-looking node binary. */
+function isRealNode(candidate: string): boolean {
+  try {
+    statSync(candidate)
+    const version = execFileSync(candidate, ['--version'], { timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim()
+    return /^v\d+\.\d+\.\d+/.test(version)
+  } catch {
+    return false
+  }
+}
+
+/** Locate a node executable on PATH by asking the shell to resolve it. */
+function findNodeOnPath(): string | undefined {
+  const name = process.platform === 'win32' ? 'node.exe' : 'node'
+  try {
+    const where = process.platform === 'win32'
+      ? execFileSync('where.exe', [name], { timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+      : execFileSync('which', [name], { timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+    const first = where.split(/\r?\n/).map(line => line.trim()).find(line => line !== '')
+    if (first === undefined) return undefined
+    return isRealNode(first) ? first : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Look up the `subprocess` service, giving profile boot a moment to publish it.
  *
  * Bounded: the world is generated in a fire-and-forget effect, so this wait never
@@ -748,7 +811,18 @@ export function apply(ctx: Context, config: Config): void {
   // The persistent shell has no `run_in_background` of its own; this is the
   // producer that gives the world's `job_*` tools something to track.
   const jobsPath = join(packageRoot, 'lib', 'wsl-jobs.js').replace(/\\/g, '/')
-  const nodePath = process.execPath.replace(/\\/g, '/')
+  // The persistent shell's PTY backend must run the relay with a REAL node
+  // executable. On dsh web `process.execPath` is node, but on DSH Desktop the
+  // host itself is the packaged Electron binary running in node mode, and that
+  // binary silently drops its stdout when attached to a ConPTY: the relay
+  // produces no output at all, the readiness probe never sees evidence, and
+  // every startup fails with "PTY shell exited during startup" (exit 0, zero
+  // bytes). Resolve a genuine node.exe instead: the Desktop-bundled runtime
+  // node first (DSH_DESKTOP_NODE_EXECUTABLE, or the primary-runtime payload
+  // next to the running binary), then a node on PATH, and only fall back to
+  // execPath when nothing else exists (which is exactly the old behavior on
+  // dsh web, where execPath is already a real node).
+  const nodePath = resolveNodeExecutable().replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
   if (agentPresets !== undefined) {
