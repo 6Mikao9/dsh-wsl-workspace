@@ -7,8 +7,16 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Context } from '@deepseek-ai/cordis';
-import { WslFileSystem } from '../../src/fs.ts';
+import { load } from './plane.mjs';
+// Fixture glue, not the subject: building the UNC this driver pokes at. It is deliberately
+// pinned to src/ — tsdown declares no entry for `shared/paths`, and reaching it through
+// `lib/wsl-Ckyi3g6C.js` (which exports it under a minified alias) would be scraping a content
+// hash. Only `fs` below is the thing under test, so only it reports a plane.
 import { joinUnc } from '../../src/shared/paths.ts';
+
+// The subject comes from the active plane, so a green run can be read as a claim about lib/ or
+// about src/; see scripts/compatibility/plane.mjs for why those are not the same statement.
+const { WslFileSystem } = await load('fs');
 
 const execFileAsync = promisify(execFile);
 const distro = process.env.WSL_COMPAT_DISTRO || 'Ubuntu';

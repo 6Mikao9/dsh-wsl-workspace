@@ -58,7 +58,26 @@ first because the client/host integration checks consume built artifacts.
 
 Hard gates in ci.yml#wsl-gate on windows-latest with WSL1 Ubuntu via
 Vampire/setup-wsl. Environment knobs: `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`,
-`WSL_COMPAT_ROOT`, `WSL_COMPAT_RELAY_CWD`, `WSL_COMPAT_DRIVE_CWD`.
+`WSL_COMPAT_ROOT`, `WSL_COMPAT_RELAY_CWD`, `WSL_COMPAT_DRIVE_CWD`, and
+`DSH_WSL_TEST_PLANE` (`src` default | `lib`).
+
+**Which plane a gate tested is now evidence, not assumption (issue #44 §1).** Every driver
+resolves its subject through `scripts/compatibility/plane.mjs`, which prints
+`plane-module: <key> -> <specifier>`; `scripts/verify-plane-log.mjs <log> <src|lib>` fails a run
+whose log carries no such line, names the wrong plane, or points at a content-hashed chunk.
+`ci.yml#wsl-gate` runs `fs-real`/`search-real`/`relay-real` a second time under
+`DSH_WSL_TEST_PLANE=lib` with a separate fixture root (`/tmp/dsh-wsl-lib`) and then checks every
+log. Two decisions recorded rather than quietly taken: the **default stays `src`** until the lib
+plane has been green twice on a runner; and `skills-real` is **still src-plane only**, because
+`tsdown.config.ts` declares no entry for the provider (the class is file-local to
+`lib/index.js:1122`) and adding entries changes what users install — `plane.mjs` therefore
+*throws* under `lib` instead of falling back, so the gap cannot read as a pass. Measured on the
+maintainer machine (WSL2, smoke tier only — not evidence about WSL1): `fs-real` under
+`DSH_WSL_TEST_PLANE=lib` printed `plane-module: fs -> lib/fs.js`, reported both `PASS real 9P fs…`
+lines, rc 0, and the verifier answered `OK — 1 plane line(s) … all lib`.
+
+Verifier controls run here: a log with no plane line → rc 1; a `src` log checked as `lib` → rc 1;
+`lib/wsl-Ckyi3g6C.js` → rc 1 (`content-hashed chunk`); a matching line → rc 0.
 
 | Check | What it pins down | Notes |
 | --- | --- | --- |

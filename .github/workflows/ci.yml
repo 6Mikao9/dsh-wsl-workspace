@@ -163,7 +163,31 @@ jobs:
           run_one skills-real node --experimental-strip-types scripts/compatibility/skills-real.mjs
           run_one search-real node --experimental-strip-types scripts/compatibility/search-real.mjs
           run_one relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
+          # The same gates against the shipped bundle. The default plane stays `src` until
+          # this pass has been green twice (issue #44 §1); a run is only credited to a plane
+          # if its log carries the matching `plane-module:` line, checked below. Each pass
+          # gets its own fixture root because these drivers create rather than clean their
+          # tree — two passes over one /tmp/dsh-wsl-compat is a race, not a rerun.
+          DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib node --experimental-strip-types scripts/compatibility/fs-real.mjs > logs/lib-fs-real.log 2>&1 || echo "lib fs-real rc=$?"
+          DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib node --experimental-strip-types scripts/compatibility/search-real.mjs > logs/lib-search-real.log 2>&1 || echo "lib search-real rc=$?"
+          DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib node --experimental-strip-types scripts/compatibility/relay-real.mjs > logs/lib-relay-real.log 2>&1 || echo "lib relay-real rc=$?"
+          # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
+          # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
+          # rather than falling back to src. Adding the entry changes what users install, so it
+          # is a maintainer decision, not a night-run side effect.
           exit $FAIL
+      - name: every gate must say which plane it loaded
+        if: always()
+        run: |
+          RC=0
+          for n in fs-real search-real skills-real relay-real; do
+            node scripts/verify-plane-log.mjs "logs/$n.log" src "$n" || RC=1
+          done
+          for n in fs-real search-real relay-real; do
+            node scripts/verify-plane-log.mjs "logs/lib-$n.log" lib || RC=1
+          done
+          echo "plane evidence collected"
+          exit $RC
       - name: postflight (share state at the moment of failure)
         if: failure()
         run: |

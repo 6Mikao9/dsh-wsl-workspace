@@ -18,6 +18,7 @@
     "verify:install": "node scripts/verify-install.mjs",
     "verify:artifact": "node scripts/verify-artifact-identity.mjs",
     "verify:lib-sync": "node scripts/verify-lib-sync.mjs",
+    "verify:plane": "node scripts/verify-plane-log.mjs",
     "ci:pinned": "node ci/install-pinned.mjs",
     "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs",
     "test:win32": "node --experimental-strip-types --test tests/wsl-skills.test.ts tests/fs-policy.test.ts tests/relay-node.test.mjs",
