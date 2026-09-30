@@ -160,12 +160,18 @@ for VERSION in "$@"; do
     echo "  ! no WSL distribution found for the asserted API pass — NOT VERIFIED"
     echo "$VERSION HOST_API_NOT_VERIFIED unknown" >> "$BASE/verdicts.txt"
   else
-    COMPAT_LINUX="${WSL_COMPAT_ROOT:-/tmp/dsh-wsl-compat}"
+    # The Linux-side fixture root is deliberately NOT passed through an environment variable.
+    # On a Windows bash runner MSYS rewrites a POSIX-looking value to an absolute Windows path,
+    # and that value then gets pasted straight after the distro name by the drivers:
+    # `\\wsl.localhost\Ubuntu-24.04C:\Users\RUNNER~1\AppData\Local\Temp\dsh-wsl-compat\.agents`
+    # (frame 36744046100, errno -4094). The drivers' own in-code default `/tmp/dsh-wsl-compat`
+    # never passes through the shell, so it cannot be mangled; matrix entries run sequentially,
+    # and `mkdir -p` plus the driver's own `rm -rf` keep the shared tree clean between them.
+    COMPAT_LINUX=/tmp/dsh-wsl-compat
     wsl.exe -d "$COMPAT_DISTRO" -- bash -c \
       "mkdir -p '$COMPAT_LINUX/.agents' '$COMPAT_LINUX/dsh-win-fixture'" >/dev/null 2>&1 || true
     HOST_API_LOG="$WORK/host-api.log"
     if WSL_COMPAT_DISTRO="$COMPAT_DISTRO" WSL_COMPAT_USER="${WSL_COMPAT_USER:-root}" \
-       WSL_COMPAT_ROOT="$COMPAT_LINUX" \
        node scripts/compatibility/host-api.mjs "$WORK/runtime.json" > "$HOST_API_LOG" 2>&1; then
       # Success is carried by the script's own exit: if any later stage passes and this one was
       # the only thing that could fail, the loop reaches the end for this version and the PASS
