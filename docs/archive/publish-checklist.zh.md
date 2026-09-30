@@ -1,5 +1,11 @@
 # 发布清单（建立 GitHub Repository 用）
 
+> **已取代（2026-09-30 归档）**：这是一次性的「把插件目录建成 GitHub 仓库」清单，仓库已建立，
+> 其中列为待办的项目早已落地——`repository` 字段已填（`package.json`）、`README.en.md` 不存在也
+> 不需要（英文版即根 `README.md`，另有 8 份语言版）；文末「已知限制」里的 *WSL 会话无 grep 工具*
+> 已在 0.6.0 解决。当前发布口径见 [TESTING.md](../../TESTING.md) 的 Release checklist 一节与
+> [CHANGELOG.md](../../CHANGELOG.md)。正文一字未改，仅作归档。
+
 > 插件源码位置：`<deepseek-harness-checkout>/plugins/dsh-wsl-workspace/`
 > 发布时请**把该目录拷贝为独立仓库目录**再 `git init`（不要直接在 harness checkout 里建仓库，避免带入无关文件、也避开根 `.gitignore` 对 `lib/` 的忽略）。
 

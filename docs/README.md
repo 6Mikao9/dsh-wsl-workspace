@@ -1,0 +1,51 @@
+# Documentation index
+
+Where each document lives, what language it is in, and whether it still describes
+the current build. Naming rule: `kebab-case`, with a `.zh` suffix when the text is
+Chinese (English carries no suffix). Superseded documents move to
+[`archive/`](./archive/) unchanged — the banner at the top of each one names what
+replaced it.
+
+| Path | Language | What it is | Status |
+|---|---|---|---|
+| [design.zh.md](./design.zh.md) | zh | Design decisions and round-by-round history (M1 → fifth round) | Background; two claims it makes were reversed later — see its header |
+| [compatibility-evidence.md](./compatibility-evidence.md) | en | Per-release verification evidence, appended run by run | Active |
+| [archive/publish-checklist.zh.md](./archive/publish-checklist.zh.md) | zh | One-off checklist for turning the plugin directory into a GitHub repo | Superseded 2026-09-30, kept verbatim |
+| [archive/compatibility-summary-0.4.1.zh.md](./archive/compatibility-summary-0.4.1.zh.md) | zh | Compatibility conclusions as of 0.4.1 | Superseded 2026-09-30, kept verbatim |
+
+## Outside `docs/`
+
+| Path | Language | What it is |
+|---|---|---|
+| [README.md](../README.md) | en | Canonical entry point: install, declared compatibility, usage, current behaviour |
+| [README.zh.md](../README.zh.md) | zh | Same content, Chinese |
+| [README.ja.md](../README.ja.md) · [README.ko.md](../README.ko.md) · [README.fr.md](../README.fr.md) · [README.de.md](../README.de.md) · [README.es.md](../README.es.md) · [README.pt.md](../README.pt.md) · [README.ru.md](../README.ru.md) | 7 languages | Condensed entry points: install, usage, current behaviour, licence. They point at the English `## Compatibility` section instead of repeating the release list, and they carry no release history of their own |
+| [CHANGELOG.md](../CHANGELOG.md) / [CHANGELOG.zh.md](../CHANGELOG.zh.md) | en / zh | Release history, newest first, every version |
+| [TESTING.md](../TESTING.md) | en | How to verify a change or a release; shipped in the npm tarball (`package.json` `files`), so it stays at the repository root |
+| [LICENSE](../LICENSE) / [NOTICE](../NOTICE) | en | Licence text and the third-party attribution list |
+| [src/client/locales.ts](../src/client/locales.ts) | zh + en | The dialog's "?" help panel: the product-side copy of usage and known limitations. Not prose documentation — it is what the shipped build renders, and its version label is hard-coded there |
+
+## What keeps this honest
+
+Two checks read the prose, and neither is optional:
+
+- `node --test tests/readme-compat.test.mjs` — upstream of this index: both full READMEs must
+  list exactly the releases `package.json` declares, and the READMEs plus the help panel must
+  name the same repository the manifest does.
+- `node scripts/check-docs-parity.mjs` (`npm run test:docs`) — this index's own gate. It
+  declares every README's section **names** (not positions: v0.7.5 inserted
+  `## Compatibility` and shifted everything a position-based checker relied on), the eight
+  behaviour bullets each must carry, the language-neutral tool tokens (`wsl-search`,
+  `wsl-relay`, `bash_background`, `readlink`, `FS_SANDBOX_DENIED`), that no README keeps a
+  claim the English authority dropped, that no README hard-codes a version range in its
+  changelog pointer, that all nine offer the repository `package.json` names, that every
+  relative link resolves, and that the CHANGELOG pair agrees on the release list with the
+  newest entry equal to `package.json`'s version.
+
+The gate is docs-only, so it needs node ≥ 24 and nothing else — no host packages, no WSL, no
+network. Its mutation control: pointed at a tree before this split (`npm run test:docs --
+--root <dir>`) it reports every stale translation by name and still exits 1.
+
+The CI wiring for it — one step in the `checks` workflow and one row in the check catalogue —
+arrives with #41, which is where those files live; until that merges the gate is run by hand
+before touching a README.

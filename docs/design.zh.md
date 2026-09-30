@@ -1,5 +1,11 @@
 # dsh-wsl-workspace 设计方案
 
+> **文档定位**：本文是 M1 到第五轮的**设计决策与轮次记录**，原文保留不改写；当前行为口径以
+> [README.md](../README.md)（中文 [README.zh.md](../README.zh.md)）为准，版本历史见 [CHANGELOG.md](../CHANGELOG.md)，
+> 逐版本实测证据见 [compatibility-evidence.md](./compatibility-evidence.md)。
+> 已知被后续版本推翻的两处：第四轮的「变体移除 `grep`/`glob`」已由 0.6.0 在发行版内重建（`src/host/wsl-search.ts`）；
+> 「持久 shell / 后台任务 / 技能目录实时刷新」在本文写作时尚不存在，见 0.5.0–0.7.0 的记录。
+
 > 目标：在 DSH Web GUI 中提供「添加 WSL/远程工作区」按钮，点击后像 VSCode Remote-WSL 一样把**整个 agent 工作区**切换进 WSL——shell 命令、文件读写、文件树全部落在 WSL 执行世界里——且 **WSL 内零安装**（不需要在 WSL 里配置 DSH 工具链）。
 >
 > 目标用户：开发人员。运行形态：Windows 宿主机上的 `dsh web` + 本机 WSL2 发行版。
