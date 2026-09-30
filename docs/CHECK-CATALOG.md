@@ -141,4 +141,29 @@ recorded here rather than silently dropped from the automation map.
 | Product silent paths closed alongside (`src/` + rebuilt `lib/`), same night | `check` no longer folds an unreadable path into `exists:false` — only `ENOENT`/`ENOTDIR` answer "absent", any other throw (`EPERM`, a dead 9P share) answers `{ok:false}` naming the cause (`src/index.ts:320-333`); `api.ts` bounds every call at 30 s via `AbortSignal.timeout` (guarded: the lifecycle test's `vm` sandbox has no `AbortSignal`, and the unguarded first version failed 4 tests), checks `response.ok`, and never throws an empty message; the error strip's Retry re-runs the open flow through the same `loadOnOpen` instead of only hiding the error; `.dww-action--wide` got a rule mirroring `--rail`. The class-name gate then **refused to stay green**: it reported its own stale registration (`dww-action--wide now have rules — delete the registration`), and deleting that line restored 76/76. Wide-sidebar "labeled row" remains an open design question named in the stylesheet, not styled tonight. |
 | merge frame (origin/main #39 in) | merged #39 (PTY-relay node-executable fix, src/index.ts + lib/index.js only); lib rebuilt on the merged src, byte-stable; cloud: checks **success** + dispatched compat matrix **success**, all three versions `PASS compatible` again (matrix closed 2026-09-30T10:56:31Z per the run's server updatedAt) |
 | E compat (local rehearsal, dsh 0.2.0-rc.2) | full chain GREEN after four harness fixes: (1) verdict-based exit — the script used to exit 0 under all-FAIL verdicts (its own false green, frame-1 CI read three `PLUGIN_ADD_FAIL` lines under a green checkmark); (2) `PLUGIN_REF` is the **extracted directory**, `plugin add` rejects a .tgz path; (3) readiness now means "any HTTP response" — 0.2.0-rc gates `/` behind a browser token (401 anonymous, 303→`./` drops the query), so an HTML-content probe can never settle; plugin health is asserted by the API poll instead; (4) `curl -w %{http_code}` + `|| echo 000` double-printed "000000" and defeated the dead-server comparison — removed at both sites; API probe polls to 200 because route registration races boot. Final: `0.2.0-rc.2 PASS compatible`, uninstall clean (405). CI-side root cause on top: the windows runner's bash PATH lacks **pnpm**, which the dsh plugin manager shells out to — compat.yml installs it |
+## Measured and rejected during the night run (do not re-propose from the review's estimates)
+
+The review ranked some cost reductions from subagent estimates. Two do not survive measurement,
+and the reason is recorded so nobody spends a wave on them again:
+
+- **Merging the preset fixtures is worth nothing here.** `tests/host-materialize.mjs` and
+  `tests/host-declare.mjs` both declare `STANDARD_SRC`/`MINIMAL_SRC` and 17 of 22 body lines
+  match, but compared as text the blocks give **0 byte-identical lines** — the `const … = \`…\``
+  shapes, indentation and the fields each harness asserts differ — so a shared module would carry
+  both variants anyway. `tests/variants.test.ts`'s fixture is deliberately richer (26 lines,
+  3-4 positional matches against the host pair), and collapsing it into the harness fixtures would
+  delete coverage rather than move it.
+- **The hermeticity list was largely already handled.** `smoke.ts:46` already `rmSync`s its target
+  before asserting, the two smoke suites run sequentially in one `run_one` loop, and
+  `shell-extra.mjs` asserts `pwd` equals a directory it creates, so a stale tree cannot answer
+  "pass". The real new risk was two *concurrent* passes over one `/tmp/dsh-wsl-compat`, introduced
+  by tonight's lib-plane run — handled by giving the second pass its own root, not by rewriting
+  the drivers.
+- Taken from that list: `npm run test:node` no longer rebuilds `lib/` (bucket B), and
+  `tests/persistent-shell-fallback.mjs` registers an `exit` handler for its `DSH_HOME` tree,
+  because on this machine `os.tmpdir()` is `D:\Temp` and a mid-scenario throw would leak
+  directories that `git status` cannot see. Verified after the change: 0 orphans under any of the
+  seven prefixes this run created (the 1086 `dsh-*` directories already in `D:\Temp` carry
+  prefixes from other work — `guard`, `acl`, `subprocess`, … — and are not this suite's litter).
+
 | Attribution | the four D reds are machine-shape findings (recorded above per check); CI on fresh runners is the arbiter for the hard gates; none of the four is silently downgraded |
