@@ -74,7 +74,10 @@ for VERSION in "$@"; do
         && npm init -y >/dev/null 2>&1 \
         && npm i "@deepseek-ai/dsh@$VERSION" --no-audit --no-fund >/dev/null 2>&1); then
     echo "  ✖ harness installation failed"
-    echo "$Version INSTALL_FAIL unknown" >> "$BASE/verdicts.txt"
+    # $VERSION, not $Version: under `set -u` an unbound name aborts the whole script at this
+    # line, so the failure verdict was never written and every later version in the same call
+    # went dark instead of being recorded.
+    echo "$VERSION INSTALL_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
   BIN="$WORK/pkg/node_modules/@deepseek-ai/dsh/lib/bin.js"
@@ -164,16 +167,19 @@ for VERSION in "$@"; do
 done
 
 echo "=============================================================="
+# The guard runs before the cat: this script is `set -uo pipefail`, so reading a verdicts
+# file that was never created (every version aborted before its first write) died here on a
+# missing-file error and the honest verdict block below never ran.
+if [ ! -s "$BASE/verdicts.txt" ]; then
+  echo "verify-dsh-compat: RED — verdicts.txt is missing or empty (no version reached a verdict)" >&2
+  exit 1
+fi
 echo " verdicts ($BASE/verdicts.txt):"
 cat "$BASE/verdicts.txt"
 
 # The verdicts are the contract: only `PASS compatible` is green. Without
 # this exit the caller always saw rc 0 — the frame-1 compat matrix was
 # three PLUGIN_ADD_FAIL lines under a green checkmark.
-if [ ! -s "$BASE/verdicts.txt" ]; then
-  echo "verify-dsh-compat: RED — verdicts.txt is empty (no version reached a verdict)" >&2
-  exit 1
-fi
 if grep -qv ' PASS compatible$' "$BASE/verdicts.txt"; then
   echo "verify-dsh-compat: RED — at least one verdict is not 'PASS compatible'" >&2
   exit 1

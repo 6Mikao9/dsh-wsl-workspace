@@ -21,7 +21,43 @@ const tsc = spawnSync(process.execPath, [
   '-p', join(repoRoot, 'tsconfig.json'), '--noEmit',
 ], { encoding: 'utf8' })
 const output = `${tsc.stdout ?? ''}${tsc.stderr ?? ''}`
-const errors = output.split('\n').filter(line => /error TS\d+/.test(line))
+
+// Premise checks, before any counting. `spawnSync` never throws when the program cannot
+// run, and this tsc's exit status is not a usable signal — measured on this tree: a real
+// run reporting all 212 baseline errors exits 2, a missing entry script exits 1 with an
+// empty capture, and a usage banner exits 0. Counting `error TS` lines in whatever came
+// back therefore read "zero errors, below baseline" and exited 0 for a run that
+// typechecked nothing. So the gate asks whether the compiler was reachable at all, and
+// refuses an empty capture that produced no measurement.
+if (tsc.error !== undefined && tsc.error !== null) {
+  console.error(`typecheck-gate: RED — tsc could not be run (${String(tsc.error)}); `
+    + 'install build dependencies (`npm ci`) before running this gate')
+  process.exit(1)
+}
+if (tsc.status === null || tsc.status === undefined) {
+  console.error(`typecheck-gate: RED — tsc produced no exit status (signal ${String(tsc.signal)}); `
+    + 'this is not a measurement')
+  process.exit(1)
+}
+if (!existsSync(join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'))
+  || !existsSync(join(repoRoot, 'node_modules', 'typescript', 'lib', 'tsc.js'))) {
+  console.error('typecheck-gate: RED — the TypeScript compiler is not installed, so nothing was '
+    + 'typechecked (`npm ci` first)')
+  process.exit(1)
+}
+const errorLines = output.split('\n').filter(line => /error TS\d+/.test(line))
+if (errorLines.length === 0 && /Synopses|Usage:|Options:/i.test(output)) {
+  console.error(`typecheck-gate: RED — tsc printed a usage banner instead of typechecking:\n`
+    + `${output.split('\n').filter(line => line.trim() !== '').slice(0, 6).join('\n')}`)
+  process.exit(1)
+}
+if (errorLines.length === 0 && output.trim() === '') {
+  console.error('typecheck-gate: RED — tsc produced no output at all; a genuinely clean tree '
+    + 'still reports its exit status here, so counting zero would pass an unmeasured run')
+  process.exit(1)
+}
+
+const errors = errorLines
 const byFile = new Map()
 for (const line of errors) {
   const file = line.split('(')[0]

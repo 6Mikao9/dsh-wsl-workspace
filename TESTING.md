@@ -35,7 +35,8 @@ Coverage:
 
 ## Provider parity and compatibility checks
 
-- `node scripts/check-rank-parity.mjs` — the provider's project ranks are copied from `@deepseek-ai/dsh-skill-filesystem` (the host does not export them). This script parses the host's built lib when the package is resolvable on this machine and fails on drift. Run it before every release on a machine with the harness installed.
+- `node scripts/check-rank-parity.mjs` — the provider's project ranks are copied from `@deepseek-ai/dsh-skill-filesystem` (the host does not export them). This script parses the host's built lib when the package is resolvable on this machine and fails on drift. Strict by default: no resolvable host package is `NOT VERIFIED` and exits 1 (pass `--lenient` for the old warning-and-skip, `--host FILE` to compare against one explicit bundle). Run it before every release on a machine with the harness installed.
+- `node ci/install-pinned.mjs --verify-only` — compares every pin in `ci/pinned-deps.json` against the tree that is already installed, without writing a manifest, running npm or linking anything. Use it as the read-only probe when you need to prove the version comparison bites; installing against a changed pin rewrites `ci/deps/`, which on the maintainer machine is a junction into the live profile.
 - `scripts/verify-dsh-compat.sh <version>...` — disposable-Profile install/start/uninstall evidence against specific `@deepseek-ai/dsh` releases: fully isolated (`DSH_HOME` redirected to a temp tree, own port), boots the published harness version with the plugin added by name, probes `POST /wsl-workspace/api`, then removes the plugin and verifies the route disappears. Emits per-version verdict lines used for the `dsh.compatibility.dshReleases` manifest records.
 
 ## Preset materialization integration test

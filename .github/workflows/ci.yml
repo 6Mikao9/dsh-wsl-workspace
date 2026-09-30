@@ -26,6 +26,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: committed lib/ is what HEAD says it is (before anything can rewrite it)
+        run: node scripts/verify-lib-sync.mjs --check-only
       - name: verify-lib on the committed lib/
         run: npm run verify
       - name: pure-node unit bucket
