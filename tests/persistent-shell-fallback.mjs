@@ -101,6 +101,11 @@ async function runOnce(subprocess) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-wsl-fallback-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
+  // Registered immediately, before any await: the cleanup at the bottom of this function only
+  // runs on the path that reaches it, so a throw in the middle of a scenario would leave the
+  // DSH_HOME tree behind. On this machine os.tmpdir() is D:\Temp, where leaked fixture
+  // directories are invisible in `git status` and accumulate in silence.
+  process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch { /* best effort */ } })
 
   const registered = []
   const disposers = []
