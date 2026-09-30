@@ -1,0 +1,141 @@
+name: compat-window
+# Boots the declared rolling window of dsh releases with this plugin installed
+# (scripts/verify-dsh-compat.sh). Kept OFF ordinary PRs on purpose: each
+# version installs dsh from npm, boots `dsh web` twice and probes the plugin
+# API, which is minutes of billed windows time per entry. It runs weekly, on
+# demand, and whenever the window file or the compat script itself changes.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'single dsh version to test (default: the whole window from ci/compat-window.json)'
+        required: false
+        type: string
+  push:
+    branches: [main, 'ci/**']
+    paths:
+      - ci/compat-window.json
+      - scripts/verify-dsh-compat.sh
+      - .github/workflows/compat.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  read-window:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.win.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: win
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            node -e 'console.log("versions="+JSON.stringify([process.argv[1]]))' "$REQUESTED" >> "$GITHUB_OUTPUT"
+          else
+            node -e 'const j=require("./ci/compat-window.json");console.log("versions="+JSON.stringify(j.window))' >> "$GITHUB_OUTPUT"
+          fi
+
+  compat:
+    name: dsh ${{ matrix.version }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    needs: read-window
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.read-window.outputs.versions) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      COMPAT_PORT: 3091
+      TEMP: /tmp/compat-work
+      # the Windows spelling of the same directory (git-bash /tmp maps to the
+      # runner user's temp). A fixed job-level value so the upload step has a
+      # path even when an earlier step died before exporting anything.
+      COMPAT_BASE_WIN: 'C:\Users\runneradmin\AppData\Local\Temp\compat-work'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: provide pnpm (the dsh plugin manager shells out to it; the bash PATH on windows runners lacks it)
+        run: |
+          npm i -g pnpm
+          # run the version check OUTSIDE the checkout: pnpm >= 9 honours the
+          # project's packageManager field ("npm@…") and refuses to run at all
+          # inside this repo's root (ERR_PNPM_OTHER_PM_EXPECTED). dsh invokes
+          # pnpm from the profile/case directories, where that guard does not
+          # apply.
+          (cd "$RUNNER_TEMP" && pnpm --version)
+      - name: provision WSL1 Ubuntu (the plugin API must list at least one distro)
+        uses: Vampire/setup-wsl@v3
+        with:
+          wsl-version: 1
+          distribution: Ubuntu-24.04
+          set-as-default: 'true'
+          systemd: 'false'
+          use-headless: 'false'
+      - name: keep the instance warm so the 9P share stays visible
+        run: wsl.exe -d Ubuntu-24.04 -- bash -c '(nohup sleep 1800 >/dev/null 2>&1 & echo kept-alive)'
+      - name: pack and unpack the working tree (never test a published artifact for an unpublished commit)
+        run: |
+          mkdir -p /tmp/compat-pack/extract /tmp/compat-work
+          npm pack --ignore-scripts --pack-destination /tmp/compat-pack >/dev/null
+          tar -xzf /tmp/compat-pack/dsh-wsl-workspace-*.tgz -C /tmp/compat-pack/extract
+          # PLUGIN_REF is the unpacked SOURCE DIRECTORY; the script copies it
+          # next to the case's dsh install before adding it (a pnpm link's
+          # realpath is the target, and node walks up from THERE to resolve
+          # the plugin's optional peers — outside the pkg tree they are
+          # unreachable and boot dies with "Cannot find package
+          # '@deepseek-ai/schemastery'", the runner frame's exact stack).
+          echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/extract/package)" >> "$GITHUB_ENV"
+      - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
+        run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
+      - name: collect dsh plugin-import diagnostics
+        if: always()
+        run: |
+          BASE=$(ls -d /tmp/compat-work/dsh-compat-* 2>/dev/null | tail -1)
+          [ -n "$BASE" ] || { echo "no compat base found"; exit 0; }
+          find "$BASE" -path "*.plugin-manager*" -type f | while read -r f; do
+            echo "=== ${f#"$BASE"/} ==="
+            sed 's/[^[:print:]]//g' "$f" | tail -30
+          done
+          for wlog in "$BASE"/*/boot-with-plugin.log; do
+            [ -f "$wlog" ] || continue
+            echo "=== ${wlog#"$BASE"/} (full) ==="
+            sed 's/[^[:print:]]//g' "$wlog"
+          done
+          # dsh swallows the import error; reproduce it with a real stack.
+          # (Do NOT hand-build 'file:///' + a Windows path: file:///C:/x parses
+          # C: as the URL host on Windows — a local positive control showed the
+          # probe then reports MODULE_NOT_FOUND for a file that exists. The
+          # path is passed as the URL already.)
+          for entry in "$BASE"/*/dsh-home/profiles/web/node_modules/dsh-wsl-workspace/lib/index.js; do
+            [ -f "$entry" ] || { echo "plugin entry absent at $entry"; continue; }
+            echo "=== manual import ${entry#"$BASE"/} ==="
+            node --input-type=module -e "const u=await import('node:url');try{const m=await import(u.pathToFileURL(process.argv[1]).href);console.log('IMPORT OK keys=',Object.keys(m).length)}catch(e){console.log('IMPORT ERR',e.code||e.name);console.log(String(e.stack).split(String.fromCharCode(10)).slice(0,12).join(String.fromCharCode(10)))}" "$(cygpath -w "$entry")" 2>&1 | sed 's/[^[:print:]]//g' | head -14
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-${{ matrix.version }}
+          # verdicts + every step log only: the case tree also holds a full
+          # `npm i @deepseek-ai/dsh` node_modules (frame 1's artifact was
+          # 161 MB per version) and nothing in it is evidence.
+          path: |
+            ${{ env.COMPAT_BASE_WIN }}/**/verdicts.txt
+            ${{ env.COMPAT_BASE_WIN }}/**/*.log
+            ${{ env.COMPAT_BASE_WIN }}/**/.plugin-manager/**
+          retention-days: 14

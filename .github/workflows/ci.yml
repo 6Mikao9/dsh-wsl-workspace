@@ -1,0 +1,174 @@
+name: checks
+# Unified entry: every run step below is the same `npm run …` the README of
+# TESTING.md and docs/CHECK-CATALOG.md advertise for local use.
+on:
+  push:
+    branches: [main, 'ci/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-build:
+    name: gates on the committed artifact plane (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: verify-lib on the committed lib/
+        run: npm run verify
+      - name: pure-node unit bucket
+        run: npm run test:unit
+      - name: rebuild must reproduce the committed lib/ byte-for-byte
+        run: |
+          npm run build
+          if ! git diff --quiet -- lib; then
+            echo "RED — lib/ in HEAD is not what a build of HEAD's src/ produces:"
+            git diff --stat -- lib
+            exit 1
+          fi
+      - name: artifact identity (three packs agree; TESTING.md contract)
+        run: node scripts/verify-artifact-identity.mjs
+
+  runtime-tests:
+    name: node buckets against the pinned host tree (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: lint-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: install pinned @deepseek-ai host packages
+        run: node ci/install-pinned.mjs
+      - name: node bucket (build + host-package tests + host pair + rank --strict)
+        run: npm run test:node
+      - name: typecheck does not grow past its recorded baseline
+        run: node scripts/typecheck-gate.mjs
+      - name: clean npm install of the packed tarball
+        run: npm run verify:install
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: runtime-tests-logs
+          path: ~/.npm/_logs/
+          retention-days: 7
+
+  wsl-gate:
+    name: real-WSL hard gates (windows + WSL1 Ubuntu)
+    runs-on: windows-latest
+    timeout-minutes: 35
+    needs: lint-build
+    defaults:
+      run:
+        shell: bash
+    env:
+      WSL_COMPAT_DISTRO: Ubuntu-24.04
+      WSL_COMPAT_USER: root
+      # NOTE: do NOT set WSL_COMPAT_ROOT here — the drivers' built-in default
+      # (/tmp/dsh-wsl-compat, a Linux-side path) is what they need, and the
+      # Windows bash runner rewrites POSIX-path-shaped env values (frame 3:
+      # WSL_COMPAT_ROOT=/tmp/… reached node as C:\tmp\…).
+      WSL_COMPAT_RELAY_CWD: '\\wsl.localhost\Ubuntu-24.04\tmp\dsh-wsl-relay-ws'
+      WSL_COMPAT_DRIVE_CWD: 'C:\'
+      # search-real's Windows-/mnt assertion: point it at this checkout's own
+      # tests dir (the value baked into the script names the maintainer
+      # machine's deployed copy under D:\ProgramData).
+      WSL_COMPAT_DRIVE_PATH: ${{ github.workspace }}\tests
+      TMP: 'C:\tmp'
+      TEMP: 'C:\tmp'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: install pinned @deepseek-ai host packages
+        run: node ci/install-pinned.mjs
+      - name: provision WSL1 Ubuntu
+        uses: Vampire/setup-wsl@v3
+        with:
+          wsl-version: 1
+          distribution: Ubuntu-24.04
+          set-as-default: 'true'
+          systemd: 'false'
+          use-headless: 'false'
+      - name: pin the distro to WSL1 and the default-distro registry keys
+        run: |
+          set -u
+          v=$(wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -i ubuntu | grep -oE '[12]$' || true)
+          if [ "$v" != "1" ]; then
+            echo "instance is VERSION=${v:-unknown}; converting to 1 (conversion does not need Hyper-V)"
+            wsl.exe --set-version Ubuntu-24.04 1 2>&1 | tr -d '\0' | tail -2
+          fi
+          wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -iE "ubuntu.*[[:space:]]1$" || { echo "RED — Ubuntu-24.04 is not running as WSL1"; exit 1; }
+          wsl.exe --set-default Ubuntu-24.04
+      - name: fixture preparation (bounded keep-warm so the 9P share stays visible)
+        run: |
+          mkdir -p /c/tmp
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'mkdir -p /tmp/dsh-wsl-relay-ws /tmp/dsh-wsl-compat /root/symprobe/ws && (nohup sleep 900 >/dev/null 2>&1 & echo kept-alive)'
+      - name: preflight diagnostics (always collected before the gates)
+        run: |
+          mkdir -p logs
+          { wsl.exe --version 2>&1; wsl.exe -l -v 2>&1; wsl.exe -d Ubuntu-24.04 -- uname -a 2>&1;
+            wsl.exe -d Ubuntu-24.04 -- bash -c 'grep --version | head -1; find --version | head -1; whoami'; } | tr -d '\0' > logs/preflight-wsl.log 2>&1 || true
+          node -e 'const fs=require("node:fs");for(const p of ["\\\\wsl.localhost\\Ubuntu-24.04\\tmp","\\\\wsl.localhost\\Ubuntu-24.04\\tmp\\dsh-wsl-relay-ws"])console.log(p, fs.existsSync(p)?"present":"ABSENT")' > logs/preflight-unc.log 2>&1 || true
+          cat logs/preflight-wsl.log logs/preflight-unc.log
+      - name: build (smoke-built / shell-extra / client consume lib/)
+        run: npm run build
+      - name: win32-semantics unit files (wsl-skills + fs-policy assume drive-shaped cwd)
+        run: npm run test:win32
+      - name: run every WSL gate, collect all failures in one frame
+        run: |
+          # GitHub's bash runs with -e: every guard below must be compound,
+          # or the first red kills the loop and the remaining gates go dark
+          # (frame 3 did exactly that after shell-extra).
+          FAIL=0
+          run_one() {
+            local name="$1"; shift
+            local rc=0
+            echo "::group::$name"
+            "$@" > "logs/$name.log" 2>&1 || rc=$?
+            echo "rc=$rc"
+            tail -6 "logs/$name.log" || true
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then FAIL=1; fi
+            return 0
+          }
+          run_one smoke node --experimental-strip-types tests/smoke.ts
+          run_one exec-shape node --experimental-strip-types tests/exec-shape.mjs
+          run_one shell-extra node tests/shell-extra.mjs
+          run_one make-smoke-built node scripts/make-smoke-built.mjs
+          run_one smoke-built node --experimental-strip-types tests/smoke-built.ts
+          run_one fs-real node --experimental-strip-types scripts/compatibility/fs-real.mjs
+          run_one skills-real node --experimental-strip-types scripts/compatibility/skills-real.mjs
+          run_one search-real node --experimental-strip-types scripts/compatibility/search-real.mjs
+          run_one relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
+          exit $FAIL
+      - name: postflight (share state at the moment of failure)
+        if: failure()
+        run: |
+          mkdir -p logs
+          { wsl.exe -l -v 2>&1; wsl.exe -d Ubuntu-24.04 -- bash -c 'ls -la /tmp/dsh-wsl-compat 2>&1; ls -la /tmp/dsh-wsl-relay-ws 2>&1'; } | tr -d '\0' > logs/postflight.log 2>&1 || true
+          cat logs/postflight.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsl-gate-logs
+          path: logs/
+          retention-days: 7

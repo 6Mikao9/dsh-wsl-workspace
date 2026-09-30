@@ -26,13 +26,22 @@ mkdir -p "$BASE"
 PORT="${COMPAT_PORT:-3091}"
 PLUGIN_API="http://127.0.0.1:${PORT}/wsl-workspace/api"
 WEB_URL="http://127.0.0.1:${PORT}/"
+# What `plugin add` installs: by default the registry package name (maintainer
+# release flow). CI points PLUGIN_REF at a locally built tarball so an
+# unpublished commit is never tested against an older published artifact.
+PLUGIN_NAME="dsh-wsl-workspace"
+PLUGIN_REF="${PLUGIN_REF:-$PLUGIN_NAME}"
 
-wait_http() { # wait_http <url> <expected-substring> <tries>
-  local url="$1" expect="$2" tries="${3:-60}"
+wait_ready() { # wait_ready <boot-log> [tries] — the web server answers HTTP at all.
+  # Readiness is liveness, not auth: 0.2.0-rc gates `/` behind a browser
+  # token handshake (401 anonymous, 303 → ./ with the query dropped), so an
+  # HTML-content probe can never settle. The plugin's own health is asserted
+  # separately by api_code below; here any HTTP response counts.
+  local tries="${2:-60}" code
   for _ in $(seq 1 "$tries"); do
-    local body
-    body="$(curl -s --max-time 2 "$url" 2>/dev/null || true)"
-    if [ -n "$body" ] && printf '%s' "$body" | grep -q "$expect"; then
+    code="$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 2 "$WEB_URL" 2>/dev/null)"
+    code="${code:-000}"
+    if [ "$code" != "000" ]; then
       return 0
     fi
     sleep 2
@@ -41,9 +50,14 @@ wait_http() { # wait_http <url> <expected-substring> <tries>
 }
 
 api_code() { # api_code <method> <params-json>
-  curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$PLUGIN_API" \
+  # curl already prints 000 for a failed connect with -w; only default the
+  # never-printed case (curl died before writing) — otherwise the caller
+  # reads "000000".
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 5 -X POST "$PLUGIN_API" \
     -H 'Content-Type: application/json' \
-    -d "{\"method\":\"$1\",\"params\":$2}" 2>/dev/null || echo 000
+    -d "{\"method\":\"$1\",\"params\":$2}" 2>/dev/null)"
+  printf '%s' "${code:-000}"
 }
 
 for VERSION in "$@"; do
@@ -65,8 +79,22 @@ for VERSION in "$@"; do
   fi
   BIN="$WORK/pkg/node_modules/@deepseek-ai/dsh/lib/bin.js"
 
-  echo "[install] dsh plugin --profile web add dsh-wsl-workspace"
-  if ! node "$BIN" plugin --profile web add dsh-wsl-workspace > "$WORK/plugin-add.log" 2>&1; then
+  # If PLUGIN_REF names a directory, stage it INSIDE the case's pkg tree
+  # first: `plugin add` creates a pnpm link whose realpath is the source
+  # directory, and node resolves the plugin's optional peers by walking up
+  # from that realpath — only next to the dsh install are they reachable.
+  ADD_REF="$PLUGIN_REF"
+  SRC_UNIX="$(cygpath -u "$PLUGIN_REF" 2>/dev/null || printf '%s' "$PLUGIN_REF")"
+  if [ -d "$SRC_UNIX" ]; then
+    DEST="$WORK/pkg/node_modules/dsh-wsl-workspace"
+    rm -rf "$DEST"
+    mkdir -p "$WORK/pkg/node_modules"
+    cp -r "$SRC_UNIX" "$DEST" || { echo "  ✖ staging the plugin source into the case tree failed"; echo "$VERSION STAGE_FAIL unknown" >> "$BASE/verdicts.txt"; continue; }
+    ADD_REF="$(cygpath -w "$DEST")"
+  fi
+
+  echo "[install] dsh plugin --profile web add $ADD_REF"
+  if ! node "$BIN" plugin --profile web add "$ADD_REF" > "$WORK/plugin-add.log" 2>&1; then
     echo "  ✖ plugin add failed (see $WORK/plugin-add.log)"
     echo "$VERSION PLUGIN_ADD_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
@@ -75,16 +103,23 @@ for VERSION in "$@"; do
     && echo "  ✔ profile manifest carries the plugin"
 
   echo "[start] booting web on :$PORT"
-  node "$BIN" web --port "$PORT" > "$WORK/boot-with-plugin.log" 2>&1 &
+  node "$BIN" web --port "$PORT" --no-open > "$WORK/boot-with-plugin.log" 2>&1 &
   SERVER_PID=$!
-  if ! wait_http "$WEB_URL" '<!DOCTYPE html\|<!doctype html\|html' 60; then
+  if ! wait_ready "$WORK/boot-with-plugin.log" 60; then
     echo "  ✖ server did not serve the web UI"
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION BOOT_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
   echo "  ✔ web UI is up"
-  CODE="$(api_code listDistros '{}')"
+  # the plugin route registers while the server is still coming up — poll
+  # for its 200 instead of taking one shot that races plugin loading
+  CODE=000
+  for _ in $(seq 1 20); do
+    CODE="$(api_code listDistros '{}')"
+    [ "$CODE" = "200" ] && break
+    sleep 2
+  done
   if [ "$CODE" = "200" ]; then
     echo "  ✔ plugin route answers 200 (plugin loaded and registered)"
   else
@@ -108,9 +143,9 @@ for VERSION in "$@"; do
     continue
   fi
   echo "  ✔ removed"
-  node "$BIN" web --port "$PORT" > "$WORK/boot-without-plugin.log" 2>&1 &
+  node "$BIN" web --port "$PORT" --no-open > "$WORK/boot-without-plugin.log" 2>&1 &
   SERVER_PID=$!
-  if ! wait_http "$WEB_URL" '<!DOCTYPE html\|<!doctype html\|html' 60; then
+  if ! wait_ready "$WORK/boot-without-plugin.log" 60; then
     echo "  ✖ server did not come back after removal"
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION REBOOT_FAIL unknown" >> "$BASE/verdicts.txt"
@@ -131,3 +166,16 @@ done
 echo "=============================================================="
 echo " verdicts ($BASE/verdicts.txt):"
 cat "$BASE/verdicts.txt"
+
+# The verdicts are the contract: only `PASS compatible` is green. Without
+# this exit the caller always saw rc 0 — the frame-1 compat matrix was
+# three PLUGIN_ADD_FAIL lines under a green checkmark.
+if [ ! -s "$BASE/verdicts.txt" ]; then
+  echo "verify-dsh-compat: RED — verdicts.txt is empty (no version reached a verdict)" >&2
+  exit 1
+fi
+if grep -qv ' PASS compatible$' "$BASE/verdicts.txt"; then
+  echo "verify-dsh-compat: RED — at least one verdict is not 'PASS compatible'" >&2
+  exit 1
+fi
+echo "verify-dsh-compat: OK — $(wc -l < "$BASE/verdicts.txt") verdict(s), all PASS compatible"

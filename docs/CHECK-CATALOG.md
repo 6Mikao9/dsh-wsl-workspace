@@ -1,0 +1,111 @@
+# Check catalog
+
+Single inventory of every test, gate and manual pass in this repository, its
+run command, its environment prerequisites, and where it lives in the
+automation. CI wiring: `.github/workflows/ci.yml` (per PR/push) and
+`.github/workflows/compat.yml` (rolling window, weekly/dispatch). Local and CI
+run the same commands: the `npm run test:*` buckets below.
+
+## A. Pure-node unit bucket — `npm run test:unit` (+ `npm run test:win32` on windows), no host packages needed
+
+| Check | What it pins down | Prereq | CI home |
+| --- | --- | --- | --- |
+| `tests/variants.test.ts` | WSL preset-variant transform: row stripping, realm injection, exactly-once re-injection, unknown rows survive | node ≥ 24 | ci.yml#lint-build |
+| `tests/paths.test.ts` | UNC↔Linux path conversion, `/mnt/<drive>` mapping, Windows-path keys, distro-username validation | node ≥ 24 | ci.yml#lint-build |
+| `tests/locales.test.ts` | zh/en dictionary key parity, no empty values, help-panel body shape | node ≥ 24 | ci.yml#lint-build |
+| `tests/wsl-skills.test.ts` | skill provider over an in-memory IO fake: nested discovery, ranks, frontmatter incl. block scalars, depth/budget, cache TTL, dir-symlink following | node ≥ 24 — **runs on the windows runner** (`npm run test:win32`, ci.yml#wsl-gate): expected UNC strings assume win32 `path.join`; on ubuntu the same provider code yields `/`-joined paths (first CI frame 2026-09-30, 2/84 failed there) | ci.yml#wsl-gate |
+| `tests/relay-node.test.mjs` | v0.7.5 #40/#43: relay-interpreter resolution — Electron-host classification, candidate order, probe discriminator | node ≥ 24 — **runs on windows** (`npm run test:win32`): despite injected platform/exists callbacks, the candidate assembly joins Windows-shaped constants with the host-native `path`, so on ubuntu the strings differ (CI frame a37c3e3: 3 failures on ubuntu, green on windows) | ci.yml#wsl-gate |
+| `tests/readme-compat.test.mjs` | v0.7.5: `dsh.compatibility.dshReleases` vs both full READMEs' Compatibility sections + the install-URL, so declaration and documentation cannot drift apart | node ≥ 24 | ci.yml#lint-build |
+
+## B. Node buckets needing the pinned host packages — `npm run test:node`
+
+The `@deepseek-ai/*` peers are optional and provided by the host at runtime;
+in a clean checkout `node ci/install-pinned.mjs` materialises the pinned tree
+(ci/pinned-deps.json → ci/deps) and links it in. `test:node` rebuilds `lib/`
+first because the client/host integration checks consume built artifacts.
+
+| Check | What it pins down | Extra prereq | CI home |
+| --- | --- | --- | --- |
+| `tests/shell.test.ts` | login-shell `cd` prefix keeps the workdir (quote escaping); non-login shells leave the command alone | cordis | ci.yml#runtime-tests |
+| `tests/fs-execution-context.test.ts` | `WslFileSystem` inherits the session cwd through AsyncLocalStorage; falls back to the configured distro without an agent | cordis | ci.yml#runtime-tests |
+| `tests/fs-policy.test.ts` | write fence across `workspace-write` / read-only / danger-full-access / no-policy, plus the symlink-resolution seam (creates `.fs-policy-*` dirs in cwd, cleans up in finally) | cordis; **runs on windows** (`npm run test:win32`, ci.yml#wsl-gate): the fixture derives the distro from the shape of `process.cwd()`, so a POSIX-shaped runner cwd yields "Linux path carries no distribution" (2/2 CI frame 2026-09-30) | ci.yml#wsl-gate |
+| `tests/wsl-jobs.test.ts` | background-job producer (regression: `run_in_background` was silently ignored) | schemastery, dsh-tools | ci.yml#runtime-tests |
+| `tests/wsl-search.test.ts` | grep/glob twins vs the host `dsh-tool-fs-search` exported pieces (framing, caps, footers) — drift detector | dsh-tool-fs-search, dsh-output-retention | ci.yml#runtime-tests |
+| `tests/client-lifecycle.test.mjs` | the published `lib/client.js` in a vm sandbox against legacy + current runtime facades: preset binding, create & open, late-service registration | built lib | ci.yml#runtime-tests |
+| `tests/host-materialize.mjs` | host `apply()` directory channel: generated rows reference real lib files, atomic publish, stale cleanup, legacy `wsl` removal | cordis, schemastery, js-yaml, built lib | ci.yml#runtime-tests |
+| `tests/host-declare.mjs` | declaration channel (0.1.7+): capability switch, one declaration per healthy source, `!!js` round-trip, dispose retires all — must run paired with the check above | same | ci.yml#runtime-tests |
+| `scripts/check-rank-parity.mjs --strict` | PROJECT_\*\_RANK copies vs the host dsh-skill-filesystem lib; `--strict` makes a missing host package a failure (the flag was documented but not honoured until 0.7.4+CI) | pinned tree | ci.yml#runtime-tests |
+
+## C. Build / artifact-plane gates
+
+| Check | What it pins down | CI home |
+| --- | --- | --- |
+| `npm run build` (clean → tsdown → verify) | the committed `lib/` is the current build pipeline's output | ci.yml#lint-build (plus every bucket that consumes lib) |
+| `npm run verify` = `scripts/verify-lib.mjs` | every lib file imports the `node:*` specifiers it calls (statSync 0.2.3 class bug) and nothing bound gets tree-shaken away | ci.yml#lint-build |
+| rebuild-vs-committed | `npm run build && git diff --quiet -- lib` — the committed artifact matches a build of the committed sources, byte for byte (`.gitattributes` keeps `lib/** -text` so this is exact) | ci.yml#lint-build |
+| `node scripts/verify-artifact-identity.mjs` | the TESTING.md §13 contract, machine-run: pack with prepack rebuild, pack `--ignore-scripts` over committed lib, and a repeat pack must agree; byte-identical tarballs reported as the strongest form | ci.yml#lint-build |
+| `npm run verify:install` | a clean plain-npm install of the packed tarball (the gate 0.7.0's E404 peer would have failed) | ci.yml#runtime-tests |
+| `node scripts/typecheck-gate.mjs` | `tsc --noEmit` error count must not exceed `ci/typecheck-baseline.json` (the documented "count does not grow" convention, previously unenforced; `--record` rebaselines) | ci.yml#runtime-tests |
+
+## D. Checks needing Windows + a real WSL distribution — `npm run test:wsl`
+
+Hard gates in ci.yml#wsl-gate on windows-latest with WSL1 Ubuntu via
+Vampire/setup-wsl. Environment knobs: `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`,
+`WSL_COMPAT_ROOT`, `WSL_COMPAT_RELAY_CWD`, `WSL_COMPAT_DRIVE_CWD`.
+
+| Check | What it pins down | Notes |
+| --- | --- | --- |
+| `tests/smoke.ts` | distro discovery, full 9P UNC file round-trip, WSL-side bash (cwd translation, WSLENV, stdin, background), `/mnt/<drive>` dual access, default-distro fallback | asserts tmpdir's UNC and `/mnt` spellings match exactly — a remapped `%TEMP%` whose drive letter case differs from the 9P spelling trips the dual-access assertion (seen on a machine with `TEMP=D:\Temp`) |
+| `tests/exec-shape.mjs` | the Desktop `child_process`-wrapper regression (#35/#36) in probe subprocesses, wrapped and plain shapes, through the real `listDistros`/`defaultDistro`/`resolveLinuxSymlink` | reads HKCU Lxss (needs a registered default distro); slow, bounded at 60 s |
+| `tests/shell-extra.mjs` | cwd with spaces + a single quote, explicit `DSH_WSL_USER`, foreground timeout (`timedOut`), AbortController cancellation | |
+| `tests/smoke-built.ts` via `scripts/make-smoke-built.mjs` | the whole smoke pass run against `lib/` instead of `src/` — previously only existed as a runtime rewrite inside Run-Checks.ps1 | generated, gitignored |
+| `scripts/compatibility/fs-real.mjs` | symlink × policy-fence combinations on the real share (outside link denied, dangling link creates, distro `/tmp` allowed) | fixtures under `$HOME`, not `/tmp`, to keep the temp allowance honest |
+| `scripts/compatibility/skills-real.mjs` | real-9P skill discovery: CRLF+BOM bodies, external linked project, nested-below-linked, dangling, loop, node_modules trap | exercises how the share enumerates Linux symlinks — the WSL-build-sensitive check |
+| `scripts/compatibility/search-real.mjs` | GNU grep/find contract inside the distro over real fixtures (framing, caps, footers, cards) | its Windows-/mnt assertion names the maintainer machine's deployed copy by default — CI points `WSL_COMPAT_DRIVE_PATH` at this checkout's own `tests` dir (runner frame 3: find died on the absent D:\ProgramData tree). The searches run through `wsl.exe … -e bash -c <script>`; older WSL builds (this machine's 2.1.5) reject that form with ERROR_FILE_NOT_FOUND (stderr UTF-16 → decodes empty), newer builds are fine |
+| `scripts/compatibility/relay-real.mjs` | the persistent-shell relay: state (`export`, `cd`) survives between sends, starts in the session cwd, honours `DSH_WSL_DISTRO`/`DSH_WSL_USER` | spawns with the session UNC as cwd — two prerequisites: the UNC directory must exist **inside a running instance** (the share is invisible when the distro idles out, and the resulting `spawn … ENOENT` misleadingly names node.exe), and CI keeps a bounded `sleep` alive during the run. GREEN on the WSL1 runner (frame 4) and green on this Win10 machine once the env string carried real double backslashes — an earlier "Win10 cannot spawn with a UNC cwd" attribution here was **wrong** (the shell had eaten one escaping layer; 20/20 UNC-cwd spawns succeed with a correct path); retracted 2026-09-30 |
+
+`scripts/compatibility/host-api.mjs` (12 API probes) needs a running
+`dsh web` and lives in the compat matrix, not in ci.yml: the compat job boots
+one per version. v0.7.5 adds `scripts/compatibility/conpty-relay.mjs` (the
+relay interpreter under a real ConPTY, per the case's `runtime.json`) at the
+same tier: it is registered in Run-Checks.ps1 for the maintainer sweep and
+needs a booted case manifest, so no cloud fixture exists for it yet —
+recorded here rather than silently dropped from the automation map.
+
+
+## E. Compatibility matrix
+
+| Driver | What it does | Where |
+| --- | --- | --- |
+| `scripts/verify-dsh-compat.sh <version…>` | per dsh release: isolated `DSH_HOME`, `npm i @deepseek-ai/dsh@<v>`, `dsh plugin --profile web add` (set `PLUGIN_REF` to the **extracted plugin directory** — `plugin add` accepts a package name or a local directory, never a .tgz path), boot web, probe `POST /wsl-workspace/api listDistros` = 200, uninstall, re-probe must be gone; exits non-zero unless every verdict line is `PASS compatible` (a frame-1 discovery: the script used to print failures under a green checkmark) | compat.yml matrix over `ci/compat-window.json` (rolling 3 releases; weekly + dispatch + window-file changes) |
+| `scripts/compatibility/*.ps1` (Prepare/Start/Run-Checks/Stop/Check-Uninstall) | the full 15-check sweep per case, pnpm-pinned case trees, junctions, PS 7.2 | manual / maintainer machine; kept as the deep tool |
+| `scripts/repro-setup.sh` + `scripts/repro-e2e.mjs` | builds the nested-skill repro tree inside a distro and drives the provider against the real share (4 printed assertions) | local, env-overridable |
+
+## F. Still human (TESTING.md "End-to-end verification in the running harness")
+
+- W button visible beside Settings in the sidebar foot.
+- Distribution picker non-empty by eye (the #35/#36 failure shape was an
+  empty picker with a caught type error; client-lifecycle now covers the
+  server half, the pixel is human).
+- Mode picker shows and lands on `WSL · <mode>` variants; Standard/PTC/
+  Minimal/Creative switches.
+- F5/panel reload keeps the workspace (TESTING.md itself states no script
+  can see the client half).
+- The six-item frontend pass per release (create & open, write, read,
+  one-shot bash, persistent bash, skills) — the commandable half of each is
+  automated in ci.yml#wsl-gate and compat.yml; the click half stays human.
+- Agent-session nested-skill probe (needs a real model session).
+
+## Local baseline, 2026-09-30 (Windows 10 19045 / WSL 2.1.5 / user machine, pinned tree installed)
+
+| Group | Result |
+| --- | --- |
+| A (4 files, `npm run test:unit`) | GREEN 84/84 |
+| B (`npm run test:node`: 68 --test assertions + HOST MATERIALIZE PASSED + HOST DECLARE PASSED + rank match) | GREEN; strict negative (no host tree → rc 1) and drift mutation (rank 999 → rc 1) both verified |
+| C | rebuild byte-stable after the `chore(lib)` absorption commit; artifact identity: three packs byte-identical; mutation control (appended byte to a lib file) → RED, restore → GREEN; typecheck baseline recorded at 212 |
+| D (local Win10 19045 / WSL2 2.1.5) | exec-shape / shell-extra / fs-real GREEN; generator + smoke + smoke-built GREEN with a normalized `TMP=C:/tmp` (case-strict dual-access spelling vs native `%TEMP%=D:\Temp`); relay-real GREEN once the env path carried real double backslashes — the earlier "Win10 cannot spawn with a UNC cwd" attribution was **wrong** (the shell had eaten one escaping layer; 20/20 UNC-cwd spawns succeed), retracted 2026-09-30; skills-real RED — this machine's 9P presents the external link as `other` and `lstat` throws EISDIR, the provider skips it (GREEN on the WSL1 runner); search-real RED — `wsl.exe … -e bash` fails with ERROR_FILE_NOT_FOUND on this WSL build, stderr in UTF-16 decodes empty (GREEN on the runner) |
+| D (CI, WSL1 Ubuntu-24.04, windows-latest) | frame 4 (c6f0a4b): 8/9 gates GREEN, only search-real died on its Windows-fixture default (the maintainer machine's `D:\ProgramData\…` path), fixed via `WSL_COMPAT_DRIVE_PATH`; frame 5 (ac5219e): **all three checks jobs GREEN** |
+| E compat (CI, final frame) | after the pkg-tree staging fix (a pnpm `link:`'s realpath is the source directory; peers must sit on its walk-up, so the unpacked plugin is copied into `$WORK/pkg/node_modules` before `plugin add`): **all three matrix versions `PASS compatible`** (verdicts.txt verbatim for 0.2.0-rc.2 / 0.2.0-rc.1 / 0.1.7-rc.2) with the honest verdict gate — the fix was first validated minimally on the Win10/WSL2.1.5 machine (stage→add→boot→listDistros 200 in 4 s) before the full matrix ran |
+| merge frame (origin/main #39 in) | merged #39 (PTY-relay node-executable fix, src/index.ts + lib/index.js only); lib rebuilt on the merged src, byte-stable; cloud: checks **success** + dispatched compat matrix **success**, all three versions `PASS compatible` again (matrix closed 2026-09-30T10:56:31Z per the run's server updatedAt) |
+| E compat (local rehearsal, dsh 0.2.0-rc.2) | full chain GREEN after four harness fixes: (1) verdict-based exit — the script used to exit 0 under all-FAIL verdicts (its own false green, frame-1 CI read three `PLUGIN_ADD_FAIL` lines under a green checkmark); (2) `PLUGIN_REF` is the **extracted directory**, `plugin add` rejects a .tgz path; (3) readiness now means "any HTTP response" — 0.2.0-rc gates `/` behind a browser token (401 anonymous, 303→`./` drops the query), so an HTML-content probe can never settle; plugin health is asserted by the API poll instead; (4) `curl -w %{http_code}` + `|| echo 000` double-printed "000000" and defeated the dead-server comparison — removed at both sites; API probe polls to 200 because route registration races boot. Final: `0.2.0-rc.2 PASS compatible`, uninstall clean (405). CI-side root cause on top: the windows runner's bash PATH lacks **pnpm**, which the dsh plugin manager shells out to — compat.yml installs it |
+| Attribution | the four D reds are machine-shape findings (recorded above per check); CI on fresh runners is the arbiter for the hard gates; none of the four is silently downgraded |
