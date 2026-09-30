@@ -42,15 +42,24 @@ if (found.length === 0) {
   process.exit(1)
 }
 
+// The declared entry names, from tsdown.config.ts — the same table verify-lib uses. A shape
+// heuristic is not good enough here: `lib/wsl-search.js` looks exactly like a content-hashed
+// chunk to one, and it is a real entry. That false positive failed a green run on the runner.
+import { libEntryNames } from '../tests/support/lib-entries.mjs'
+const entries = await libEntryNames()
+
 const problems = []
 for (const { key, specifier } of found) {
   const prefix = specifier.split('/')[0]
   if (prefix !== expectedPlane) {
     problems.push(`${key} loaded from ${specifier}, expected a ${expectedPlane}/ module`)
   }
-  // A hashed chunk or a file-local class is not a plane: it is scraping.
-  if (/^[a-z]+-[A-Za-z0-9_]{6,}\.js$/.test(specifier.split('/').pop() ?? '')) {
-    problems.push(`${key} loaded from content-hashed chunk ${specifier} — declare a tsdown entry instead`)
+  // A hashed chunk or a file-local class is not a plane: it is scraping. Decided against the
+  // declared entry list, so adding a tsdown entry is the only way to make it legal.
+  const file = specifier.split('/').pop() ?? ''
+  if (prefix === 'lib' && !entries.includes(file)) {
+    problems.push(`${key} loaded from ${specifier}, which tsdown.config.ts does not declare as an `
+      + 'entry — it is a content-hashed chunk or a transitive file; add a real entry instead')
   }
 }
 
