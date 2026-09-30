@@ -385,7 +385,68 @@ lines and are listed because they remove a class of failure rather than a file.
     split `tests/relay-node.test.mjs:119-133` (which spawns the real interpreter)
     out of the deterministic bucket.
 
+## Corrections after the pass
+
+Three judgements above were wrong or over-extended once the apparatus was actually run and the
+CI environment was reasoned about properly. They are corrected here rather than deleted, and the
+versions in the published issue #44 carry the same corrections as a follow-up comment.
+
+1. **Finding 2 / "The committed `lib/`" — "`git diff --quiet -- lib` is half-blind in CI" was
+   wrong about the venue.** A CI job checks out `HEAD` into a fresh tree, so no untracked file can
+   exist there, and deletions of tracked files *are* reported by `git diff`. The scratch-repository
+   demonstration (a `lib/b.js` untracked with `git diff --quiet` exiting 0) is valid but only
+   proves the **local** case. The genuine holes are: `verify-lib.mjs` had no floor (an empty
+   `lib/` printed `OK: 0 lib entries` and exited 0 — still true, measured), and the **publish
+   path** runs neither drift check, because `prepublishOnly` was only `verify:install`
+   (`package.json:29`) while `prepack` rebuilds. So the right fix is a local/publish gate
+   (`scripts/verify-lib-sync.mjs`, now wired into `prepublishOnly`), with the `ci.yml` step placed
+   before the rebuild as a cheap committed-tree assertion — not a claim that CI was blind to
+   untracked files.
+2. **§4 "the stub cannot fail the way the host fails" — the venue was mis-stated, and the real
+   shape is worse than described.** I wrote that "on a win32 runner both tests silently default to
+   persistent shell". `tests/host-materialize.mjs` and `tests/host-declare.mjs` run in
+   `runtime-tests` on **ubuntu**, where `src/index.ts:557` (`process.platform !== 'win32'`)
+   short-circuits before the probe is ever called — so the CI frame does not merely take the wrong
+   branch, it **never executes the probe at all**. Consequence for the repair: the fallback is
+   testable offline by redefining `process.platform` before `apply()`, which is how
+   `tests/persistent-shell-fallback.mjs` now covers it (24 labelled assertions, plus a mutation
+   control that flipped `=== void 0` to `!==` in `lib/index.js` and produced 8 failures).
+3. **§5 "Is there an end-to-end test?" — I under-credited `scripts/compatibility/host-api.mjs`.**
+   It is not an assertion-free printer: it performs 12 probes, each checking `response.ok` plus a
+   semantic verifier (`:14-31`), and sets `process.exitCode = 1` on any failure (`:34`). What it
+   lacked is a floor — `[].some(…)` is false, so a run that probed nothing printed
+   `0/0 checks passed` and exited 0, the same no-floor class as `verify-lib`. That is now fixed and
+   measured (`0 probes -> RED … expected 12`, rc 1). The §5 conclusion is unchanged: it is wired to
+   no CI job, because it needs a booted harness.
+4. **A claim of mine that survived testing.** `cd ci/deps && npm ci --dry-run` exits 0 with
+   `up to date`, so the reviewer argument that the lock file's root entry (19 dependencies) cannot
+   satisfy `ci/deps/package.json` (20) and therefore `npm ci` never runs was false, and stays
+   withdrawn above.
+
+Nothing else in this document was re-graded. Items whose evidence was `(A) measured` here were
+re-measured on this frame; `(C)`/`(U)` items remain unproven and are still labelled as such.
+
 ## Withdrawn during the pass
+
+- **"The deterministic install branch of `ci/install-pinned.mjs` is dead code,
+  because `ci/deps/package-lock.json` cannot satisfy `npm ci`."** A reviewer
+  derived this from a real observation — the lock's root entry declares 19
+  dependencies while `ci/deps/package.json:4-24` declares 20, with
+  `@deepseek-ai/cordis-plugin-include` absent from the lock root — and from it
+  concluded `npm ci` must fail. Measured here: `npm ci --no-audit --no-fund
+  --dry-run` in `ci/deps` reports `up to date` and exits 0. The 19-versus-20
+  difference is real; the conclusion drawn from it is not. Do not reuse that
+  argument. The adjacent finding that survives is the missing version comparison
+  (`ci/install-pinned.mjs:111`).
+- **"UTF-16 mis-decode produces null-laced mojibake."** Corrected above: decoding
+  UTF-16LE as UTF-8 in Node drops the NUL bytes rather than preserving them, so
+  the observable symptom is spacing between characters. The line and the risk are
+  unchanged; the described symptom was wrong.
+- Reviewer figures replaced by measurements taken here: `src/host/wsl-search.ts`
+  blame attribution is 1165 of 1166 lines to `d701fbe` (not 1166), `src/index.ts`
+  has 14 distinct blame commits (not 15), and the unreachable-commit tally across
+  stale remote branches is 17 branches holding 54 commits (not "17 branches,
+  53").
 
 - **"The deterministic install branch of `ci/install-pinned.mjs` is dead code,
   because `ci/deps/package-lock.json` cannot satisfy `npm ci`."** A reviewer
