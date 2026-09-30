@@ -1,8 +1,14 @@
 # DSH 版本兼容性适配总结（最终结论）
 
+> **已取代（2026-09-30 归档）**：本文是 0.4.1 当时的适配结论，自称「最终结论」，但兼容声明
+> 已从 4 个版本增长到 10 个（`package.json` 的 `dsh.compatibility.dshReleases`），而它描述的服务面
+> 也在 0.7.3 换了代（预设从目录通道改为声明通道、`read()` → `readDocument()`）。逐版本实测证据在
+> [../compatibility-evidence.md](../compatibility-evidence.md)，变更原因在 [../../CHANGELOG.md](../../CHANGELOG.md)。
+> 正文一字未改；随归档位置移动的只有第 5 行指向证据文档的相对链接（`./` → `../`）。
+
 > 本文档为 dsh-wsl-workspace v0.4.1 对 DSH 多版本兼容适配的**最终落地结论**。
 > 取代根目录早期草案 `ADAPTATION_PLAN.md`（已废弃删除）与 `ADAPTATION_PLAN_V2.md`（内容并入本文）。
-> Host 面可复现验证流程见 [compatibility-evidence.md](./compatibility-evidence.md)。
+> Host 面可复现验证流程见 [compatibility-evidence.md](../compatibility-evidence.md)。
 
 ## 1. 适配目标（最终支持范围）
 
