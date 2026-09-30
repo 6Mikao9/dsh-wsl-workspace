@@ -26,6 +26,11 @@ mkdir -p "$BASE"
 PORT="${COMPAT_PORT:-3091}"
 PLUGIN_API="http://127.0.0.1:${PORT}/wsl-workspace/api"
 WEB_URL="http://127.0.0.1:${PORT}/"
+# What `plugin add` installs: by default the registry package name (maintainer
+# release flow). CI points PLUGIN_REF at a locally built tarball so an
+# unpublished commit is never tested against an older published artifact.
+PLUGIN_NAME="dsh-wsl-workspace"
+PLUGIN_REF="${PLUGIN_REF:-$PLUGIN_NAME}"
 
 wait_http() { # wait_http <url> <expected-substring> <tries>
   local url="$1" expect="$2" tries="${3:-60}"
@@ -65,8 +70,8 @@ for VERSION in "$@"; do
   fi
   BIN="$WORK/pkg/node_modules/@deepseek-ai/dsh/lib/bin.js"
 
-  echo "[install] dsh plugin --profile web add dsh-wsl-workspace"
-  if ! node "$BIN" plugin --profile web add dsh-wsl-workspace > "$WORK/plugin-add.log" 2>&1; then
+  echo "[install] dsh plugin --profile web add $PLUGIN_REF"
+  if ! node "$BIN" plugin --profile web add "$PLUGIN_REF" > "$WORK/plugin-add.log" 2>&1; then
     echo "  ✖ plugin add failed (see $WORK/plugin-add.log)"
     echo "$VERSION PLUGIN_ADD_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
