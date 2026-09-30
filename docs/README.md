@@ -9,6 +9,7 @@ replaced it.
 | Path | Language | What it is | Status |
 |---|---|---|---|
 | [design.zh.md](./design.zh.md) | zh | Design decisions and round-by-round history (M1 → fifth round) | Background; two claims it makes were reversed later — see its header |
+| [CHECK-CATALOG.md](./CHECK-CATALOG.md) | en | The single inventory of every test, gate and manual pass: command, prerequisites, CI home, and what still needs a human | Active — added by #41, and it lists this index's own gate in bucket A |
 | [compatibility-evidence.md](./compatibility-evidence.md) | en | Per-release verification evidence, appended run by run | Active |
 | [archive/publish-checklist.zh.md](./archive/publish-checklist.zh.md) | zh | One-off checklist for turning the plugin directory into a GitHub repo | Superseded 2026-09-30, kept verbatim |
 | [archive/compatibility-summary-0.4.1.zh.md](./archive/compatibility-summary-0.4.1.zh.md) | zh | Compatibility conclusions as of 0.4.1 | Superseded 2026-09-30, kept verbatim |
@@ -21,7 +22,7 @@ replaced it.
 | [README.zh.md](../README.zh.md) | zh | Same content, Chinese |
 | [README.ja.md](../README.ja.md) · [README.ko.md](../README.ko.md) · [README.fr.md](../README.fr.md) · [README.de.md](../README.de.md) · [README.es.md](../README.es.md) · [README.pt.md](../README.pt.md) · [README.ru.md](../README.ru.md) | 7 languages | Condensed entry points: install, usage, current behaviour, licence. They point at the English `## Compatibility` section instead of repeating the release list, and they carry no release history of their own |
 | [CHANGELOG.md](../CHANGELOG.md) / [CHANGELOG.zh.md](../CHANGELOG.zh.md) | en / zh | Release history, newest first, every version |
-| [TESTING.md](../TESTING.md) | en | How to verify a change or a release; shipped in the npm tarball (`package.json` `files`), so it stays at the repository root |
+| [TESTING.md](../TESTING.md) | en | How to verify a change or a release, with the fast path CI runs; the per-check inventory is [CHECK-CATALOG.md](./CHECK-CATALOG.md). Shipped in the npm tarball (`package.json` `files`), so it stays at the repository root |
 | [LICENSE](../LICENSE) / [NOTICE](../NOTICE) | en | Licence text and the third-party attribution list |
 | [src/client/locales.ts](../src/client/locales.ts) | zh + en | The dialog's "?" help panel: the product-side copy of usage and known limitations. Not prose documentation — it is what the shipped build renders, and its version label is hard-coded there |
 
@@ -46,6 +47,6 @@ The gate is docs-only, so it needs node ≥ 24 and nothing else — no host pack
 network. Its mutation control: pointed at a tree before this split (`npm run test:docs --
 --root <dir>`) it reports every stale translation by name and still exits 1.
 
-The CI wiring for it — one step in the `checks` workflow and one row in the check catalogue —
-arrives with #41, which is where those files live; until that merges the gate is run by hand
-before touching a README.
+Since #41 is merged, the gate runs in CI too: `npm run test:docs` is a step of the `checks`
+workflow's `lint-build` job, and it is registered in bucket A of
+[CHECK-CATALOG.md](./CHECK-CATALOG.md).

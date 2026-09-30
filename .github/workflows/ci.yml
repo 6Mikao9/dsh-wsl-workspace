@@ -40,6 +40,8 @@ jobs:
           fi
       - name: artifact identity (three packs agree; TESTING.md contract)
         run: node scripts/verify-artifact-identity.mjs
+      - name: documentation parity (declared README sections, shared facts, link graph)
+        run: npm run test:docs
 
   runtime-tests:
     name: node buckets against the pinned host tree (ubuntu)
