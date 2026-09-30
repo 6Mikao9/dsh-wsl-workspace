@@ -59,6 +59,10 @@ jobs:
     env:
       COMPAT_PORT: 3091
       TEMP: /tmp/compat-work
+      # the Windows spelling of the same directory (git-bash /tmp maps to the
+      # runner user's temp). A fixed job-level value so the upload step has a
+      # path even when an earlier step died before exporting anything.
+      COMPAT_BASE_WIN: 'C:\Users\runneradmin\AppData\Local\Temp\compat-work'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,7 +73,12 @@ jobs:
       - name: provide pnpm (the dsh plugin manager shells out to it; the bash PATH on windows runners lacks it)
         run: |
           npm i -g pnpm
-          pnpm --version
+          # run the version check OUTSIDE the checkout: pnpm >= 9 honours the
+          # project's packageManager field ("npm@…") and refuses to run at all
+          # inside this repo's root (ERR_PNPM_OTHER_PM_EXPECTED). dsh invokes
+          # pnpm from the profile/case directories, where that guard does not
+          # apply.
+          (cd "$RUNNER_TEMP" && pnpm --version)
       - name: provision WSL1 Ubuntu (the plugin API must list at least one distro)
         uses: Vampire/setup-wsl@v3
         with:
@@ -89,7 +98,6 @@ jobs:
           # pointed PLUGIN_REF at the tarball file itself).
           tar -xzf /tmp/compat-pack/dsh-wsl-workspace-*.tgz -C /tmp/compat-pack
           echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/package)" >> "$GITHUB_ENV"
-          echo "COMPAT_BASE_WIN=$(cygpath -w /tmp/compat-work)" >> "$GITHUB_ENV"
       - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
         run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
       - uses: actions/upload-artifact@v4
