@@ -14,7 +14,7 @@ run the same commands: the `npm run test:*` buckets below.
 | `tests/paths.test.ts` | UNC↔Linux path conversion, `/mnt/<drive>` mapping, Windows-path keys, distro-username validation | node ≥ 24 | ci.yml#lint-build |
 | `tests/locales.test.ts` | zh/en dictionary key parity, no empty values, help-panel body shape | node ≥ 24 | ci.yml#lint-build |
 | `tests/wsl-skills.test.ts` | skill provider over an in-memory IO fake: nested discovery, ranks, frontmatter incl. block scalars, depth/budget, cache TTL, dir-symlink following | node ≥ 24 — **runs on the windows runner** (`npm run test:win32`, ci.yml#wsl-gate): expected UNC strings assume win32 `path.join`; on ubuntu the same provider code yields `/`-joined paths (first CI frame 2026-09-30, 2/84 failed there) | ci.yml#wsl-gate |
-| `tests/relay-node.test.mjs` | v0.7.5 #40/#43: relay-interpreter resolution — Electron-host classification, candidate order, probe discriminator (pure; describes hosts that are not this machine) | node ≥ 24 | ci.yml#lint-build |
+| `tests/relay-node.test.mjs` | v0.7.5 #40/#43: relay-interpreter resolution — Electron-host classification, candidate order, probe discriminator | node ≥ 24 — **runs on windows** (`npm run test:win32`): despite injected platform/exists callbacks, the candidate assembly joins Windows-shaped constants with the host-native `path`, so on ubuntu the strings differ (CI frame a37c3e3: 3 failures on ubuntu, green on windows) | ci.yml#wsl-gate |
 | `tests/readme-compat.test.mjs` | v0.7.5: `dsh.compatibility.dshReleases` vs both full READMEs' Compatibility sections + the install-URL, so declaration and documentation cannot drift apart | node ≥ 24 | ci.yml#lint-build |
 
 ## B. Node buckets needing the pinned host packages — `npm run test:node`
