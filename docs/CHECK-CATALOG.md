@@ -6,14 +6,14 @@ automation. CI wiring: `.github/workflows/ci.yml` (per PR/push) and
 `.github/workflows/compat.yml` (rolling window, weekly/dispatch). Local and CI
 run the same commands: the `npm run test:*` buckets below.
 
-## A. Pure-node unit bucket — `npm run test:unit` (no host packages needed)
+## A. Pure-node unit bucket — `npm run test:unit` (+ `npm run test:skills`), no host packages needed
 
 | Check | What it pins down | Prereq | CI home |
 | --- | --- | --- | --- |
 | `tests/variants.test.ts` | WSL preset-variant transform: row stripping, realm injection, exactly-once re-injection, unknown rows survive | node ≥ 24 | ci.yml#lint-build |
 | `tests/paths.test.ts` | UNC↔Linux path conversion, `/mnt/<drive>` mapping, Windows-path keys, distro-username validation | node ≥ 24 | ci.yml#lint-build |
 | `tests/locales.test.ts` | zh/en dictionary key parity, no empty values, help-panel body shape | node ≥ 24 | ci.yml#lint-build |
-| `tests/wsl-skills.test.ts` | skill provider over an in-memory IO fake: nested discovery, ranks, frontmatter incl. block scalars, depth/budget, cache TTL, dir-symlink following | node ≥ 24 | ci.yml#lint-build |
+| `tests/wsl-skills.test.ts` | skill provider over an in-memory IO fake: nested discovery, ranks, frontmatter incl. block scalars, depth/budget, cache TTL, dir-symlink following | node ≥ 24 — **runs on the windows runner** (`npm run test:skills`, ci.yml#wsl-gate): two expected UNC strings assume win32 `path.join`; on ubuntu the same provider code yields `/`-joined paths (first CI frame 2026-09-30, 2/84 failed there, all other bucket-A files platform-neutral) | ci.yml#wsl-gate |
 
 ## B. Node buckets needing the pinned host packages — `npm run test:node`
 
