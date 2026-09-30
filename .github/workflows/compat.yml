@@ -100,6 +100,20 @@ jobs:
           echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/package)" >> "$GITHUB_ENV"
       - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
         run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
+      - name: collect dsh plugin-import diagnostics
+        if: always()
+        run: |
+          BASE=$(ls -d /tmp/compat-work/dsh-compat-* 2>/dev/null | tail -1)
+          [ -n "$BASE" ] || { echo "no compat base found"; exit 0; }
+          find "$BASE" -path "*.plugin-manager*" -type f | while read -r f; do
+            echo "=== ${f#"$BASE"/} ==="
+            sed 's/[^[:print:]]//g' "$f" | tail -30
+          done
+          for wlog in "$BASE"/*/boot-with-plugin.log; do
+            [ -f "$wlog" ] || continue
+            echo "=== ${wlog#"$BASE"/} (full) ==="
+            sed 's/[^[:print:]]//g' "$wlog"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -110,4 +124,5 @@ jobs:
           path: |
             ${{ env.COMPAT_BASE_WIN }}/**/verdicts.txt
             ${{ env.COMPAT_BASE_WIN }}/**/*.log
+            ${{ env.COMPAT_BASE_WIN }}/**/.plugin-manager/**
           retention-days: 14
