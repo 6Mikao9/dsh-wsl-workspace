@@ -43,6 +43,21 @@ jobs:
           else
             node -e 'const j=require("./ci/compat-window.json");console.log("versions="+JSON.stringify(j.window))' >> "$GITHUB_OUTPUT"
           fi
+      # A dispatched value is free text, and it re-enters this workflow as `matrix.version` in
+      # the compat job's name and in a shell command. Rather than quote-escaping at each use, the
+      # window is asserted to be version strings at the one place where it is assembled: a
+      # non-conforming value stops here, with a readable message, instead of reaching a runner.
+      - name: the window must contain version strings only
+        env:
+          VERSIONS: ${{ steps.win.outputs.versions }}
+        run: |
+          node -e '
+            const versions = JSON.parse(process.env.VERSIONS);
+            const bad = versions.filter(v => !/^\d+\.\d+\.\d+[-\w.]*$/.test(String(v)));
+            if (bad.length) { console.error(`read-window: RED — not version strings: ${JSON.stringify(bad)}`); process.exit(1); }
+            if (!versions.length) { console.error("read-window: RED — empty window, nothing would be tested"); process.exit(1); }
+            console.log(`read-window: OK — ${versions.length} version(s)`);
+          '
 
   compat:
     name: dsh ${{ matrix.version }}
@@ -102,7 +117,14 @@ jobs:
           # '@deepseek-ai/schemastery'", the runner frame's exact stack).
           echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/extract/package)" >> "$GITHUB_ENV"
       - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
-        run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
+        env:
+          # Passed as an argument the shell never parses. `inputs.version` already arrived via
+          # env in read-window; `matrix.version` did not, so a dispatched value reached
+          # `bash scripts/verify-dsh-compat.sh '<value>'` inside single quotes, where one quote
+          # character closes the string. read-window now rejects non-version strings upstream,
+          # and this removes the interpretation even if that gate is ever loosened.
+          DSH_VERSION: ${{ matrix.version }}
+        run: bash scripts/verify-dsh-compat.sh "$DSH_VERSION"
       - name: collect dsh plugin-import diagnostics
         if: always()
         run: |
