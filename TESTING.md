@@ -2,6 +2,13 @@
 
 This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the two preset-channel integration tests (the retired directory generation and the declaration generation), a real-WSL smoke test, and a post-build lib verification gate.
 
+> **Fast path (same commands CI runs):** after `npm ci && node ci/install-pinned.mjs`,
+> run `npm run test:unit`, `npm run test:node`, `npm run test:wsl` (Windows + a real
+> distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
+> The full inventory of every check — command, prerequisites, CI home, and what is
+> still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
+> the background and the release checklist.
+
 ## Prerequisites
 
 - Windows host with WSL2 and at least one distribution installed (`wsl.exe` on `PATH`).
@@ -99,7 +106,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    node scripts/repro-e2e.mjs
    ```
 
-   The script hardcodes `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; adjust the two paths at the top when running as another user or distro.
+   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed).
 3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
 4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
 
@@ -159,18 +166,27 @@ release against the fixed build through `POST /wsl-workspace/api`.
 10. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
 11. For a release, install the *published* version by name into one isolated case per declared release and confirm each boots (the launcher only reports ready once the plugin's API route answers) — the check that proves the artifact on the registry, not just the local tree.
 12. For a release, drive the **six-item frontend pass** on every declared release (see "The compatibility pass on every declared release" above), and — when the `wsl.exe` call path changed — the Desktop-wrapper comparison as well.
-13. Confirm the artifact identity before publishing: the tarball from the release path, a fresh `npm pack`, and `npm pack --ignore-scripts` over the committed `lib/` must hash identically, and `npm run verify:install` must print `verify-install: OK`.
+13. Confirm the artifact identity before publishing: the tarball from the release path, a fresh `npm pack`, and `npm pack --ignore-scripts` over the committed `lib/` must hash identically, and `npm run verify:install` must print `verify-install: OK`. This is now machine-run: `npm run verify:artifact` (ci.yml#lint-build) packs all three ways and compares them.
 
 ### The multi-release check harness
 
 `scripts/compatibility/` prepares one isolated case per declared release (its own
 `DSH_HOME`, its own dependency tree pinned to that release, the plugin installed
-into it) and runs a fixed check list inside it. The drivers require PowerShell 7.2,
-so on a Windows PowerShell 5.1 host use the Node equivalent:
+into it) and runs a fixed check list inside it. The drivers require PowerShell 7.2
+and Windows-only features (junctions, `Get-NetTCPConnection`), so they are the
+maintainer-machine deep tool. Drive a case with:
 
 ```powershell
-node .test-runs/harness.mjs <runId> 0.1.0-rc.7 0.1.5-rc.2   # prepare + check
-node .test-runs/harness.mjs <runId> --checks 0.1.5-rc.2      # re-check an existing case
+scripts/compatibility/Prepare-Case.ps1 -Version 0.1.5-rc.2 ...   # build the case
+scripts/compatibility/Start-Case.ps1 ... ; Run-Checks.ps1 ...    # boot + 15 checks
+scripts/compatibility/Stop-Case.ps1 ; Check-Uninstall.ps1 ...    # stop + uninstall probe
+```
+
+For the lighter rolling-window pass (what GitHub Actions `compat.yml` runs
+weekly), use the Git-Bash driver instead — no PowerShell needed:
+
+```bash
+npm run test:compat -- 0.2.0-rc.2 0.1.7-rc.2   # PLUGIN_REF=<tarball> to test an unpublished commit
 ```
 
 Four checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
@@ -183,4 +199,7 @@ shapes produce a correct `{ stdout, stderr }`. `host-api` needs a running `dsh w
 the case, so it is expected to fail in a sweep — point it at a live instance's
 `runtime.json` instead (an absolute path; it is 12/12 there). The `typecheck` check exits
 non-zero because of the pre-existing `tsc --noEmit` errors in this tree; the gate is that
-the count does not grow.
+the count does not grow — machine-enforced since the CI consolidation by
+`npm run typecheck:gate` against `ci/typecheck-baseline.json` (`--record` to rebaseline
+after a reviewed change; the count is environment-bound, record it from the environment
+the gate runs in).
