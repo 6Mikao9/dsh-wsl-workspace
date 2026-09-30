@@ -79,8 +79,22 @@ for VERSION in "$@"; do
   fi
   BIN="$WORK/pkg/node_modules/@deepseek-ai/dsh/lib/bin.js"
 
-  echo "[install] dsh plugin --profile web add $PLUGIN_REF"
-  if ! node "$BIN" plugin --profile web add "$PLUGIN_REF" > "$WORK/plugin-add.log" 2>&1; then
+  # If PLUGIN_REF names a directory, stage it INSIDE the case's pkg tree
+  # first: `plugin add` creates a pnpm link whose realpath is the source
+  # directory, and node resolves the plugin's optional peers by walking up
+  # from that realpath — only next to the dsh install are they reachable.
+  ADD_REF="$PLUGIN_REF"
+  SRC_UNIX="$(cygpath -u "$PLUGIN_REF" 2>/dev/null || printf '%s' "$PLUGIN_REF")"
+  if [ -d "$SRC_UNIX" ]; then
+    DEST="$WORK/pkg/node_modules/dsh-wsl-workspace"
+    rm -rf "$DEST"
+    mkdir -p "$WORK/pkg/node_modules"
+    cp -r "$SRC_UNIX" "$DEST" || { echo "  ✖ staging the plugin source into the case tree failed"; echo "$VERSION STAGE_FAIL unknown" >> "$BASE/verdicts.txt"; continue; }
+    ADD_REF="$(cygpath -w "$DEST")"
+  fi
+
+  echo "[install] dsh plugin --profile web add $ADD_REF"
+  if ! node "$BIN" plugin --profile web add "$ADD_REF" > "$WORK/plugin-add.log" 2>&1; then
     echo "  ✖ plugin add failed (see $WORK/plugin-add.log)"
     echo "$VERSION PLUGIN_ADD_FAIL unknown" >> "$BASE/verdicts.txt"
     continue

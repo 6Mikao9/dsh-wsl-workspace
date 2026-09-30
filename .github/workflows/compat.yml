@@ -91,13 +91,16 @@ jobs:
         run: wsl.exe -d Ubuntu-24.04 -- bash -c '(nohup sleep 1800 >/dev/null 2>&1 & echo kept-alive)'
       - name: pack and unpack the working tree (never test a published artifact for an unpublished commit)
         run: |
-          mkdir -p /tmp/compat-pack /tmp/compat-work
+          mkdir -p /tmp/compat-pack/extract /tmp/compat-work
           npm pack --ignore-scripts --pack-destination /tmp/compat-pack >/dev/null
-          # `dsh plugin add` accepts a package name or a LOCAL DIRECTORY, not a
-          # .tgz path (frame 1's three PLUGIN_ADD_FAIL lines: the previous step
-          # pointed PLUGIN_REF at the tarball file itself).
-          tar -xzf /tmp/compat-pack/dsh-wsl-workspace-*.tgz -C /tmp/compat-pack
-          echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/package)" >> "$GITHUB_ENV"
+          tar -xzf /tmp/compat-pack/dsh-wsl-workspace-*.tgz -C /tmp/compat-pack/extract
+          # PLUGIN_REF is the unpacked SOURCE DIRECTORY; the script copies it
+          # next to the case's dsh install before adding it (a pnpm link's
+          # realpath is the target, and node walks up from THERE to resolve
+          # the plugin's optional peers — outside the pkg tree they are
+          # unreachable and boot dies with "Cannot find package
+          # '@deepseek-ai/schemastery'", the runner frame's exact stack).
+          echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/extract/package)" >> "$GITHUB_ENV"
       - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
         run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
       - name: collect dsh plugin-import diagnostics
