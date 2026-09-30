@@ -40,16 +40,19 @@ const UNSTYLED = new Map<string, string>([
 ])
 
 /**
- * BEM modifiers with no rule. Not a permission — every entry must name the product ticket
- * that fixes it, because a modifier exists for no other reason than to be styled. Which
- * tokens are modifiers is decided by SHAPE (`block--x` where the `block` class itself is
- * also applied), not by hand-classification: that is what distinguishes `dww-action--wide`
- * (a real state with no rule, so it owes a ticket) from `dww-feedback` (not a modifier).
+ * BEM modifiers with no rule. Not a permission — every entry must name the product ticket that
+ * fixes it, because a modifier exists for no other reason than to be styled. Which tokens are
+ * modifiers is decided by SHAPE (`block--x` where the `block` class itself is also applied), not
+ * by hand-classification: that is what distinguishes a real unstyled state from a container name
+ * like `dww-feedback`.
+ *
+ * Currently empty, and the emptiness is not a relaxation: an unregistered modifier with no rule
+ * fails the "every applied className has a rule or a stated reason" assertion directly.
+ * `dww-action--wide` was the one entry here; it got a rule in the same night it was registered,
+ * and the registration's own deletion was the closure evidence — the gate refused to stay green
+ * while claiming a gap that had been fixed.
  */
 const MISSING_MODIFIER_RULES = new Map<string, string>([
-  ['dww-action--wide', 'no rule: the sidebar button renders identically wide and rail; '
-    + 'product ticket pending (v0.7.5 review finding 8 / issue #44 §6) — the wide-state '
-    + 'geometry is a design decision, not the test layer — to invent'],
 ])
 
 /** True when `token` is a `block--modifier` whose `block` is itself applied somewhere. */

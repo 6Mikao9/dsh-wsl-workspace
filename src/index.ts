@@ -320,8 +320,16 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       try {
         const info = statSync(readPath)
         return { exists: true, isDirectory: info.isDirectory() }
-      } catch {
-        return { exists: false, isDirectory: false }
+      } catch (error) {
+        // Only a genuine miss reports `exists:false`. ENOTDIR means a path
+        // component is not a directory, so the directory as spelled does not
+        // exist either. Any other throw (EPERM on a locked/busy path, a dead
+        // 9P share) is a failure to READ, not a fact about the path: answer
+        // {ok:false} naming the cause instead of lying that it is absent and
+        // offering "create" for a directory nobody just looked at.
+        const code = error instanceof Error ? (error as { code?: unknown }).code : undefined
+        if (code === 'ENOENT' || code === 'ENOTDIR') return { exists: false, isDirectory: false }
+        throw new Error(`cannot check "${path}": ${messageOf(error)}`)
       }
     }
     case 'registerWindows': {

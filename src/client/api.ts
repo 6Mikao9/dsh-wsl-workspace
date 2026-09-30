@@ -7,6 +7,13 @@
 /** Relative route the Host half registers (same-origin with the web server). */
 const ENDPOINT = '/wsl-workspace/api'
 
+/**
+ * Upper bound for one host call. A hung route (e.g. a wedged `wsl.exe`) would
+ * otherwise leave every dialog field disabled forever; the abort turns that
+ * into a readable, retryable failure.
+ */
+const REQUEST_TIMEOUT_MS = 30_000
+
 /** One directory entry as the Host lists it. */
 export interface WslDirEntry {
   name: string
@@ -29,12 +36,32 @@ export interface WslPathCheck {
   isDirectory: boolean
 }
 
-/** Wire envelope the Host route answers with. */
-type Envelope<T> = { ok: true; value: T } | { ok: false; error: string }
+/** Wire envelope the Host route answers with. The failure arm types `error`
+ * as optional because a host can answer `{ok:false}` with no message at all —
+ * that is the invisible-failure shape `call` below defends against. */
+type Envelope<T> = { ok: true; value: T } | { ok: false; error?: string }
 
 /** Human text for an unknown rejection, reusing the repository's idiom. */
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
+}
+
+/** True for the rejection an `AbortSignal.timeout` produces (`TimeoutError`
+ * in current engines, `AbortError` as a defensive spelling of the same). */
+function isTimeout(value: unknown): boolean {
+  return value instanceof Error && (value.name === 'TimeoutError' || value.name === 'AbortError')
+}
+
+/**
+ * The per-call timeout signal. Every real browser (and Node) provides
+ * `AbortSignal.timeout`; engines without it (e.g. a bare vm sandbox around a
+ * faked fetch) get an untimed call instead of a ReferenceError, so the
+ * timeout is only ever as unavailable as the platform itself.
+ */
+function callSignal(): AbortSignal | null {
+  return typeof AbortSignal === 'function' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    : null
 }
 
 /**
@@ -42,6 +69,8 @@ function errorMessage(value: unknown): string {
  * @param method - the Host method name.
  * @param params - the method payload.
  * @returns the unwrapped value, or throws an Error on network or `ok:false`.
+ * Every thrown Error carries a non-empty message: an empty one would render
+ * the dialog's error box as an empty bordered strip.
  */
 async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   let response: Response
@@ -50,10 +79,27 @@ async function call<T>(method: string, params: Record<string, unknown> = {}): Pr
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ method, params }),
+      signal: callSignal(),
     })
   } catch (error) {
+    if (isTimeout(error)) {
+      throw new Error(`wsl-workspace request "${method}" timed out after ${REQUEST_TIMEOUT_MS} ms`)
+    }
     // The transport refused before answering (offline, origin mismatch, 404).
     throw new Error(`wsl-workspace request failed: ${errorMessage(error)}`)
+  }
+  if (!response.ok) {
+    // HTTP-level failure (the route's 403/405/400 fences, a proxy 5xx): name
+    // the status, and append the envelope's error text when the body still
+    // carries one so the readable cause is not lost.
+    let detail = ''
+    try {
+      const body = (await response.json()) as Envelope<unknown>
+      if (body.ok === false && typeof body.error === 'string' && body.error !== '') detail = `: ${body.error}`
+    } catch {
+      // No JSON to explain it; the status line is all there is.
+    }
+    throw new Error(`wsl-workspace request "${method}" failed (HTTP ${response.status})${detail}`)
   }
   let envelope: Envelope<T>
   try {
@@ -62,7 +108,12 @@ async function call<T>(method: string, params: Record<string, unknown> = {}): Pr
     // A non-JSON body means a proxy/loader answered instead of the Host route.
     throw new Error(`wsl-workspace answered non-JSON (${response.status})`)
   }
-  if (!envelope.ok) throw new Error(envelope.error)
+  if (!envelope.ok) {
+    const reason = typeof envelope.error === 'string' && envelope.error !== ''
+      ? envelope.error
+      : `wsl-workspace request "${method}" failed without an error message from the host`
+    throw new Error(reason)
+  }
   return envelope.value
 }
 
