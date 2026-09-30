@@ -79,7 +79,10 @@ jobs:
     env:
       WSL_COMPAT_DISTRO: Ubuntu-24.04
       WSL_COMPAT_USER: root
-      WSL_COMPAT_ROOT: /tmp/dsh-wsl-compat
+      # NOTE: do NOT set WSL_COMPAT_ROOT here — the drivers' built-in default
+      # (/tmp/dsh-wsl-compat, a Linux-side path) is what they need, and the
+      # Windows bash runner rewrites POSIX-path-shaped env values (frame 3:
+      # WSL_COMPAT_ROOT=/tmp/… reached node as C:\tmp\…).
       WSL_COMPAT_RELAY_CWD: '\\wsl.localhost\Ubuntu-24.04\tmp\dsh-wsl-relay-ws'
       WSL_COMPAT_DRIVE_CWD: 'C:\'
       TMP: 'C:\tmp'
@@ -128,21 +131,25 @@ jobs:
         run: npm run test:win32
       - name: run every WSL gate, collect all failures in one frame
         run: |
+          # GitHub's bash runs with -e: every guard below must be compound,
+          # or the first red kills the loop and the remaining gates go dark
+          # (frame 3 did exactly that after shell-extra).
           FAIL=0
           run_one() {
             local name="$1"; shift
+            local rc=0
             echo "::group::$name"
-            "$@" > "logs/$name.log" 2>&1
-            local rc=$?
+            "$@" > "logs/$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
             tail -6 "logs/$name.log" || true
             echo "::endgroup::"
-            if [ $rc -ne 0 ]; then FAIL=1; fi
+            if [ "$rc" -ne 0 ]; then FAIL=1; fi
+            return 0
           }
           run_one smoke node --experimental-strip-types tests/smoke.ts
           run_one exec-shape node --experimental-strip-types tests/exec-shape.mjs
           run_one shell-extra node tests/shell-extra.mjs
-          node scripts/make-smoke-built.mjs > logs/make-smoke-built.log 2>&1 || FAIL=1
+          run_one make-smoke-built node scripts/make-smoke-built.mjs
           run_one smoke-built node --experimental-strip-types tests/smoke-built.ts
           run_one fs-real node --experimental-strip-types scripts/compatibility/fs-real.mjs
           run_one skills-real node --experimental-strip-types scripts/compatibility/skills-real.mjs
