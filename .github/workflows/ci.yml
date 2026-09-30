@@ -181,8 +181,15 @@ jobs:
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
             return 0
           }
+          # fs-real takes its root from the distro's own $HOME and relay-real from a
+          # Windows-shaped variable, so neither needs a second root: only search-real reads
+          # WSL_COMPAT_ROOT, and it must be handed over with MSYS_NO_PATHCONV=1. Without that
+          # the Windows bash runner rewrites `/tmp/dsh-wsl-lib` into `C:\tmp\dsh-wsl-lib` and
+          # the driver assembles `\\wsl.localhost\Ubuntu-24.04C:\tmp\…` — frame
+          # 36736537229 proved it (errno -4094, syscall mkdir). Same trap ci.yml already
+          # documents for WSL_COMPAT_ROOT at the top of this job.
           run_lib fs-real node --experimental-strip-types scripts/compatibility/fs-real.mjs
-          run_lib search-real node --experimental-strip-types scripts/compatibility/search-real.mjs
+          MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib node --experimental-strip-types scripts/compatibility/search-real.mjs > logs/lib-search-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-search-real.log || true; FAIL=1; }
           run_lib relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
           # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
           # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
