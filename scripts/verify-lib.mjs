@@ -22,6 +22,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { libEntryNames } from '../tests/support/lib-entries.mjs'
 
 const LIB_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'lib')
 
@@ -269,8 +270,19 @@ function verifyEntry(filePath) {
 }
 
 /** Main: verify every lib entry. */
-function main() {
+async function main() {
   const entries = readdirSync(LIB_DIR).filter((name) => name.endsWith('.js'))
+  // The floor is what makes this gate mean something: without it an empty or deleted
+  // lib/ printed `verify-lib OK: 0 lib entries` and exited 0. The expected names are
+  // derived from tsdown.config.ts — the one place that declares them — so the gate can
+  // never drift from the build it is checking.
+  const expected = await libEntryNames()
+  const missing = expected.filter((name) => !entries.includes(name))
+  if (missing.length > 0) {
+    console.error(`verify-lib FAILED: lib/ is missing declared entry output: ${missing.join(', ')}`)
+    console.error('Rebuild (`npm run build`) or remove the entry from tsdown.config.ts.')
+    process.exit(1)
+  }
   let failed = false
   for (const entry of entries) {
     const problems = verifyEntry(join(LIB_DIR, entry))
@@ -285,7 +297,9 @@ function main() {
     console.error('Add the missing import to the source file (src/*.ts) and rebuild.')
     process.exit(1)
   }
-  console.log(`verify-lib OK: ${entries.length} lib entries, all calls bound.`)
+  const chunks = entries.length - expected.length
+  console.log(`verify-lib OK: ${entries.length} lib entries `
+    + `(${expected.length} declared entries + ${chunks} hashed chunk(s)), all calls bound.`)
 }
 
-main()
+await main()

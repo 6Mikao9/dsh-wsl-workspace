@@ -33,6 +33,55 @@ function runNpm(args, cwd) {
   return spawnSync(program, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' }).status ?? 1
 }
 
+// Verification only: `--verify-only` compares the pins against whatever tree is already
+// installed and never writes a manifest, never runs npm and never links anything. A gate
+// that cannot be pointed at an existing tree cannot be given a sentinel without destroying
+// that tree, and this tree is a junction into the maintainer's live profile.
+const verifyOnly = process.argv.includes('--verify-only')
+const expectFile = (() => {
+  const i = process.argv.indexOf('--expect')
+  return i > 0 ? path.resolve(process.argv[i + 1]) : undefined
+})()
+const pins = expectFile === undefined
+  ? deps
+  : JSON.parse(readFileSync(expectFile, 'utf8')).deps
+
+/** Compare every pin against the installed manifest; returns the mismatch list. */
+function verifyPins(expected) {
+  const rows = []
+  const mismatches = []
+  let missing = 0
+  for (const [name, pinned] of Object.entries(expected)) {
+    let actual = 'MISSING'
+    for (const base of [path.join(depsDir, 'node_modules'), path.join(root, 'node_modules')]) {
+      const manifest = path.join(base, ...name.split('/'), 'package.json')
+      if (existsSync(manifest)) {
+        actual = JSON.parse(readFileSync(manifest, 'utf8')).version
+        break
+      }
+    }
+    if (actual === 'MISSING') missing += 1
+    // Every pin in ci/pinned-deps.json is an exact version, so equality is the contract.
+    // Reporting `pinned -> actual` without comparing it meant a tree of entirely the wrong
+    // versions printed one row per package and still exited 0.
+    else if (actual !== pinned) mismatches.push(`${name}: want ${pinned}, installed ${actual}`)
+    rows.push(`pinned: ${name}@${pinned} -> ${actual}`)
+  }
+  return { rows, mismatches, missing }
+}
+
+if (verifyOnly) {
+  const { rows, mismatches, missing } = verifyPins(pins)
+  console.log(rows.join('\n'))
+  if (mismatches.length > 0 || missing > 0) {
+    for (const line of mismatches) console.error(`install-pinned: MISMATCH ${line}`)
+    console.error(`install-pinned: FAILED — ${mismatches.length} mismatch(es), ${missing} missing`)
+    process.exit(1)
+  }
+  console.log(`install-pinned: OK (verified ${Object.keys(pins).length} pin(s), nothing installed)`)
+  process.exit(0)
+}
+
 mkdirSync(depsDir, { recursive: true })
 const generated = {
   name: 'dsh-wsl-workspace-ci-deps',
@@ -97,23 +146,18 @@ for (const name of Object.keys(deps)) {
 for (const name of unscoped ?? []) linkOrSkip(path.join(depsModules, name), path.join(root, 'node_modules', name))
 console.log(`install-pinned: linked ${linked} package(s) from ci/deps into the root node_modules`)
 
-let failed = false
-const rows = []
-for (const [name, pinned] of Object.entries(deps)) {
-  let actual = 'MISSING'
-  for (const base of [path.join(depsDir, 'node_modules'), path.join(root, 'node_modules')]) {
-    const manifest = path.join(base, ...name.split('/'), 'package.json')
-    if (existsSync(manifest)) {
-      actual = JSON.parse(readFileSync(manifest, 'utf8')).version
-      break
-    }
-  }
-  if (actual === 'MISSING') failed = true
-  rows.push(`pinned: ${name}@${pinned} -> ${actual}`)
-}
+const { rows, mismatches, missing } = verifyPins(deps)
 console.log(rows.join('\n'))
-if (failed) {
-  console.error('install-pinned: FAILED — a pinned package did not materialise')
+if (mismatches.length > 0) {
+  console.error(`install-pinned: FAILED — ${mismatches.length} package(s) resolved to a version `
+    + 'other than the pin:')
+  console.error(mismatches.map(line => `  ${line}`).join('\n'))
+  console.error('Re-run `node ci/install-pinned.mjs` after committing the refreshed '
+    + 'ci/deps/package-lock.json, or correct ci/pinned-deps.json.')
+}
+if (missing > 0 || mismatches.length > 0) {
+  console.error(`install-pinned: FAILED — ${missing} package(s) did not materialise, `
+    + `${mismatches.length} at the wrong version`)
   process.exit(1)
 }
 console.log('install-pinned: OK')
