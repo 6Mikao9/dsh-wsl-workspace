@@ -1,0 +1,92 @@
+name: compat-window
+# Boots the declared rolling window of dsh releases with this plugin installed
+# (scripts/verify-dsh-compat.sh). Kept OFF ordinary PRs on purpose: each
+# version installs dsh from npm, boots `dsh web` twice and probes the plugin
+# API, which is minutes of billed windows time per entry. It runs weekly, on
+# demand, and whenever the window file or the compat script itself changes.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'single dsh version to test (default: the whole window from ci/compat-window.json)'
+        required: false
+        type: string
+  push:
+    branches: [main, 'ci/**']
+    paths:
+      - ci/compat-window.json
+      - scripts/verify-dsh-compat.sh
+      - .github/workflows/compat.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  read-window:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.win.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: win
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            node -e 'console.log("versions="+JSON.stringify([process.argv[1]]))' "$REQUESTED" >> "$GITHUB_OUTPUT"
+          else
+            node -e 'const j=require("./ci/compat-window.json");console.log("versions="+JSON.stringify(j.window))' >> "$GITHUB_OUTPUT"
+          fi
+
+  compat:
+    name: dsh ${{ matrix.version }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    needs: read-window
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.read-window.outputs.versions) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      COMPAT_PORT: 3091
+      TEMP: /tmp/compat-work
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: provision WSL1 Ubuntu (the plugin API must list at least one distro)
+        uses: Vampire/setup-wsl@v3
+        with:
+          wsl-version: 1
+          distribution: Ubuntu
+          set-as-default: 'true'
+          systemd: 'false'
+          use-headless: 'false'
+      - name: keep the instance warm so the 9P share stays visible
+        run: wsl.exe -d Ubuntu -- bash -c '(nohup sleep 1800 >/dev/null 2>&1 & echo kept-alive)'
+      - name: pack the working tree (never test a published artifact for an unpublished commit)
+        run: |
+          mkdir -p /tmp/compat-pack /tmp/compat-work
+          npm pack --ignore-scripts --pack-destination /tmp/compat-pack >/dev/null
+          echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/dsh-wsl-workspace-*.tgz)" >> "$GITHUB_ENV"
+          echo "COMPAT_BASE_WIN=$(cygpath -w /tmp/compat-work)" >> "$GITHUB_ENV"
+      - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
+        run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-${{ matrix.version }}
+          path: ${{ env.COMPAT_BASE_WIN }}
+          retention-days: 14
