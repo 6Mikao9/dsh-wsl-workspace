@@ -224,3 +224,10 @@ if grep -qv ' PASS compatible$' "$BASE/verdicts.txt"; then
   exit 1
 fi
 echo "verify-dsh-compat: OK — $(wc -l < "$BASE/verdicts.txt") verdict(s), all PASS compatible"
+
+# Where the evidence lives, for whoever collects it. compat.yml used to hard-code a second
+# spelling of this directory (`COMPAT_BASE_WIN: C:\Users\runneradmin\AppData\Local\Temp\compat-work`)
+# beside the `TEMP: /tmp/compat-work` that produced it, with nothing checking the two agree — and
+# `upload-artifact` with a non-matching path warns instead of failing, so every version's evidence
+# could vanish while the step stayed green. The job now reads this line and uploads what it names.
+echo "compat-base: $BASE"
