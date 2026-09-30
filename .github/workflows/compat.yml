@@ -129,7 +129,15 @@ jobs:
           # script chose can be read back afterwards. The upload step used to point at a
           # second, hand-written spelling of this path (`COMPAT_BASE_WIN` below) with nothing
           # checking the two agree.
-          bash scripts/verify-dsh-compat.sh "$DSH_VERSION" 2>&1 | tee /tmp/compat-run.log
+          #
+          # The script's failure must NOT abort this step: GitHub runs `run:` blocks under
+          # `bash -e -o pipefail`, so a RED verdict used to kill the step at the script line and
+          # the `win` output below was never written — upload-artifact then globbed the patterns
+          # against an empty base and errored (frame 36744046100, all three versions). The exit
+          # code is captured instead, reported after the evidence path is recorded, and re-raised
+          # last.
+          SCRIPT_RC=0
+          bash scripts/verify-dsh-compat.sh "$DSH_VERSION" 2>&1 | tee /tmp/compat-run.log || SCRIPT_RC=$?
           BASE_LINE=$(grep -o '^compat-base: .*' /tmp/compat-run.log | tail -1 || true)
           BASE=${BASE_LINE#'compat-base: '}
           if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
@@ -138,6 +146,7 @@ jobs:
           fi
           echo "win=$(cygpath -w "$BASE")" >> "$GITHUB_OUTPUT"
           echo "compat base: $BASE"
+          exit "$SCRIPT_RC"
         id: compat
       - name: collect dsh plugin-import diagnostics
         if: always()

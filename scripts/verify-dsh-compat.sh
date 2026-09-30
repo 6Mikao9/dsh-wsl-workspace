@@ -23,6 +23,16 @@ fi
 
 BASE="${TEMP:-/tmp}/dsh-compat-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BASE"
+# Where the evidence lives, announced before any work, so the line is in the log no matter which
+# exit is taken below. compat.yml used to hard-code a second spelling of this directory
+# (`COMPAT_BASE_WIN: C:\Users\runneradmin\AppData\Local\Temp\compat-work`) beside the
+# `TEMP: /tmp/compat-work` that produced it, with nothing checking the two agree — and
+# `upload-artifact` with a non-matching path warns instead of failing, so every version's evidence
+# could vanish while the step stayed green. The job now reads this line and uploads what it names.
+# It cannot be an end-of-script echo: the two RED exits below (empty verdicts, a non-PASS verdict)
+# are the exact frames whose evidence has to be collected, and they never reached that line
+# (frame 36744046100 — upload-artifact then matched nothing and errored).
+echo "compat-base: $BASE"
 PORT="${COMPAT_PORT:-3091}"
 PLUGIN_API="http://127.0.0.1:${PORT}/wsl-workspace/api"
 WEB_URL="http://127.0.0.1:${PORT}/"
@@ -224,10 +234,3 @@ if grep -qv ' PASS compatible$' "$BASE/verdicts.txt"; then
   exit 1
 fi
 echo "verify-dsh-compat: OK — $(wc -l < "$BASE/verdicts.txt") verdict(s), all PASS compatible"
-
-# Where the evidence lives, for whoever collects it. compat.yml used to hard-code a second
-# spelling of this directory (`COMPAT_BASE_WIN: C:\Users\runneradmin\AppData\Local\Temp\compat-work`)
-# beside the `TEMP: /tmp/compat-work` that produced it, with nothing checking the two agree — and
-# `upload-artifact` with a non-matching path warns instead of failing, so every version's evidence
-# could vanish while the step stayed green. The job now reads this line and uploads what it names.
-echo "compat-base: $BASE"
