@@ -145,6 +145,70 @@ Because issue #35/#36 only reproduce under the Desktop host, a release that touc
 `NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`, and compare the published
 release against the fixed build through `POST /wsl-workspace/api`.
 
+### The persistent shell on DSH Desktop (issue #40)
+
+A release that touches the relay's interpreter — or anything else the PTY backend is told
+to run — must be checked on the Desktop side too, because that is the only host where
+`process.execPath` is not a node. DSH Desktop's host process is the packaged Electron
+executable in node mode, and an Electron binary spawned under a ConPTY writes **no bytes at
+all**, so the relay exits 0 with nothing on the stream and every `bash` call reports
+`PTY shell exited during startup` while the file tools keep working.
+
+Two levels, in order of cost:
+
+1. **Simulation, on the real binaries** (no Desktop install needed beyond the extracted
+   installer):
+
+   ```powershell
+   # 1. Download the official installer and extract it (7-Zip handles the NSIS payload):
+   #    https://download.deepseek.com/desktop/dsh-latest-windows-x64.exe  ->  <dir>/
+   # 2. Point the simulation at it and run:
+   $env:DSH_DESKTOP_DIR = 'D:\path\to\extracted'
+   node .test-runs/desktop-pty-sim.mjs
+   ```
+
+   It runs `resolveRelayNode()` *inside* the extracted `DeepSeek Harness.exe` (node mode,
+   the Desktop's own argv and environment) and asserts it picks
+   `resources/runtime/primary-runtime/dependencies/node/bin/node.exe` rather than the
+   Electron executable — from the argv payload and, without it, from the
+   executable-relative lookup — then runs the real `lib/wsl-relay.js` under a real ConPTY
+   on both interpreters and asserts the Electron one gives 0 bytes and an exit while the
+   resolved one gives a live bash prompt. The extracted installer is ~1 GB; nothing is
+   installed and nothing is launched beyond that binary in node mode.
+
+2. **End to end inside the real Desktop.** This needs no installation: the unpacked installer
+   from step 1 *is* a runnable Electron application. Run it against a scratch `DSH_HOME` and
+   with remote debugging on, install the build through the Desktop's own plugin panel, and
+   drive the window over CDP:
+
+   ```powershell
+   $env:DSH_HOME = 'D:\scratch\dsh-desktop-home'   # never the real profile
+   # copy settings.yaml / .credentials.yaml in, so the first-run welcome is skipped
+   Start-Process '<dir>\DeepSeek Harness.exe' -ArgumentList `
+     '--remote-debugging-port=9333','--remote-allow-origins=*','--user-data-dir=D:\scratch\ud'
+
+   node .test-runs/desktop-cdp.mjs 9333 text                      # read the window
+   node .test-runs/desktop-cdp.mjs 9333 eval .test-runs/<probe>.mjs
+   node .test-runs/desktop-cdp.mjs 9333 reload                    # the F5 check
+   ```
+
+   In the window: 插件 → 添加插件 → a local directory path (the unpacked tarball) → 安装 →
+   the switch on the installed card. Then run the six-item pass above. `bash` must reach a
+   prompt; `pwd` in a second, separate call must still be where the first one left the shell
+   (`cd /tmp` → `/tmp`), which is the persistence the Desktop lost in #40; and
+   `bash_background` + `job_list` must produce a job id and a `running`/`completed` status
+   (that path failed separately — see below). The boot log must contain
+   `dsh-wsl-workspace: persistent shell: relay interpreter is …`, naming the interpreter it
+   chose; if that line names the Electron executable, the log also lists every candidate it
+   rejected and why. Close the window and stop the process when done.
+
+   `bash_background` deserves its own line here because the Desktop run is what caught it:
+   the jobs registry resolves a job's `owner` with `ctx.agents.get(owner)`, so the owner must
+   be the session **id** (`agent.id`, as the host's own producers pass). Passing the agent
+   object — which `tests/wsl-jobs.test.ts` used to assert — fails at runtime with
+   `session "[object Object]" has no live agent`, and no unit test with a fake registry can
+   see that. The real run is the gate.
+
 ## Release checklist
 
 1. `pnpm build` — clears `lib/`, rebuilds it, and runs the verification gate.
@@ -158,7 +222,7 @@ release against the fixed build through `POST /wsl-workspace/api`.
 9. `npm run verify:install` — packs the tree and installs the tarball with **plain npm** into a scratch directory, with no pnpm and no host packages present. This is the gate that would have caught 0.7.0, whose `peerDependencies` made npm auto-install an unpublished package (`E404 @deepseek-ai/dsh-retention`): every other check and every real session goes through `dsh plugin add` (pnpm), which only *warns* about unmet peers and installs anyway. `prepublishOnly` runs it, so `npm publish` now refuses to ship a package that npm users cannot install.
 10. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.
 11. For a release, install the *published* version by name into one isolated case per declared release and confirm each boots (the launcher only reports ready once the plugin's API route answers) — the check that proves the artifact on the registry, not just the local tree.
-12. For a release, drive the **six-item frontend pass** on every declared release (see "The compatibility pass on every declared release" above), and — when the `wsl.exe` call path changed — the Desktop-wrapper comparison as well.
+12. For a release, drive the **six-item frontend pass** on every declared release (see "The compatibility pass on every declared release" above), and — when the `wsl.exe` call path changed — the Desktop-wrapper comparison as well. When the persistent-shell path changed (the relay, its interpreter, or the PTY rows the variant generates), also run the Desktop PTY simulation above.
 13. Confirm the artifact identity before publishing: the tarball from the release path, a fresh `npm pack`, and `npm pack --ignore-scripts` over the committed `lib/` must hash identically, and `npm run verify:install` must print `verify-install: OK`.
 
 ### The multi-release check harness
@@ -173,14 +237,16 @@ node .test-runs/harness.mjs <runId> 0.1.0-rc.7 0.1.5-rc.2   # prepare + check
 node .test-runs/harness.mjs <runId> --checks 0.1.5-rc.2      # re-check an existing case
 ```
 
-Four checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
-`search-real`); they build their own fixtures under `/tmp/dsh-wsl-compat` (override
-with `WSL_COMPAT_ROOT`, and the distribution with `WSL_COMPAT_DISTRO`) and remove
-them again. `exec-shape` reproduces the DSH Desktop `child_process` wrapper (plain
-`exec`/`execFile` wrappers + `syncBuiltinESMExports()`, which strips
-`util.promisify.custom`) in a probe process and asserts both the wrapped and the plain
-shapes produce a correct `{ stdout, stderr }`. `host-api` needs a running `dsh web` for
-the case, so it is expected to fail in a sweep — point it at a live instance's
-`runtime.json` instead (an absolute path; it is 12/12 there). The `typecheck` check exits
-non-zero because of the pre-existing `tsc --noEmit` errors in this tree; the gate is that
-the count does not grow.
+Five checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
+`search-real`, and `conpty-relay`); they build their own fixtures under
+`/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
+`WSL_COMPAT_DISTRO`) and remove them again. `exec-shape` reproduces the DSH Desktop
+`child_process` wrapper (plain `exec`/`execFile` wrappers + `syncBuiltinESMExports()`, which
+strips `util.promisify.custom`) in a probe process and asserts both the wrapped and the plain
+shapes produce a correct `{ stdout, stderr }`. `conpty-relay` takes the case's
+`runtime.json` so it can load that release's own node-pty, resolves the relay's interpreter
+the way the plugin does, and requires a live bash prompt through a real ConPTY — the
+invariant issue #40 broke. `host-api` needs a running `dsh web` for the case, so it is
+expected to fail in a sweep — point it at a live instance's `runtime.json` instead (an
+absolute path; it is 12/12 there). The `typecheck` check exits non-zero because of the
+pre-existing `tsc --noEmit` errors in this tree; the gate is that the count does not grow.

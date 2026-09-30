@@ -16,13 +16,24 @@
 dsh plugin --profile web add dsh-wsl-workspace
 
 # 2) GitHub 仓库（仓库内已含预构建 lib/，无需本地构建）
-dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspace
+dsh plugin --profile web add https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace
 
 # 3) 本地目录（开发/自用）
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ```
 
 重启 `dsh web` 后，侧栏底部 Settings 旁出现 W 按钮。
+
+## 兼容性
+
+这份构建声明兼容下列 DSH 版本，每一条都在隔离实例上实测过（独立 `DSH_HOME`、依赖固定到该版本、跑满整套门禁）：
+
+`0.1.0-rc.7` · `0.1.0-rc.8` · `0.1.1-rc.1` · `0.1.1-rc.2` · `0.1.2-rc.1` · `0.1.3-alpha.2` ·
+`0.1.5-rc.1` · `0.1.5-rc.2` · `0.1.7-rc.1` · `0.1.7-rc.2` · `0.2.0-rc.2`
+
+这份列表与 `package.json` 里的 `dsh.compatibility.dshReleases` 一一对应，单测会在两者不一致时失败。
+其中 `0.2.0-rc.2` 就是 DSH Desktop `0.2.0-rc.2` 自带的 DSH 版本，所以桌面版由同一份声明覆盖；应用内帮助面板（对话框右上角「?」）会显示同一组 chip 以及插件版本。
+插件在运行时自动识别 DSH 版本并选用对应的 API；两边都不支持时会明确报错，而不是留下一个空工作区。版本不在列表里通常仍然可用，但未经验证。
 
 ## 使用
 点侧栏底部 Settings 旁的 W 按钮，打开「添加 WSL 工作区」对话框。先从下拉框选择一个发行版，再浏览目录树或直接输入 Linux 绝对路径（如 `/home/me/proj`），可以点「检查」确认路径存在。对话框文案跟随 DSH 界面语言。用户名是可选项：留空则以该发行版的默认用户运行，填写该发行版里的某个 Linux 用户名则以该用户运行（等价于 `wsl.exe -u <用户名>`）。用户名只影响 bash 命令的运行身份，文件工具通过 Windows 侧的 WSL 共享访问、不受其影响；每个工作区填写的用户名保存在 `<dshHome>/wsl-workspaces.json`，删除对应条目（或重开对话框重建工作区）即可恢复默认用户。
@@ -43,6 +54,19 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ## 更新日志
 
 英文完整历史见 [README.md](README.md)，本节为对应中文记录（0.4.3 及更早为摘要）。
+
+### 0.7.5 — 2026-09-30
+
+- **DSH Desktop 上持久 shell 又能用了（issue #40）**。Desktop 的宿主进程**本身就是**打包后的 Electron 可执行文件、以 node 模式运行（`ELECTRON_RUN_AS_NODE=1`；Desktop 自己的代码是 `new DesktopHostProcess(resources.node, …)`，而 `resources.node = process.execPath`），插件却把 PTY 后端的 `shellPath` 指向 `process.execPath`、`shellArgs[0]` 指向 `lib/wsl-relay.js`。Electron 二进制在 **ConPTY** 下不输出任何字节：中继的 `wsl.exe` 子进程继承到一条死流，中继 0 字节退出 0，后端的就绪探测永远看不到提示符，于是**每一次** `bash` 都以 `PTY shell exited during startup` 失败；而 `0.1.0-rc.7` 那条一次性 bash 回退路径不受影响，故障正好被一个能用的模式盖住了。用宿主自己的 node-pty 实测：同一份中继、同一个 `\\wsl.localhost\…` cwd、同一份环境，真 node 给出 bash 提示符，Electron 是 0 字节并干净退出。
+- **中继的解释器改为显式解析**（`src/shared/relay-node.ts`）：先取 Desktop 传给宿主进程的 runtime payload 路径（`process.argv` 里的 `…/resources/runtime/primary-runtime`，那份 payload 里带着它自带的真 node），再退到可执行文件旁的同一路径（macOS 包内是 `Contents/Resources/…`）、`DSH_DESKTOP_NODE_EXECUTABLE`、`PATH` 上的 `node`，最后才回到 `process.execPath`。每个候选都要被**问一次"你到底是什么"**（`-e` 打印 `process.versions.electron`）：只看 `--version` 分不出来——继承 `ELECTRON_RUN_AS_NODE` 时 Electron 回答的是 node 版本号（实测 `v24.18.1`），任何 `^v\d+\.\d+\.\d+` 判断都会选中那个坏的。非 Electron 宿主（`dsh web`）直接返回 `process.execPath`、不启动任何探测进程，行为与 0.7.4 完全一致；Desktop 上则把选中的解释器与被拒绝的候选写进启动日志。
+- 同方向的 PR #39 诊断是对的（根因确实是 Electron 解释器），但它的候选链第 1 项 `DSH_DESKTOP_NODE_EXECUTABLE` **指向的就是 Electron 可执行文件**——Desktop 自己的 `resources/runtime/bin/node.cmd` 就是 `set ELECTRON_RUN_AS_NODE=1` 后运行这个变量——而它的 `--version` 校验分不出两者。本修复采用同样的方向，但把 payload 路径放在最前，并用真正的判别器把 Electron 挡掉。
+- `tests/relay-node.test.mjs`：候选推导（argv / 可执行文件旁 / 环境变量，含去重与排序）与"是不是 Electron"的判定，包括 `--version` 那种形似版本号、但必须被拒的输出。
+- `scripts/compatibility/conpty-relay.mjs`：**新的常驻门禁**——在真实 ConPTY 下用宿主自己的 node-pty 跑中继，要求解析出的解释器给出活的 bash 提示符。这正是 #40 破坏的那条不变量，此前没有任何检查覆盖它。它注册进 `Run-Checks.ps1` 与 harness，每个已声明版本都跑。
+- **顺带修掉了 issue #40 里的第二个报错**：`bash_background` 交给 jobs 注册表的 `owner` 形状不对，在 `0.1.7` 及以后每次都报 `session "[object Object]" has no live agent`。实测这条契约**在 `0.1.7-rc.1` 变过**：之前 `start()` 收 agent 对象本身（注册表读 `owner.id` 与 `owner.ctx`），之后收**会话 id**（用 `agents.get(id)` 解析）——宿主自己的生产者也是同时从 `owner: parent` 改成 `owner: parent.id`。现在按注册表是否提供 `resolveOwner` 选择该传哪种形状；`tests/wsl-jobs.test.ts` 原本把错误的那一半当成正确行为断言了下来，现在两种契约都钉住了，十一个已声明版本也逐一实测过。
+- `dsh.compatibility.dshReleases` 增加 `0.2.0-rc.2`（DSH Desktop 0.2.0-rc.2 自带的 DSH 版本），这份构建声明的版本从十个变成十一个；README 也新增「兼容性」一节列出这十一个版本，并有单测保证它和 `package.json` 的声明不会各说各话。
+- **顺带修掉了 issue #40 里的第二个报错**：`bash_background` 把 agent 对象当成 job 的 owner 交给 jobs 注册表，而注册表要的是**会话 id**——它用 `ctx.agents.get(owner)` 去找活着的 agent，拿到对象必然找不到，于是每次都报 `session "[object Object]" has no live agent`（宿主自己的生产者传的是 `agent.id`）。`tests/wsl-jobs.test.ts` 原本把这个错误契约当成正确行为断言了下来，现在改成断言会话 id。
+- **验证**：十一个已声明版本各跑十六项 harness 检查（一律 14/16，两项失败是既有基线：`typecheck`，以及需要**运行中前端**的 `host-api`——对着真实实例单独跑是 12/12）；十一个版本各跑一遍 runbook 的六项前端验收（发行版下拉、创建并打开、写、读、一次性/持久 bash、skills、前端重开），`web.err` 全为 0 字节，文件在 Linux 侧独立复核。
+- **另外在真的 DSH Desktop 里跑了完整一遍**（把官方安装包解包后直接启动那个 Electron 应用，用 CDP 驱动窗口，并走桌面版自己的插件面板安装/启用插件，`DSH_HOME` 指向隔离目录）：装 **0.7.4** 时 `bash` 每次都报 `PTY shell exited during startup`、`bash_background` 报 `session "[object Object]" has no live agent`，而对话框、发行版列表、技能都正常；换成 **0.7.5** 后 `bash` 返回 `6.18.33.2-microsoft-standard-WSL2` / `/home/mille/fx-3381` / `mille`，第二次独立 `pwd` 仍是 `/tmp`（持久性成立），`bash_background` 返回 `bash-1`、`job_list` 报 `bash-1 [bash] running`、`bg.txt` 里确实是 `BG_3381_OK`，刷新窗口后工作区仍能重开；启动日志里是 `persistent shell: relay interpreter is …\runtime\primary-runtime\dependencies\node\bin\node.exe — node 24.21.0 from the runtime payload named in argv`。完整过程记在 `docs/compatibility-evidence.md`。
 
 ### 0.7.4 — 2026-09-28
 
@@ -100,24 +124,24 @@ WSL 世界现在在"会话能察觉到的每一处"都与宿主一致，最后�
 
 ### 0.4.5 — 2026-09-19
 
-- **链进 WSL 工作区的项目现在能被发现了**：`\\wsl.localhost` 9P 共享会把 Linux 符号链接当作条目列出来，却解析不了它的目标，于是技能扫描（本来就会在能解析链接的底层上跟随目录链接）直接跳过所有链接进来的项目，连带跳过它下面的嵌套项目（即 [#10](https://github.com/6Mikao9/dsh-wsl-workspace/issues/10) 描述的那种布局）。现在只要共享报出一个它跟随不了的链接，插件就回头问发行版本身（`wsl.exe -d <发行版> -- readlink -f <Linux 路径>`），拿到真实路径后从那里继续走。这条回退是有意加了上限的：每次查找最多 32 条链接、最多 4 个调用并发、单次超时 10 秒，原有的深度 / 已访问目录 / 技能目录预算不变。由于继续扫描的位置是解析后的真实路径，同一项目既被直接访问又被链接访问时只会走一次，指回工作区根目录的链接环也会被已访问集合吸收，不会打转。
+- **链进 WSL 工作区的项目现在能被发现了**：`\\wsl.localhost` 9P 共享会把 Linux 符号链接当作条目列出来，却解析不了它的目标，于是技能扫描（本来就会在能解析链接的底层上跟随目录链接）直接跳过所有链接进来的项目，连带跳过它下面的嵌套项目（即 [#10](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/10) 描述的那种布局）。现在只要共享报出一个它跟随不了的链接，插件就回头问发行版本身（`wsl.exe -d <发行版> -- readlink -f <Linux 路径>`），拿到真实路径后从那里继续走。这条回退是有意加了上限的：每次查找最多 32 条链接、最多 4 个调用并发、单次超时 10 秒，原有的深度 / 已访问目录 / 技能目录预算不变。由于继续扫描的位置是解析后的真实路径，同一项目既被直接访问又被链接访问时只会走一次，指回工作区根目录的链接环也会被已访问集合吸收，不会打转。
 - **这条回退不覆盖什么**：`read/write/edit` 仍然走 `WslFileSystem` 的路径解析，它不跟随 Linux 链接，因此直接读写链接路径会报路径不存在——请用真实路径。帮助面板的「已知问题」现在如实写这一点，而不再是"可以用 readlink 补，但尚未实现"。
 - **为什么一条链接一个 `wsl.exe`**（实测记录）：`wsl.exe` 会**丢掉**命令之后的参数（`sh -c 'echo $#' sh a b c` 返回 0），而且它的命令行解析会把含双引号的参数截断，所以批量的 `sh` 循环没法可靠地透过它工作。直接 `readlink -f a b c` 也不行：GNU `readlink` 遇到第一个解析不了的路径就停下（仍以非零退出），批次里后面的链接会被无声地饿死。把每个路径作为进程参数交给一次短调用，就完全绕开了引号问题——带空格、引号、反斜杠的路径都能解析——代价是每条链接一个进程（热态约 35 ms；本机上 6 条链接端到端 179 ms；没有链接的工作区则完全不会启动发行版进程）。
 - **验证**：八个已声明版本（`0.1.0-rc.7` … `0.1.5-rc.2`）跑通与 0.4.4 相同的 8/10 项检查（仅剩既有的 `typecheck` 基线与一项需要在线服务的检查）。真实 9P 检查现在会构造"只能靠符号链接进入"的 fixture，断言链接进来的项目、它下面的嵌套项目以及 `get()` 取正文；同一次运行里把回退能力摘掉再走一遍，两者都找不到，即修复前的行为在原位复现。在真实 WSL fixture 上（`/home/mille/symprobe/ws`：链到工作区外的目录、链接链、指向文件的链接、悬空链接、指回根目录的环）技能目录从 2 个变成 5 个，`get()` 也都能通过解析后的定位读回正文。
 
 ### 0.4.4 — 2026-09-19
 
-- **在 WSL 变体基础上改出来的自定义模式完全用不了**：本插件靠 id 前缀（`wsl-`）识别自己的产物，于是「把生成的 `wsl-standard` / `wsl-cordis` 复制改名再改」得到的用户预设会被当成普通源预设，被**再追加一个世界组**。DSH 拒绝含两个 `wsl-world` 行的组合，选中该模式时直接失败：`无法切换到「WSL · <名称>」：duplicate loader entry id: wsl-world`；在"先挂载组、后校验行 id"的版本上，同一处重复会晚一步表现为 `tool "str replace editor" is already registered in this scope`（即 [#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24) 报告的现象）。现在生成器会**替换**它找到的世界组（按挂载的 `shell-wsl` / `fs-wsl` provider id 识别，改过组名也能认出），每个变体最终只挂一个世界，且指向本机安装的 provider。源里重复出现的顶层行 id 也只保留第一处——DSH 遇到重复 id 是**整个预设**不可用，而不是只丢那一行。
-- **`tool-str-replace-editor` 行与旧的 `str-replace-editor` 行一样被替换**（[#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24)）：较新的名单用这个 id，而它注册的工具名与注入世界组里那个编辑器行相同，所以源里的那行会被丢弃，变体注入的、走 WSL 文件系统的编辑器保留。
+- **在 WSL 变体基础上改出来的自定义模式完全用不了**：本插件靠 id 前缀（`wsl-`）识别自己的产物，于是「把生成的 `wsl-standard` / `wsl-cordis` 复制改名再改」得到的用户预设会被当成普通源预设，被**再追加一个世界组**。DSH 拒绝含两个 `wsl-world` 行的组合，选中该模式时直接失败：`无法切换到「WSL · <名称>」：duplicate loader entry id: wsl-world`；在"先挂载组、后校验行 id"的版本上，同一处重复会晚一步表现为 `tool "str replace editor" is already registered in this scope`（即 [#24](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/24) 报告的现象）。现在生成器会**替换**它找到的世界组（按挂载的 `shell-wsl` / `fs-wsl` provider id 识别，改过组名也能认出），每个变体最终只挂一个世界，且指向本机安装的 provider。源里重复出现的顶层行 id 也只保留第一处——DSH 遇到重复 id 是**整个预设**不可用，而不是只丢那一行。
+- **`tool-str-replace-editor` 行与旧的 `str-replace-editor` 行一样被替换**（[#24](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/24)）：较新的名单用这个 id，而它注册的工具名与注入世界组里那个编辑器行相同，所以源里的那行会被丢弃，变体注入的、走 WSL 文件系统的编辑器保留。
 - **变体显示名不再多出一层引号**：变体的 `preset.yml` 原先逐字复制源里的 `name:` 标量，于是 `name: 'Data mode'` 到了模式选择器里变成 `WSL · ''Data mode''`；现在会先去掉一层 YAML 引号再写出。
-- **未采纳 [#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24) 的做法**：禁用 `tool-cordis` 行来规避 inspect provider 重复注册。`disabled` 的行根本不会 apply，结果是 WSL 创造模式**直接丢掉** `cordis_inspect_list` / `cordis_inspect_query`（已与 0.4.3 对照：0.4.3 里两个工具都在，且能返回 host 与 client 两侧的 provider）；PR 描述里"模型仍能在工具目录看到、只是不能用"与实际不符。其报告中的重复注册需要该行被 apply 两次，而这在"由复制预设引起"的情形下已由上面的行 id 去重解决。
+- **未采纳 [#24](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/24) 的做法**：禁用 `tool-cordis` 行来规避 inspect provider 重复注册。`disabled` 的行根本不会 apply，结果是 WSL 创造模式**直接丢掉** `cordis_inspect_list` / `cordis_inspect_query`（已与 0.4.3 对照：0.4.3 里两个工具都在，且能返回 host 与 client 两侧的 provider）；PR 描述里"模型仍能在工具目录看到、只是不能用"与实际不符。其报告中的重复注册需要该行被 apply 两次，而这在"由复制预设引起"的情形下已由上面的行 id 去重解决。
 - **帮助面板整理**：面板最前面是一句问候语与仓库链接，新增「本次更新」一节，已知问题只保留仍然成立的条目——历史上的「0.4.3 已修复」说明与按版本讲旧 API 的段落已删除。兼容性 chips 保持原样：它们是本构建声明的清单，不是历史。
 - **逐模式矩阵（真模型）**：在 `0.1.0-rc.7`、`0.1.1-rc.2`、`0.1.3-alpha.2`、`0.1.5-rc.2` 上，四个 WSL 变体（标准 / PTC / 极简 / 创造）各自跑一遍：用文件工具写文件、用 bash 执行 `uname -r; pwd; whoami` 并把输出重定向落盘、再读回文件。每个模式都在 `/home/mille/<工作区>/notes/` 里留下了 `MODE-<模式>-OK` 与 WSL2 内核输出，零 loader 报错；随后单独一次 bash 调用又回到工作区目录，即文档所写的「按次 shell」（PTY 组仍然不注入）。`0.1.2-rc.1` 与 `0.1.5-rc.1` 只做了四模式切换与真实回合，没有文件/bash 断言。
 - **验证**：八个已声明版本（`0.1.0-rc.7` … `0.1.5-rc.2`）跑通与 0.4.3 相同的 8/10 项检查（仅剩既有的 `typecheck` 基线与一项需要在线服务的检查）；17 个已安装运行时里全部 shipped 预设共 136 次变换，除本次修复外结果不变；68 个"复制变体"场景全部收敛为单一新世界组。另做浏览器 + 真模型验证：复制变体模式本身、创造模式（检查工具完整）以及 `0.1.0-rc.7` 的标准流程。
 
 ### 0.4.3 — 2026-09-11
 
-- **persona 文本位置变更**（[#22](https://github.com/6Mikao9/dsh-wsl-workspace/issues/22)）：DSH 把 persona 面向模型的字段从 `text` 改为内联 `suffix` + 折叠 `prefix`，而变体生成器只识别 `text: >-`，于是 WSL 环境说明从未追加（会话仍在发行版内运行，但模型不知道自己的 cwd 是 Linux 路径）。现在按 `suffix` → `text` → `prefix` 依次补写（内联标量会先折成块标量，句子落在原 `text` 块的位置），带 `complete: true` 的 persona 依旧不动。
+- **persona 文本位置变更**（[#22](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/22)）：DSH 把 persona 面向模型的字段从 `text` 改为内联 `suffix` + 折叠 `prefix`，而变体生成器只识别 `text: >-`，于是 WSL 环境说明从未追加（会话仍在发行版内运行，但模型不知道自己的 cwd 是 Linux 路径）。现在按 `suffix` → `text` → `prefix` 依次补写（内联标量会先折成块标量，句子落在原 `text` 块的位置），带 `complete: true` 的 persona 依旧不动。
 - **帮助面板**：对话框新增「?」按钮，就地展示本构建声明的 DSH 版本（直接从 `package.json` 经宿主路由读取，不会与清单脱节）、插件的用法与特性，以及无法修复的已知限制。
 - **UNC 工作区终于能收到技能目录**：宿主技能提供者用 `fs.watch` 监视工作区，对 `\\wsl.localhost\...` 会抛 `EISDIR`，该次观测被判为不完整，而 `dsh-tool-skill` 在快照不完整时会丢弃**整条**目录消息，于是 WSL 会话的模型一个技能都看不到。现在生成预设时把 `skill-filesystem` 行的 `watch` 固定为 `false`（若该行已有 `config:` 就并入，源里自己声明了 `watch` 则不动），目录改为在会话启动时扫描一次。代价是不再实时刷新：会话运行中途加入的技能要等下一个会话（技能正文仍实时读取）。
 - **`verify-lib` 加固**：其注释/字符串剥离器会把注释里的孤立单引号与后面的引号配对、吞掉剩余 bundle，使所有 `node:*` 导入看起来都被 tree-shake 掉；现在引号规则遇换行即终止，与 JavaScript 字符串一致。
@@ -146,7 +170,7 @@ WSL 世界现在在"会话能察觉到的每一处"都与宿主一致，最后�
 
 ### 0.3.2 — 2026-08-29
 
-- **WSL 会话注入嵌套项目的技能目录**（[#10](https://github.com/6Mikao9/dsh-wsl-workspace/issues/10)）：注册工作区之下的嵌套项目里的 `.dsh/skills` / `.agents/skills` 会带宿主的项目等级与来源一并发布，模型看到的目录与会话 cwd 就在项目里时一致；发现过程有深度与预算上限，会剪掉 `node_modules` 与点目录，且不改动非 WSL 会话。
+- **WSL 会话注入嵌套项目的技能目录**（[#10](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/10)）：注册工作区之下的嵌套项目里的 `.dsh/skills` / `.agents/skills` 会带宿主的项目等级与来源一并发布，模型看到的目录与会话 cwd 就在项目里时一致；发现过程有深度与预算上限，会剪掉 `node_modules` 与点目录，且不改动非 WSL 会话。
 - **扫描根对齐宿主**：从项目子目录发起查询先就近解析 `.git` 祖先，深层 cwd 也能看到所属项目的技能，且不会泄漏该祖先之上的技能。
 - **加固**：技能根预算按次强制，`skills.registerProvider` 调用加了保护，宿主 `skills` 服务形状不同时不再拖垮插件加载。
 - **清理**：移除历史预构建 `lib/` chunk 中残留的死 vendor 代码（含内联的 schemastery 副本），并补充嵌套技能目录的回归测试与 TESTING.md 章节。

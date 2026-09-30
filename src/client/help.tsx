@@ -54,7 +54,7 @@ export function WslHelp({ t, description }: WslHelpProps): React.ReactElement {
     <div className="dww-help" role="region" aria-label={t('help.button')}>
       <p className="dww-help-greeting">
         {t('help.greeting')}{' '}
-        <a className="dww-help-link" href="https://github.com/6Mikao9/dsh-wsl-workspace" target="_blank" rel="noreferrer">
+        <a className="dww-help-link" href="https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace" target="_blank" rel="noreferrer">
           {t('help.greeting.repo')}
         </a>
       </p>
@@ -90,7 +90,7 @@ export function WslHelp({ t, description }: WslHelpProps): React.ReactElement {
         <a className="dww-help-link" href="https://www.npmjs.com/package/dsh-wsl-workspace" target="_blank" rel="noreferrer">
           {t('help.footer.npm')}
         </a>
-        <a className="dww-help-link" href="https://github.com/6Mikao9/dsh-wsl-workspace" target="_blank" rel="noreferrer">
+        <a className="dww-help-link" href="https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace" target="_blank" rel="noreferrer">
           {t('help.footer.repo')}
         </a>
       </div>
