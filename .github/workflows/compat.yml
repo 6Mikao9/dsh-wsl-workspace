@@ -66,6 +66,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: provide pnpm (the dsh plugin manager shells out to it; the bash PATH on windows runners lacks it)
+        run: |
+          npm i -g pnpm
+          pnpm --version
       - name: provision WSL1 Ubuntu (the plugin API must list at least one distro)
         uses: Vampire/setup-wsl@v3
         with:

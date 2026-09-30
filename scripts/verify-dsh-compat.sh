@@ -32,12 +32,16 @@ WEB_URL="http://127.0.0.1:${PORT}/"
 PLUGIN_NAME="dsh-wsl-workspace"
 PLUGIN_REF="${PLUGIN_REF:-$PLUGIN_NAME}"
 
-wait_http() { # wait_http <url> <expected-substring> <tries>
-  local url="$1" expect="$2" tries="${3:-60}"
+wait_ready() { # wait_ready <boot-log> [tries] — the web server answers HTTP at all.
+  # Readiness is liveness, not auth: 0.2.0-rc gates `/` behind a browser
+  # token handshake (401 anonymous, 303 → ./ with the query dropped), so an
+  # HTML-content probe can never settle. The plugin's own health is asserted
+  # separately by api_code below; here any HTTP response counts.
+  local tries="${2:-60}" code
   for _ in $(seq 1 "$tries"); do
-    local body
-    body="$(curl -s --max-time 2 "$url" 2>/dev/null || true)"
-    if [ -n "$body" ] && printf '%s' "$body" | grep -q "$expect"; then
+    code="$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 2 "$WEB_URL" 2>/dev/null)"
+    code="${code:-000}"
+    if [ "$code" != "000" ]; then
       return 0
     fi
     sleep 2
@@ -46,9 +50,14 @@ wait_http() { # wait_http <url> <expected-substring> <tries>
 }
 
 api_code() { # api_code <method> <params-json>
-  curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$PLUGIN_API" \
+  # curl already prints 000 for a failed connect with -w; only default the
+  # never-printed case (curl died before writing) — otherwise the caller
+  # reads "000000".
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 5 -X POST "$PLUGIN_API" \
     -H 'Content-Type: application/json' \
-    -d "{\"method\":\"$1\",\"params\":$2}" 2>/dev/null || echo 000
+    -d "{\"method\":\"$1\",\"params\":$2}" 2>/dev/null)"
+  printf '%s' "${code:-000}"
 }
 
 for VERSION in "$@"; do
@@ -80,16 +89,23 @@ for VERSION in "$@"; do
     && echo "  ✔ profile manifest carries the plugin"
 
   echo "[start] booting web on :$PORT"
-  node "$BIN" web --port "$PORT" > "$WORK/boot-with-plugin.log" 2>&1 &
+  node "$BIN" web --port "$PORT" --no-open > "$WORK/boot-with-plugin.log" 2>&1 &
   SERVER_PID=$!
-  if ! wait_http "$WEB_URL" '<!DOCTYPE html\|<!doctype html\|html' 60; then
+  if ! wait_ready "$WORK/boot-with-plugin.log" 60; then
     echo "  ✖ server did not serve the web UI"
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION BOOT_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
   echo "  ✔ web UI is up"
-  CODE="$(api_code listDistros '{}')"
+  # the plugin route registers while the server is still coming up — poll
+  # for its 200 instead of taking one shot that races plugin loading
+  CODE=000
+  for _ in $(seq 1 20); do
+    CODE="$(api_code listDistros '{}')"
+    [ "$CODE" = "200" ] && break
+    sleep 2
+  done
   if [ "$CODE" = "200" ]; then
     echo "  ✔ plugin route answers 200 (plugin loaded and registered)"
   else
@@ -113,9 +129,9 @@ for VERSION in "$@"; do
     continue
   fi
   echo "  ✔ removed"
-  node "$BIN" web --port "$PORT" > "$WORK/boot-without-plugin.log" 2>&1 &
+  node "$BIN" web --port "$PORT" --no-open > "$WORK/boot-without-plugin.log" 2>&1 &
   SERVER_PID=$!
-  if ! wait_http "$WEB_URL" '<!DOCTYPE html\|<!doctype html\|html' 60; then
+  if ! wait_ready "$WORK/boot-without-plugin.log" 60; then
     echo "  ✖ server did not come back after removal"
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION REBOOT_FAIL unknown" >> "$BASE/verdicts.txt"
