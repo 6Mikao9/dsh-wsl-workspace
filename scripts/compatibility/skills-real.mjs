@@ -4,7 +4,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { WslSkillsProvider, nodeSkillIo } from '../../src/host/wsl-skills.ts';
+// Routed through the plane table so this driver cannot pass silently under
+// DSH_WSL_TEST_PLANE=lib: tsdown declares no entry for wsl-skills (the class is file-local to
+// lib/index.js:1122), so `lib` throws here and names the shipped-file decision instead of
+// quietly testing sources and reporting a lib-plane pass. Night decision: NOT adding two
+// tsdown entries at 3 a.m. — that changes what users install. See docs/CHECK-CATALOG.md bucket D.
+import { load } from './plane.mjs';
+
+const { WslSkillsProvider, nodeSkillIo } = await load('skills');
 
 const execFileAsync = promisify(execFile);
 const distro = process.env.WSL_COMPAT_DISTRO || 'Ubuntu';
