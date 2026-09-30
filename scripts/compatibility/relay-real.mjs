@@ -10,7 +10,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const relay = path.resolve(here, '../../src/host/wsl-relay.ts');
 const node = process.execPath;
 const distro = process.env.WSL_COMPAT_DISTRO || 'Ubuntu';
+const user = process.env.WSL_COMPAT_USER || 'mille';
 const workspace = process.env.WSL_COMPAT_RELAY_CWD || '\\\\wsl.localhost\\Ubuntu\\home\\mille\\symprobe\\ws';
+/** The Linux path of a `\\wsl.localhost\<distro>\…` spelling (as in skills-real). */
+const linuxOf = unc => `/${unc.replace(/^\\\\wsl\.localhost\\[^\\]+\\/, '').replaceAll('\\', '/')}`;
+const reEsc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Run the relay, feed it lines, and collect its output. */
 async function drive(lines, options = {}) {
@@ -46,7 +50,7 @@ async function drive(lines, options = {}) {
 //    sends (each line is one model call).
 const session = await drive(['pwd', 'export PERSIST_MARK=ok42; cd /tmp; pwd', 'echo MARK=$PERSIST_MARK; pwd', 'exit'])
 assert.equal(session.code, 0, `relay exited ${session.code}; stderr=${session.err.slice(0, 300)}`)
-assert.match(session.out, /\/home\/mille\/symprobe\/ws\n/, `pwd should start in the workspace: ${JSON.stringify(session.out.slice(0, 200))}`)
+assert.match(session.out, new RegExp(`${reEsc(linuxOf(workspace))}\n`), `pwd should start in the workspace: ${JSON.stringify(session.out.slice(0, 200))}`)
 assert.match(session.out, /\/tmp\n/, `cd /tmp should print /tmp: ${JSON.stringify(session.out.slice(0, 200))}`)
 assert.match(session.out, /MARK=ok42/, `state lost between sends: ${JSON.stringify(session.out.slice(0, 300))}`)
 assert.equal((session.out.match(/\/tmp/g) ?? []).length >= 2, true, `cd /tmp should persist: ${JSON.stringify(session.out.slice(0, 300))}`)
@@ -56,11 +60,11 @@ assert.equal((session.out.match(/\/tmp/g) ?? []).length >= 2, true, `cd /tmp sho
 //    reaches wsl.exe without changing the result).
 const envSession = await drive(['echo distro=$WSL_DISTRO_NAME; whoami', 'exit'], {
   cwd: process.env.WSL_COMPAT_DRIVE_CWD || 'C:\\',
-  env: { DSH_WSL_DISTRO: distro, DSH_WSL_USER: 'mille' },
+  env: { DSH_WSL_DISTRO: distro, DSH_WSL_USER: user },
 })
 assert.equal(envSession.code, 0, `relay exited ${envSession.code}; stderr=${envSession.err.slice(0, 300)}`)
 assert.match(envSession.out, new RegExp(`distro=${distro}`), `DSH_WSL_DISTRO not honored: ${envSession.out.slice(0, 300)}`)
-assert.match(envSession.out, /mille/, `DSH_WSL_USER not honored: ${envSession.out.slice(0, 300)}`)
+assert.match(envSession.out, new RegExp(`\\b${reEsc(user)}\\b`), `DSH_WSL_USER not honored: ${envSession.out.slice(0, 300)}`)
 
 console.log('PASS relay: stateful shell (export + cd persist between sends), starts in the session cwd,');
 console.log('PASS relay: distro from the UNC cwd and from DSH_WSL_DISTRO, DSH_WSL_USER honored, clean exit');
