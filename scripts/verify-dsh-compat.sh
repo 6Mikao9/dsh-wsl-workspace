@@ -136,3 +136,16 @@ done
 echo "=============================================================="
 echo " verdicts ($BASE/verdicts.txt):"
 cat "$BASE/verdicts.txt"
+
+# The verdicts are the contract: only `PASS compatible` is green. Without
+# this exit the caller always saw rc 0 — the frame-1 compat matrix was
+# three PLUGIN_ADD_FAIL lines under a green checkmark.
+if [ ! -s "$BASE/verdicts.txt" ]; then
+  echo "verify-dsh-compat: RED — verdicts.txt is empty (no version reached a verdict)" >&2
+  exit 1
+fi
+if grep -qv ' PASS compatible$' "$BASE/verdicts.txt"; then
+  echo "verify-dsh-compat: RED — at least one verdict is not 'PASS compatible'" >&2
+  exit 1
+fi
+echo "verify-dsh-compat: OK — $(wc -l < "$BASE/verdicts.txt") verdict(s), all PASS compatible"

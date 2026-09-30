@@ -76,11 +76,15 @@ jobs:
           use-headless: 'false'
       - name: keep the instance warm so the 9P share stays visible
         run: wsl.exe -d Ubuntu-24.04 -- bash -c '(nohup sleep 1800 >/dev/null 2>&1 & echo kept-alive)'
-      - name: pack the working tree (never test a published artifact for an unpublished commit)
+      - name: pack and unpack the working tree (never test a published artifact for an unpublished commit)
         run: |
           mkdir -p /tmp/compat-pack /tmp/compat-work
           npm pack --ignore-scripts --pack-destination /tmp/compat-pack >/dev/null
-          echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/dsh-wsl-workspace-*.tgz)" >> "$GITHUB_ENV"
+          # `dsh plugin add` accepts a package name or a LOCAL DIRECTORY, not a
+          # .tgz path (frame 1's three PLUGIN_ADD_FAIL lines: the previous step
+          # pointed PLUGIN_REF at the tarball file itself).
+          tar -xzf /tmp/compat-pack/dsh-wsl-workspace-*.tgz -C /tmp/compat-pack
+          echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/package)" >> "$GITHUB_ENV"
           echo "COMPAT_BASE_WIN=$(cygpath -w /tmp/compat-work)" >> "$GITHUB_ENV"
       - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
         run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
@@ -88,5 +92,10 @@ jobs:
         if: always()
         with:
           name: compat-${{ matrix.version }}
-          path: ${{ env.COMPAT_BASE_WIN }}
+          # verdicts + every step log only: the case tree also holds a full
+          # `npm i @deepseek-ai/dsh` node_modules (frame 1's artifact was
+          # 161 MB per version) and nothing in it is evidence.
+          path: |
+            ${{ env.COMPAT_BASE_WIN }}/**/verdicts.txt
+            ${{ env.COMPAT_BASE_WIN }}/**/*.log
           retention-days: 14
