@@ -16,13 +16,29 @@ Pick one of the three ways below, then restart `dsh web`:
 dsh plugin --profile web add dsh-wsl-workspace
 
 # 2) GitHub repository (ships the prebuilt lib/, no local build required)
-dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspace
+dsh plugin --profile web add https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace
 
 # 3) Local directory (development / self-hosted)
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ```
 
 After restarting `dsh web`, a W button appears beside Settings at the sidebar foot.
+
+## Compatibility
+
+This build declares these DSH releases, each verified on an isolated instance (its own
+`DSH_HOME`, dependencies pinned to that release, the full check suite):
+
+`0.1.0-rc.7` · `0.1.0-rc.8` · `0.1.1-rc.1` · `0.1.1-rc.2` · `0.1.2-rc.1` · `0.1.3-alpha.2` ·
+`0.1.5-rc.1` · `0.1.5-rc.2` · `0.1.7-rc.1` · `0.1.7-rc.2` · `0.2.0-rc.2`
+
+The list mirrors `dsh.compatibility.dshReleases` in `package.json`, and a unit test fails if
+the two drift apart. `0.2.0-rc.2` is the DSH release DSH Desktop `0.2.0-rc.2` ships, so the
+Desktop is covered by the same declaration; the app's help panel (the dialog's "?" button)
+shows the same chips next to the plugin version. The plugin detects the DSH generation at
+runtime and picks the matching API, and a release exposing neither fails loudly instead of
+leaving an empty workspace. A release outside the list usually still works, but is
+unverified.
 
 ## Usage
 
@@ -42,6 +58,90 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 - The garbled `localhost` port-forwarding banner `wsl.exe` prints to stderr when the distro was not running yet is harmless.
 
 ## Changelog
+
+### 0.7.5 — 2026-09-30
+
+- **The persistent shell works on DSH Desktop again (issue #40).** The Desktop
+  host process *is* the packaged Electron executable running in node mode
+  (`ELECTRON_RUN_AS_NODE=1`; the Desktop's own code is
+  `new DesktopHostProcess(resources.node, …)` with
+  `resources.node = process.execPath`), and the plugin pointed the PTY backend's
+  `shellPath` at `process.execPath` with `shellArgs[0] = lib/wsl-relay.js`. An
+  Electron binary writes **nothing at all** under a ConPTY: the relay's
+  `wsl.exe` child inherits a dead stream, the relay exits 0 with zero bytes, the
+  backend's readiness probe never sees a prompt, and **every** `bash` call fails
+  with `PTY shell exited during startup`. The `0.1.0-rc.7` one-shot fallback is
+  unaffected, which is exactly what hid the failure behind a mode that works.
+  Measured with the host's own node-pty: same relay, same `\\wsl.localhost\…`
+  cwd, same environment — a real node gives a bash prompt, the Electron binary
+  gives 0 bytes and a clean exit.
+- **The relay's interpreter is now resolved deliberately**
+  (`src/shared/relay-node.ts`): first the runtime payload the Desktop passes to
+  its host process (the `…/resources/runtime/primary-runtime` path in
+  `process.argv`, which carries a real node), then the same payload beside the
+  running executable (inside `Contents/Resources/…` on macOS), then
+  `DSH_DESKTOP_NODE_EXECUTABLE`, then a `node` on `PATH`, and only then
+  `process.execPath`. Every candidate is **asked what it is** (`-e` printing
+  `process.versions.electron`), because `--version` cannot tell them apart: with
+  `ELECTRON_RUN_AS_NODE` inherited the Electron executable answers with the
+  *node* version (measured: `v24.18.1`), so any `^v\d+\.\d+\.\d+` test selects
+  the broken one. A host that is not Electron (`dsh web`) keeps
+  `process.execPath` and spawns no probe at all, so its behaviour is identical
+  to 0.7.4; on the Desktop the chosen interpreter and every rejected candidate
+  go to the boot log.
+- PR #39 diagnosed this correctly and pointed the same way, but its first
+  candidate, `DSH_DESKTOP_NODE_EXECUTABLE`, **is the Electron executable** — the
+  Desktop's own `resources/runtime/bin/node.cmd` is `set
+  ELECTRON_RUN_AS_NODE=1` followed by that variable — and its `--version` check
+  cannot tell the two apart. This fix takes the same direction with the payload
+  path first and a discriminator that actually rejects Electron.
+- `tests/relay-node.test.mjs`: candidate derivation (argv / beside the
+  executable / the environment variable, including de-duplication and order) and
+  the Electron discriminator, including the version-shaped output that must be
+  refused.
+- `scripts/compatibility/conpty-relay.mjs`: **a new standing gate** — it drives
+  the relay through a real ConPTY with the host's own node-pty and requires the
+  resolved interpreter to produce a live bash prompt. That is the invariant
+  issue #40 broke, and nothing checked it before. Registered in
+  `Run-Checks.ps1` and the harness, so it runs on every declared release.
+- **The second error in issue #40 is fixed too**: `bash_background` handed the jobs
+  registry an `owner` of the wrong shape, which failed with
+  `session "[object Object]" has no live agent` on `0.1.7` and later. That contract
+  **changed at `0.1.7-rc.1`**: `start()` took the agent object before (the registry
+  reads `owner.id` and `owner.ctx`) and takes the session id after (resolving it with
+  `agents.get(id)`) — the host's own producers moved the same way, from
+  `owner: parent` to `owner: parent.id`. The plugin now picks the shape from whether
+  the registry offers `resolveOwner`; `tests/wsl-jobs.test.ts`, which had pinned the
+  wrong half as correct behaviour, now pins both contracts, and all eleven declared
+  releases were exercised one by one.
+- `dsh.compatibility.dshReleases` declares `0.2.0-rc.2` (the DSH release DSH
+  Desktop 0.2.0-rc.2 ships), so this build claims eleven releases instead of ten.
+- **The second error in issue #40 is fixed too**: `bash_background` handed the
+  jobs registry the agent object as the job owner, but the registry resolves that
+  owner with `ctx.agents.get(owner)` and wants the **session id**, so every call
+  failed with `session "[object Object]" has no live agent`. The host's own
+  producers pass `agent.id`. `tests/wsl-jobs.test.ts` had asserted the broken
+  contract as if it were correct; it now asserts the session id.
+- **Verification**: sixteen harness checks on each of the eleven declared
+  releases (14/16 everywhere — the two failures are the documented baseline:
+  `typecheck`, and `host-api`, which needs a *running* frontend and passes 12/12
+  when pointed at one), plus the runbook's six-item frontend pass on all eleven
+  (dialog distro list, create & open, write, read, one-shot/persistent bash,
+  skills, reopen from the UI) with `web.err` at 0 bytes and every file re-read
+  independently on the Linux side.
+- **And a full pass inside the real DSH Desktop.** The official installer was
+  unpacked and the Electron application itself was started (isolated `DSH_HOME`,
+  window driven over CDP, plugin installed and enabled through the Desktop's own
+  plugin panel). With **0.7.4** installed, every `bash` call returned
+  `PTY shell exited during startup` and `bash_background` returned
+  `session "[object Object]" has no live agent`, while the dialog, the
+  distribution list and the skills all worked. With **0.7.5**, bash returned
+  `6.18.33.2-microsoft-standard-WSL2` / `/home/mille/fx-3381` / `mille`, a second
+  independent `pwd` still said `/tmp`, `bash_background` returned `bash-1` with
+  `job_list` reporting `bash-1 [bash] running` and `bg.txt` really containing
+  `BG_3381_OK`, and the workspace still opened after a window reload. The boot log
+  names the interpreter it chose. The whole run is written up in
+  `docs/compatibility-evidence.md`.
 
 ### 0.7.4 — 2026-09-28
 
@@ -225,17 +325,17 @@ live skill catalog, a stateful shell, and tracked background jobs.
 
 ### 0.4.5 — 2026-09-19
 
-- **A project linked into a WSL workspace is discoverable now**: the `\\wsl.localhost` 9P share lists a Linux symlink but cannot resolve its target, so the skill scan — which already followed directory links on substrates that resolve them — skipped every linked-in project, and with it every nested project below it (the layout issue [#10](https://github.com/6Mikao9/dsh-wsl-workspace/issues/10) describes). When the share reports a link it cannot follow, the provider now asks the distribution itself (`wsl.exe -d <distro> -- readlink -f <linux path>`) and continues the walk at the real path. The fallback is bounded on purpose: at most 32 links per lookup, four calls in flight, a 10 s timeout each, and the existing depth / visited-directory / skill-directory budgets are untouched. Because the walk continues at the resolved path, a project reachable both directly and through a link is visited once, and a link that points back at the workspace root is absorbed by the visited set instead of looping.
+- **A project linked into a WSL workspace is discoverable now**: the `\\wsl.localhost` 9P share lists a Linux symlink but cannot resolve its target, so the skill scan — which already followed directory links on substrates that resolve them — skipped every linked-in project, and with it every nested project below it (the layout issue [#10](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/10) describes). When the share reports a link it cannot follow, the provider now asks the distribution itself (`wsl.exe -d <distro> -- readlink -f <linux path>`) and continues the walk at the real path. The fallback is bounded on purpose: at most 32 links per lookup, four calls in flight, a 10 s timeout each, and the existing depth / visited-directory / skill-directory budgets are untouched. Because the walk continues at the resolved path, a project reachable both directly and through a link is visited once, and a link that points back at the workspace root is absorbed by the visited set instead of looping.
 - **What the fallback does not cover**: `read/write/edit` still resolve their paths through `WslFileSystem`, which does not follow Linux links, so reading or writing a link path reports it missing — use the real path. The help panel's known-issues list now states that instead of promising a fallback "not implemented yet".
 - **Why one `wsl.exe` per link** (measured, and worth recording): `wsl.exe` silently drops the arguments that follow a command (`sh -c 'echo $#' sh a b c` answers 0), and its command-line parser truncates an argument containing a double quote, so a batched `sh` loop cannot be made reliable through it. A bare `readlink -f a b c` is no better: GNU `readlink` stops at the first path it cannot resolve and still exits non-zero, which would silently starve the rest of the batch. Passing each path as a process argument to one short call avoids quoting entirely — paths with spaces, quotes and backslashes all resolve — at the cost of one process per link (about 35 ms warm; six links cost 179 ms end to end on this machine, and a workspace with no links never starts a distribution process at all).
 - **Verification**: the eight declared releases (`0.1.0-rc.7` … `0.1.5-rc.2`) pass the same 8/10 harness checks as 0.4.4 — only the documented `typecheck` baseline and the check that needs a live server fail. The real-9P check now builds a fixture whose only path in is a symlink and asserts the linked project, its nested project and its service through `get()`; the same walk with the fallback face removed finds neither, which is the pre-fix behaviour reproduced in the same run. On a live WSL fixture (`/home/mille/symprobe/ws`: a link out of the workspace, a link chain, a file link, a dangling link and a loop back to the root) the catalog went from 2 skills to 5, and `get()` read every body through the resolved locator.
 
 ### 0.4.4 — 2026-09-19
 
-- **A preset built on top of a WSL variant could not be used at all**: this generator recognises its own output by id prefix (`wsl-`), so a user preset that started life as a copy of `wsl-standard` or `wsl-cordis` — a "data mode" that carries its own world, say — was treated as a plain source preset and had a *second* world group appended to it. DSH refuses a composition carrying two `wsl-world` rows, so choosing that mode failed outright with `无法切换到「WSL · <name>」：duplicate loader entry id: wsl-world`; on a release that mounts the group before validating row ids the same duplication surfaces one step later as `tool "str replace editor" is already registered in this scope` (the report in [#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24)). The generator now replaces the world group it finds — identified by the mounted `shell-wsl`/`fs-wsl` provider ids, so a copy whose group was renamed is caught too — and every variant ends up with exactly one world pointing at this installation's providers. A top-level row id that appears twice in a source is reduced to its first occurrence as well, because DSH rejects the whole preset on a duplicate id rather than the offending row.
-- **`tool-str-replace-editor` rows are replaced like the older `str-replace-editor` row** ([#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24)): newer rosters name the editor row that way, and it registers the same `str_replace_editor` tool as the world group's own editor row, so the source row is dropped just like its predecessor and the WSL-aware editor the variant injects stays.
+- **A preset built on top of a WSL variant could not be used at all**: this generator recognises its own output by id prefix (`wsl-`), so a user preset that started life as a copy of `wsl-standard` or `wsl-cordis` — a "data mode" that carries its own world, say — was treated as a plain source preset and had a *second* world group appended to it. DSH refuses a composition carrying two `wsl-world` rows, so choosing that mode failed outright with `无法切换到「WSL · <name>」：duplicate loader entry id: wsl-world`; on a release that mounts the group before validating row ids the same duplication surfaces one step later as `tool "str replace editor" is already registered in this scope` (the report in [#24](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/24)). The generator now replaces the world group it finds — identified by the mounted `shell-wsl`/`fs-wsl` provider ids, so a copy whose group was renamed is caught too — and every variant ends up with exactly one world pointing at this installation's providers. A top-level row id that appears twice in a source is reduced to its first occurrence as well, because DSH rejects the whole preset on a duplicate id rather than the offending row.
+- **`tool-str-replace-editor` rows are replaced like the older `str-replace-editor` row** ([#24](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/24)): newer rosters name the editor row that way, and it registers the same `str_replace_editor` tool as the world group's own editor row, so the source row is dropped just like its predecessor and the WSL-aware editor the variant injects stays.
 - **Variant display names are no longer double-quoted**: the variant's `preset.yml` copied the source's `name:` scalar verbatim, so a quoted `name: 'Data mode'` reached the mode picker as `WSL · ''Data mode''`. The scalar is unquoted before it is re-emitted.
-- **Not adopted from [#24](https://github.com/6Mikao9/dsh-wsl-workspace/pull/24)**: disabling the `tool-cordis` row to avoid a duplicate inspect-provider registration. A `disabled` row never applies, so the WSL variant of Creator mode silently lost `cordis_inspect_list` / `cordis_inspect_query` (checked against 0.4.3, where both are present and answer with the host and the client providers); the PR's own description that the model "can still see the tools in the catalog" is not what happens. The registration their report shows needs that row applied twice, which the row-id reduction above now prevents where a copied preset caused it.
+- **Not adopted from [#24](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/24)**: disabling the `tool-cordis` row to avoid a duplicate inspect-provider registration. A `disabled` row never applies, so the WSL variant of Creator mode silently lost `cordis_inspect_list` / `cordis_inspect_query` (checked against 0.4.3, where both are present and answer with the host and the client providers); the PR's own description that the model "can still see the tools in the catalog" is not what happens. The registration their report shows needs that row applied twice, which the row-id reduction above now prevents where a copied preset caused it.
 - **Help panel tidied up**: the panel now opens with a greeting line and the repository link, carries a "What's new" section for this build, and lists only the limitations that still apply — the historical "fixed in 0.4.3" note and the per-generation API walkthrough are gone. The compatibility chips are untouched: they are the manifest this build declares, not history.
 - **Verification**: the eight declared releases (`0.1.0-rc.7` … `0.1.5-rc.2`) pass the same 8/10 harness checks as 0.4.3 — only the documented `typecheck` baseline and the check that needs a live server fail; 136 transforms over every shipped preset of the 17 installed runtimes are unchanged apart from the repair, and all 68 "copied variant" cases resolve to a single fresh world group.
 - **Per-mode matrix with a real model** (every WSL variant, not just the default one): on `0.1.0-rc.7`, `0.1.1-rc.2`, `0.1.3-alpha.2` and `0.1.5-rc.2` each of the four variants — Standard, PTC, Minimal, Creator — was driven through the browser and asked to write a file with its file tool, run `uname -r; pwd; whoami` in bash and land that output in the workspace, then read the file back. Every mode produced `MODE-<mode>-OK` and a WSL2 kernel line in `/home/mille/<workspace>/notes/` with no loader error; the follow-up bash call lands in the workspace again, which is the documented per-call shell (the PTY group stays dropped). `0.1.2-rc.1` and `0.1.5-rc.1` were driven through all four modes without the file/bash assertions.
@@ -243,7 +343,7 @@ live skill catalog, a stateful shell, and tracked background jobs.
 
 ### 0.4.3 — 2026-09-11
 
-- **The persona text moved in `0.1.3-alpha.2`** ([#22](https://github.com/6Mikao9/dsh-wsl-workspace/issues/22)): DSH renamed the persona's model-facing scalar from `text` to an inline `suffix` plus a folded `prefix`, and the variant generator only recognised `text: >-`. On that line the WSL environment sentence was never appended - the session still ran inside the distribution, but the model was never told that its working directory is a Linux path reachable from Windows as `/mnt/<drive>`. The generator now amends `suffix`, `text` or `prefix` (folding an inline scalar into a block scalar when needed, so the sentence joins the working-directory line exactly where the legacy `text` block put it), and a persona carrying `complete: true` is still left alone. Verified on seven releases: the five older ones keep their persona block byte-identical, and the two newer ones now carry the sentence into the model's system message.
+- **The persona text moved in `0.1.3-alpha.2`** ([#22](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/22)): DSH renamed the persona's model-facing scalar from `text` to an inline `suffix` plus a folded `prefix`, and the variant generator only recognised `text: >-`. On that line the WSL environment sentence was never appended - the session still ran inside the distribution, but the model was never told that its working directory is a Linux path reachable from Windows as `/mnt/<drive>`. The generator now amends `suffix`, `text` or `prefix` (folding an inline scalar into a block scalar when needed, so the sentence joins the working-directory line exactly where the legacy `text` block put it), and a persona carrying `complete: true` is still left alone. Verified on seven releases: the five older ones keep their persona block byte-identical, and the two newer ones now carry the sentence into the model's system message.
 - **Help panel**: the dialog gained a "?" button that opens an in-place panel - the DSH releases this build declares (read from `package.json` through the host route, so the list can never drift from the manifest), how the plugin is used, its features, and the limitations it cannot fix.
 - **The skill catalog now reaches UNC workspaces**: the host skill provider watches a workspace through `chokidar`, and watching a `\\wsl.localhost\...` path fails; the failed watcher makes the skill snapshot report `complete: false`, and `dsh-tool-skill` withholds the *entire* catalog message while a snapshot is incomplete — so a WSL session's model saw no skills at all, not even the ones the plugin had discovered. The variant generator now pins `watch: false` on the `skill-filesystem` row (merged into an existing `config:` block when there is one, and left alone when the source declares `watch` itself), which makes the host collect the catalog once at session start instead. Verified end to end on `0.1.5-rc.2`: the model's context carries the `<available_skills>` list. Trade-off: a skill added mid-session appears in the next session rather than the running one; skill bodies are still read live.
 - **`verify-lib` hardening**: its comment/string stripper could pair a lone apostrophe inside a comment with a later one and swallow the rest of the bundle, which made every `node:*` import look tree-shaken. The quote rules now stop at a newline, exactly as a JavaScript string does.
@@ -273,7 +373,7 @@ live skill catalog, a stateful shell, and tracked background jobs.
 
 ### 0.4.0 — 2026-08-29
 
-Follow-ups from the [#12](https://github.com/6Mikao9/dsh-wsl-workspace/issues/12) limitation list and the [#13](https://github.com/6Mikao9/dsh-wsl-workspace/issues/13) compatibility work:
+Follow-ups from the [#12](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/12) limitation list and the [#13](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/13) compatibility work:
 
 - **Lookup cache**: completed skill-catalog lookups are cached per scan root for 10 seconds, so repeated catalog builds no longer rescan the workspace over the slow 9P share; `get()` keeps reading skill bodies live, and freshly added skills appear within the TTL window.
 - **Symlinked projects — investigated in 0.4.0, resolved in 0.4.5**: the discovery walk now recognizes directory symlinks explicitly and prunes them safely (no crashes, no loops), and the probe showed that following them is impossible over the `\\wsl.localhost` share itself (the Windows side cannot resolve Linux symlink targets: `readlink` → `EISDIR`, `stat`/`readdir` → `ENOENT`); 0.4.5 resolves them through the distribution instead, so linked-in projects are discoverable (see that changelog entry). A name+body fingerprint dedupe also guarantees aliased skill files can never publish twice on substrates that do resolve links.
@@ -283,7 +383,7 @@ Follow-ups from the [#12](https://github.com/6Mikao9/dsh-wsl-workspace/issues/12
 
 ### 0.3.2 — 2026-08-29
 
-- **WSL workspace sessions now inject nested-project skill catalogs** ([#10](https://github.com/6Mikao9/dsh-wsl-workspace/issues/10)): `.dsh/skills` and `.agents/skills` directories of projects nested below the registered workspace root are discovered and published with the host's project ranks and sources, so the model sees the same skill catalog it would see when the session cwd is the project folder itself. Discovery is depth- and budget-bounded, prunes `node_modules`/dot-directories, and leaves non-WSL sessions untouched.
+- **WSL workspace sessions now inject nested-project skill catalogs** ([#10](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/10)): `.dsh/skills` and `.agents/skills` directories of projects nested below the registered workspace root are discovered and published with the host's project ranks and sources, so the model sees the same skill catalog it would see when the session cwd is the project folder itself. Discovery is depth- and budget-bounded, prunes `node_modules`/dot-directories, and leaves non-WSL sessions untouched.
 - **Host-parity scan root**: lookups from inside a project subtree resolve the nearest `.git` ancestor first, so the enclosing project's skills stay visible from deeper cwds; skills above that ancestor do not leak.
 - **Hardening**: the skill-root budget is enforced per push, and the `skills.registerProvider` call is guarded so a host whose `skills` service has a different shape can no longer break plugin load.
 - **Housekeeping**: removed stale prebuilt `lib/` chunks that shipped dead vendor code (including an inlined schemastery copy that triggered dsh.so's `new Function` static rule); added `scripts/repro-setup.sh` plus a nested skill-catalog regression suite, and a matching TESTING.md section.

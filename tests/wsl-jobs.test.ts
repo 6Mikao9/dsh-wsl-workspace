@@ -58,7 +58,7 @@ function harness(overrides = {}) {
   return { tool: registered.get(TOOL_NAME), calls, process, registered }
 }
 
-const EXEC = { agent: { session: { header: { cwd: '\\\\wsl.localhost\\Ubuntu\\home\\mille\\ws' } } } }
+const EXEC = { agent: { id: 'session-7f2c', session: { header: { cwd: '\\\\wsl.localhost\\Ubuntu\\home\\mille\\ws' } } } }
 
 test('registers one bash_background tool with a narrow schema', () => {
   const { tool, registered } = harness()
@@ -78,8 +78,29 @@ test('starts a tracked job and returns its id', async () => {
   const spec = calls.started[0]
   assert.equal(spec.kind, 'bash', 'the id namespace the host tools expect')
   assert.equal(spec.label, 'sleep 30')
-  assert.equal(spec.owner, EXEC.agent, 'ownership fences the job to the session')
+  assert.equal(spec.owner, EXEC.agent,
+    'through 0.1.5-rc.2 the registry takes the agent itself (it reads owner.id and owner.ctx)')
   assert.equal(tool.output.render({ command: 'sleep 30' }, value)[0].text, 'started background job bash-7')
+})
+
+test('a registry that resolves an owner takes the session id instead (0.1.7+)', async () => {
+  // 0.1.7-rc.1 changed the contract: `start()` takes the session id and the
+  // registry resolves it with `agents.get(id)`. Handing it the agent object is
+  // the `session "[object Object]" has no live agent` failure of issue #40, and
+  // the presence of `resolveOwner` is what tells the two apart.
+  const { tool, calls } = harness({ jobs: { resolveOwner: (session: string) => ({ id: session }) } })
+  await tool.execute({ command: 'sleep 30' }, EXEC)
+  const spec = calls.started[0] as { owner?: unknown } | undefined
+  assert.equal(spec?.owner, 'session-7f2c', 'the newer registry takes the session id')
+})
+
+test('a call with no agent produces an unowned job rather than a wrong owner', async () => {
+  for (const jobs of [{}, { resolveOwner: (session: string) => ({ id: session }) }]) {
+    const { tool, calls } = harness({ jobs })
+    await tool.execute({ command: 'sleep 30' }, {})
+    const spec = calls.started[0] as { owner?: unknown } | undefined
+    assert.equal(spec !== undefined && 'owner' in spec, false, 'no agent means no owner entry at all')
+  }
 })
 
 test('the producer runs through this world\u2019s shell, with the caller\u2019s workdir', async () => {

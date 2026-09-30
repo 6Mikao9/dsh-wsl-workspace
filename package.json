@@ -1,11 +1,11 @@
 {
   "name": "dsh-wsl-workspace",
-  "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required.",
-  "version": "0.7.4",
+  "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required. Works on DSH Desktop as well as dsh web.",
+  "version": "0.7.5",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/6Mikao9/dsh-wsl-workspace.git"
+    "url": "git+https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace.git"
   },
   "main": "lib/index.js",
   "scripts": {
@@ -47,7 +47,8 @@
         "0.1.5-rc.1": "compatible",
         "0.1.5-rc.2": "compatible",
         "0.1.7-rc.1": "compatible",
-        "0.1.7-rc.2": "compatible"
+        "0.1.7-rc.2": "compatible",
+        "0.2.0-rc.2": "compatible"
       }
     }
   },

@@ -1222,6 +1222,316 @@ a warm pnpm metadata cache it printed no warning in testing, which is why the re
 and the issue comments matter as well. Deprecation is advisory — it never blocks an install
 — and is reversible with an empty message.
 
+## The Desktop PTY ran on the Electron executable (2026-09-30, plugin 0.7.5, issue #40)
+
+The second DSH Desktop report, and the first one that is not about the dialog. There the
+dialog works and the workspace is created, and then **every** `bash` call fails:
+
+```
+Error: PTY shell exited during startup
+```
+
+while `glob`/`read`/`write` keep working — which is why the report reads as "the bash tool
+is broken in WSL". The reporter's host is DSH Desktop `0.2.0-rc.2` with plugin `0.7.4`.
+
+**The plugin hands the PTY backend a command of its own.** A WSL variant does not mount the
+host's one-shot `dsh-tool-bash`; it mounts the host's PTY registry and its config-driven
+backend (`@deepseek-ai/dsh-terminal-bash`) and tells that backend what to run: `shellPath`
+is a node executable and `shellArgs[0]` is `lib/wsl-relay.js`. The relay has to be there
+because only it can read the session's distribution and user at spawn time. Everything else
+in that stack belongs to the host — the interpreter is the plugin's one choice, and it was
+`process.execPath`.
+
+**On DSH Desktop `process.execPath` is the Electron executable.** The official Windows
+installer (`dsh-latest-windows-x64.exe`, `0.2.0-rc.2`) unpacks to `DeepSeek Harness.exe`
+plus `resources/app.asar` and `resources/runtime/`, and its own code says so:
+
+- `runtimeResources()` returns `{ node: process.execPath, … }`, and `DesktopHostProcess` is
+  constructed with `resources.node` as its executable;
+- `desktopNodeEnvironment(executable, bin, environment)` sets `ELECTRON_RUN_AS_NODE: "1"`
+  for every node-mode child;
+- `resources/runtime/bin/node.cmd` is `set ELECTRON_RUN_AS_NODE=1` followed by
+  `"%DSH_DESKTOP_NODE_EXECUTABLE%"` — that variable is the *Electron* executable, not a
+  node, which is what makes it a trap for a fix that trusts it;
+- the payload beside it, `resources/runtime/primary-runtime/dependencies/node/bin/node.exe`,
+  is a real node (`versions.json` says `24.18.1`; the shipped binary reports `24.21.0`).
+
+The plugin's host process is spawned with `desktopNodeEnvironment(this.node, void 0, …)`, so
+it gets `ELECTRON_RUN_AS_NODE=1` and **not** `DSH_DESKTOP_NODE_EXECUTABLE`; its
+`process.argv` carries the absolute `…/resources/runtime/primary-runtime` path.
+
+**An Electron binary writes nothing at all under a ConPTY.** Measured on this machine with
+the host's own node-pty (`1.2.0-beta.15`), the plugin's real `lib/wsl-relay.js`, the PTY
+backend's own child environment and a real `\\wsl.localhost\Ubuntu\home\mille` cwd — the
+interpreter is the only variable:
+
+| Interpreter | Output | Exit |
+|---|---|---|
+| `DeepSeek Harness.exe` (Electron 44, node mode) | **0 bytes** | `0` after 4.1–6.8 s |
+| `…/primary-runtime/dependencies/node/bin/node.exe` (node 24.21.0) | 170 bytes, prompt `mille@mikao:~$` | still running |
+
+Zero bytes and a clean exit is exactly `waitReason === 'session_exit'` in
+`LocalPtySession.initialize()`, i.e. the `PTY shell exited during startup` the reporter saw.
+The same interpreter under plain pipes works, which is why the relay itself was never
+suspected.
+
+**The fix** is `src/shared/relay-node.ts`. The interpreter is resolved deliberately: the
+payload named in `process.argv` first, then the same payload beside the running executable
+(`Contents/Resources/…` on macOS), then `DSH_DESKTOP_NODE_EXECUTABLE`, then a `node` on
+`PATH`, then `process.execPath`. Every candidate is asked what it is — one spawn of
+`-e "process.stdout.write(JSON.stringify([process.versions.node, process.versions.electron ?? null]))"`
+— because a version string cannot answer the question:
+
+```
+electronVersionFlag: "v24.18.1"        <- `--version` on the Electron executable, which
+electronProbe: { ok: false, reason: "is the Electron 44.0.0 executable, not node" }
+```
+
+`--version` prints the *node* version whenever `ELECTRON_RUN_AS_NODE` is inherited, which it
+always is inside the Desktop host, so a `^v\d+\.\d+\.\d+` check happily selects the broken
+interpreter. PR #39 proposed exactly that check with `DSH_DESKTOP_NODE_EXECUTABLE` as its
+first candidate; on the shipped Desktop that variable is the Electron executable. Its
+direction was right and its second candidate is the one that works, but the chain it shipped
+is one host change away from silently reverting.
+
+**What the host process actually has in its environment.** A throwaway probe plugin was
+installed into the scratch Desktop profile and mounted, so this is measured rather than read
+off the Desktop's source:
+
+```json
+{"execPath":"D:\\…\\DeepSeek Harness.exe","electron":"44.0.0","node":"24.18.1",
+ "DSH_DESKTOP_NODE_EXECUTABLE":null,"ELECTRON_RUN_AS_NODE":"1","pathHasRuntimeBin":false,
+ "argv":["…\\DeepSeek Harness.exe","…\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\index.js",
+         "…\\app.asar\\dsh","…\\profiles\\desktop","…\\resources\\runtime\\primary-runtime",
+         "…\\resources\\runtime\\pnpm\\bin\\pnpm.mjs","…\\resources\\runtime\\bin"]}
+```
+
+Three consequences for the review of PR #39:
+
+- `DSH_DESKTOP_NODE_EXECUTABLE` is **absent**, so PR #39's first candidate is skipped today
+  and the fix does work — entirely because of its second candidate, the bundled payload.
+- `pathHasRuntimeBin` is **false**, so its third candidate (`node.exe` on `PATH`) finds
+  nothing on a Desktop machine without a system node; the Desktop's own `runtime/bin` holds
+  `node.cmd`/`node` shims around the Electron executable, not `node.exe`.
+- `ELECTRON_RUN_AS_NODE` **is** set and `process.execPath` is the Electron executable, so
+  the `--version` check would accept that executable if it were ever offered as a candidate
+  — which is what `desktopNodeEnvironment(executable, bin, …)` does the moment it is called
+  with a `bin` directory.
+
+The probe was uninstalled and the scratch profile is back to the single plugin under test.
+
+**PR #39 was then installed and run on the same Desktop.** Its two changed files were taken
+from the PR head (`18d870e2`), everything else from `main`, packed with `--ignore-scripts` so
+its committed `lib/` was used as-is, and linked into the scratch Desktop profile. `bash` then
+worked — `6.18.33.2-microsoft-standard-WSL2 / /home/mille/fx-3381 / mille`, no
+`PTY shell exited during startup` — so the PR **does** fix issue #40 today. It does so through
+its second candidate, with its first candidate skipped because that variable is absent from
+the host environment, and with no diagnostic at all if that ever changes.
 
 
+A host that is not Electron returns `process.execPath` and spawns nothing, so `dsh web` is
+unchanged; on the Desktop the chosen interpreter and every rejected candidate are written to
+the boot log (`dsh-wsl-workspace: persistent shell: relay interpreter is …`), so the next
+report of this kind carries its own diagnosis.
 
+**The simulation, on the real binaries.** `.test-runs/desktop-pty-sim.mjs` runs the resolver
+*inside* the extracted `DeepSeek Harness.exe` (Electron 44, node mode) with the Desktop's own
+argv and environment, then runs the real relay under a real ConPTY twice. The first run
+reports `isElectronHost: true`, `execPath: …\DeepSeek Harness.exe`, and resolves to
+`…\primary-runtime\dependencies\node\bin\node.exe` — from the argv payload and, in a second
+run without it, from the executable-relative lookup. The ConPTY comparison is the table
+above. The stand-in is node-pty itself, taken from the DSH checkout because the Desktop keeps
+its copy inside `app.asar`; both arms use that same copy.
+
+**Regression tests.** `tests/relay-node.test.mjs` (unit, picked up by the harness's `unit`
+check) pins candidate derivation — argv, executable-relative, the macOS bundle, the
+environment variable, de-duplication and order — and the discriminator, including the
+version-shaped output that must be refused. `scripts/compatibility/conpty-relay.mjs` is a new
+standing gate: it resolves the interpreter on the release under test and requires it to
+produce a live bash prompt through a real ConPTY. Nothing checked that invariant before,
+which is why a defect that broke every persistent shell on Desktop could ship.
+
+**Harness and gates.** Eleven releases × 16 checks: **14/16 each**, the two failures being
+the documented baseline (`typecheck`, and `host-api` from the harness, which needs a running
+frontend). `conpty-relay` is green on all eleven. Pointed at the eleven live instances,
+`host-api` is **12/12** on every one.
+
+**The frontend pass, six items on every declared release.** `0.1.0-rc.7` … `0.2.0-rc.2` (the
+last one newly declared here, and the DSH release DSH Desktop `0.2.0-rc.2` ships), each on
+its own `dsh web` instance with the packed `0.7.5` tarball installed: the picker listed
+`Ubuntu` and `docker-desktop`, "Create & open" produced a session whose header names the WSL
+variant, the file tools wrote and read `compat.txt` (re-read independently on the Linux side:
+`COMPAT_<port>_OK`, 14 bytes each), bash reported `6.18.33.2-microsoft-standard-WSL2` /
+`/home/mille/fx-<port>` / `mille`, `cd /tmp` survived into the next independent `bash` call on
+all ten releases that have a Windows process inspector, `0.1.0-rc.7` stayed one-shot as
+documented, the `compat-probe` skill reported its `SKILL_TOKEN_<port>`, and the workspace row
+reappeared in the sidebar after a page reload and opened again. `web.err` was **0 bytes** on
+all eleven. The help panel renders `v0.7.5` with eleven chips and the 0.7.5 news block.
+
+**The Desktop itself was run afterwards.** This section's measurements are on the Desktop's
+own binaries; the next section starts the real application from the unpacked installer and
+runs the six-item pass inside it, first on 0.7.4 (which reproduces both errors) and then on
+0.7.5. The manual recipe is in `TESTING.md`.
+
+## The real DSH Desktop, end to end (2026-09-30, plugin 0.7.5, issue #40)
+
+Everything above was measured on the Desktop's *binaries*; this is the Desktop
+itself. The official installer (`dsh-latest-windows-x64.exe`, `0.2.0-rc.2`) was
+unpacked with 7-Zip — no installation — and `DeepSeek Harness.exe` was started
+directly, with:
+
+- `DSH_HOME` pointed at a scratch directory, so the real profile was never touched;
+- `--remote-debugging-port`, which Electron honours, so the window could be read
+  and driven over CDP (`.test-runs/desktop-cdp.mjs`);
+- the plugin installed and enabled through the Desktop's **own plugin panel**
+  (添加插件 → a local directory path → 安装 → 启用), which is the path a user takes.
+
+**0.7.4 reproduces both halves of issue #40.** With the published artifact
+installed, a WSL workspace was created at `/home/mille/fx-3380` and the agent was
+asked to run bash:
+
+```
+第 1 步：uname -r; pwd; whoami
+原样输出（4 次重试，结果完全一致）：
+Error: PTY shell exited during startup
+...
+bash_background    另一种故障：session "[object Object]" has no live agent
+```
+
+In the same session the dialog listed `Ubuntu` and `docker-desktop`, the preset
+was `WSL · Standard mode（标准模式）`, and the `compat-probe` skill loaded and
+reported `SKILL_TOKEN_3380` — so the failure is exactly and only the persistent
+shell, which is what the report said.
+
+**The second error is a plugin bug, not a symptom of the first.**
+`bash_background` passed `owner: exec.agent` to `ctx.jobs.start()`.
+`@deepseek-ai/dsh-jobs-local`'s `resolveOwner(session)` does
+`agents.get(session)` and throws `session "<session>" has no live agent` when that
+misses — and a session **id** is what it wants, which is what the host's own
+producers pass (`owner: parent.id` in `dsh-tool-subagent` and
+`dsh-tool-workflow`). Handing it the agent object could only ever stringify to
+`[object Object]`. The plugin now passes `agent.id`, and `tests/wsl-jobs.test.ts`
+— which had pinned the wrong contract — asserts the session id instead.
+
+**0.7.5 passes the whole six-item run on the same Desktop.** After uninstalling
+0.7.4 and installing 0.7.5 through the panel, the boot log reads
+
+```
+dsh-wsl-workspace: persistent shell: relay interpreter is D:\…\resources\runtime\primary-runtime\dependencies\node\bin\node.exe — node 24.21.0 from the runtime payload named in argv ("D:\…\resources\runtime\primary-runtime")
+```
+
+and the session reports, in order: `compat.txt` written with the file tool and
+read back as `COMPAT_3381_OK`; bash returning
+`6.18.33.2-microsoft-standard-WSL2`, `/home/mille/fx-3381`, `mille`; a second
+independent `pwd` still returning `/tmp`; `bash_background` returning job id
+`bash-1` with `job_list` reporting `bash-1 [bash] running`; the skill reporting
+`SKILL_TOKEN_3381`. The window header shows `1 个后台任务`. After a window reload
+the workspace row was still in the sidebar and opened again, with the WSL preset
+and a live composer.
+
+**Independent checks.** `wsl.exe … cat` on the Linux side: `compat.txt` 14 bytes
+`COMPAT_3381_OK`, `bg.txt` 11 bytes `BG_3381_OK`. The help panel renders `v0.7.5`
+with eleven chips.
+
+**What this adds over the binary-level simulation.** The simulation proved the
+failing mechanism (Electron + ConPTY → zero bytes) and the resolution; the real
+run proves the rest of the path a user actually takes — the Desktop's plugin
+manager (install, enable, uninstall), the host booting with the resolved
+interpreter, preset generation, the PTY backend, the jobs registry, the client
+panel and a window reload — and it is where the `bash_background` owner bug
+surfaced, which no interpreter-level simulation would have found.
+
+**Cost and cleanliness.** The Desktop ran against a scratch `DSH_HOME` and a
+scratch Electron `--user-data-dir`; the window was closed and the processes
+stopped after the run. The app's own updater reported
+`Update for version 0.2.0-rc.2 is not available`, so nothing was downloaded. The
+plugin was installed as a `link:` dependency on the unpacked tarball, so the
+Desktop profile holds no copy of the published artifact.
+
+**The payload path is not a guess, and the fallback chain was exercised too.**
+Renaming `resources/runtime/primary-runtime` away made the Desktop itself die at
+boot with
+
+```
+DesktopHostFatalError: ENOENT: no such file or directory, stat 'D:\…\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+```
+
+— the shell stats that exact file before starting its host, which is why the
+resolver's first candidate is the one file the Desktop itself requires. In that
+state the plugin's resolution still ran (the host had started) and fell through to
+the next candidate:
+
+```
+dsh-wsl-workspace: persistent shell: relay interpreter is C:\nvm4w\nodejs\node.exe — node 24.13.1 from "node.exe" on PATH
+```
+
+so the PATH arm is real as well. With the payload restored the log returns to the
+bundled node and the app boots clean. (Launching with a `PATH` that contains no
+node at all did not reach the plugin — the Desktop failed to start its host first —
+so the last-resort branch is covered by `tests/relay-node.test.mjs` rather than by
+this machine.)
+
+## The jobs registry's owner contract, and the pre-release pass that caught it (2026-09-30, plugin 0.7.5)
+
+The pre-release acceptance pass — the runbook's six items plus the `bash_background`
+path, one isolated instance per declared release — found a **compatibility defect
+introduced by this release's own fix**, before it shipped.
+
+**The contract.** `ctx.jobs.start()` takes an `owner`, and what that owner *is*
+changed at `0.1.7-rc.1`:
+
+- `0.1.0-rc.7` … `0.1.5-rc.2`: the **agent object**. The registry checks
+  `agents.get(owner.id) !== owner` and reads `owner.ctx` for scope cleanup.
+- `0.1.7-rc.1` and later: the **session id**, resolved with `agents.get(id)`.
+
+The host's own producers moved at the same boundary — `owner: parent` in
+`dsh-tool-subagent` before, `owner: parent.id` after — which is what makes the split
+the plugin's business rather than a host quirk.
+
+**What the plugin did.** 0.7.4 passed the agent object, so on `0.1.7`+ every
+`bash_background` call failed with `session "[object Object]" has no live agent` (the
+second error in issue #40). The first version of the 0.7.5 fix passed the session id,
+which repaired those three releases and broke the other eight with
+`Cannot read properties of undefined (reading 'Symbol(dsh.scope)')`. Both mistakes
+fail loudly; neither is silent, which is why the acceptance pass could see them.
+
+**The fix.** `ownerOf()` in `src/host/wsl-jobs.ts` picks the shape from the registry:
+`typeof jobs.resolveOwner === 'function'` is present exactly on the releases that take
+a session id — measured on all eleven declared releases (`resolveOwner` absent on the
+eight through `0.1.5-rc.2`; present on `0.1.7-rc.1`, `0.1.7-rc.2` and `0.2.0-rc.2`).
+`tests/wsl-jobs.test.ts` pins both contracts plus the no-agent case, and the typecheck
+baseline did not move.
+
+**The acceptance run, all eleven releases.** Each on its own `dsh web` instance with
+the packed `0.7.5` tarball, asked to start a background job, poll `job_list` until it
+settled, and read back the file it wrote:
+
+| Release | Owner contract | Job id | Final state | Output file | `has no live agent` | `Symbol(dsh.scope)` |
+|---|---|---|---|---|---|---|
+| `0.1.0-rc.7` | agent | `bash-1` | completed | `BG_3382_OK` | no | no |
+| `0.1.0-rc.8` | agent | `bash-1` | completed | `BG_3383_OK` | no | no |
+| `0.1.1-rc.1` | agent | `bash-1` | completed | `BG_3384_OK` | no | no |
+| `0.1.1-rc.2` | agent | `bash-1` | completed | `BG_3385_OK` | no | no |
+| `0.1.2-rc.1` | agent | `bash-1` | completed | `BG_3386_OK` | no | no |
+| `0.1.3-alpha.2` | agent | `bash-1` | completed | `BG_3387_OK` | no | no |
+| `0.1.5-rc.1` | agent | `bash-1` | completed | `BG_3388_OK` | no | no |
+| `0.1.5-rc.2` | agent | `bash-1` | completed | `BG_3389_OK` | no | no |
+| `0.1.7-rc.1` | session id | `bash-1` | completed | `BG_3390_OK` | no | no |
+| `0.1.7-rc.2` | session id | `bash-1` | completed | `BG_3391_OK` | no | no |
+| `0.2.0-rc.2` | session id | `bash-1` | completed | `BG_3392_OK` | no | no |
+
+Every job reported exit code 0, and the written file was re-read independently on the
+Linux side (`.test-runs/check-bg-files.sh`): eleven `bg.txt`, 11 bytes each, contents
+matching their port.
+
+**Real DSH Desktop, final artifact.** `bash_background` went `bash-1` `running` →
+`completed`, exit 0, with `bg3.txt` = `BG3_3381_OK` re-read on the Linux side; a window
+reload still reopened the workspace with its WSL preset; the help panel renders
+`v0.7.5` with eleven chips, the 0.7.5 news block, and the repository's new location.
+
+**A gate caught a gate.** The new `tests/readme-compat.test.mjs` failed inside the
+harness: a prepared case copies the plugin's sources but not its prose, so the
+README-parity cases had no READMEs to read. The copy list in
+`scripts/compatibility/Prepare-Case.ps1` and `.test-runs/harness.mjs` now carries the
+two full READMEs, and the test skips with a named reason in a copy that has none
+instead of reporting a missing file as a documentation defect.

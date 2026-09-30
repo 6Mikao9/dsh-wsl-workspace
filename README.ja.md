@@ -8,6 +8,8 @@
 ![alt text](image-3.png)
 DeepSeek Harness Web GUI から WSL ワークスペースを追加し、エージェントセッション全体（bash コマンドとファイルの読み書き）をローカルの WSL ディストリビューション内で実行します。パスはすべて Linux 形式です。WSL 内への追加インストールは不要です。セッションから WSL と Windows の両方に同時にアクセスできます。bash コマンドは WSL ディストリビューション内で実行され、Windows のファイルは `/mnt/<drive>`（例：`/mnt/c/Users/...`）経由でいつでもアクセスできます。
 
+対応する DSH バージョンの一覧は [README.md](README.md) の Compatibility を参照してください。
+
 ## インストール
 
 次のいずれかの方法でインストールし、`dsh web` を再起動してください：
@@ -17,7 +19,7 @@ DeepSeek Harness Web GUI から WSL ワークスペースを追加し、エー�
 dsh plugin --profile web add dsh-wsl-workspace
 
 # 2) GitHub リポジトリ（事前ビルド済みの lib/ を含むためローカルビルド不要）
-dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspace
+dsh plugin --profile web add https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace
 
 # 3) ローカルディレクトリ（開発・自用）
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
