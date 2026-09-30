@@ -131,6 +131,30 @@ for VERSION in "$@"; do
     echo "$VERSION ROUTE_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
+  # The route answers, so drive the asserted API pass while the server is still up.
+  # scripts/compatibility/host-api.mjs holds 12 probes (fetch + response.ok + a semantic
+  # verifier, non-zero exit on any failure) and was described in CHANGELOG as one of "the two
+  # pre-existing baseline failures … needs a running frontend": this loop reached the 200 and then
+  # killed the server, so the asserted pass never ran in any frame. The manual PS1 sweep keeps a
+  # port in runtime.json (Prepare-Case.ps1:106); the sh path kept it in $PORT and wrote nothing,
+  # so emit the same manifest shape here rather than invent a second one.
+  node -e 'const {writeFileSync}=require("node:fs");writeFileSync(process.argv[1],JSON.stringify({port:Number(process.argv[2]),version:process.argv[3],runId:process.argv[4],commit:process.argv[5]},null,2))' \
+    "$WORK/runtime.json" "$PORT" "$VERSION" "$(git rev-parse --short HEAD)"
+  HOST_API_LOG="$WORK/host-api.log"
+  if WSL_COMPAT_DISTRO="${WSL_COMPAT_DISTRO:-Ubuntu}" WSL_COMPAT_USER="${WSL_COMPAT_USER:-root}" \
+     node scripts/compatibility/host-api.mjs "$WORK/runtime.json" > "$HOST_API_LOG" 2>&1; then
+    # Success is carried by the script's own exit: if any later stage passes and this one was
+    # the only thing that could fail, the loop reaches the end for this version and the PASS
+    # verdict is written by the existing tail. A separate `… PASS` line in a side file would be
+    # a decoration — nothing reads it, and the final contract is `verdicts.txt` only.
+    echo "  ✔ asserted API pass $(tail -1 "$HOST_API_LOG")"
+  else
+    echo "  ✖ asserted API pass failed: $(tail -1 "$HOST_API_LOG")"
+    sed 's/^/      /' "$HOST_API_LOG" | tail -15
+    kill "$SERVER_PID" 2>/dev/null
+    echo "$VERSION HOST_API_FAIL unknown" >> "$BASE/verdicts.txt"
+    continue
+  fi
   grep -i 'dsh-wsl-workspace.*\(error\|fail\)' "$WORK/boot-with-plugin.log" \
     && echo "  ✖ plugin errors found in the boot log" \
     && { kill "$SERVER_PID" 2>/dev/null; echo "$VERSION LOG_ERRORS unknown" >> "$BASE/verdicts.txt"; continue; }
