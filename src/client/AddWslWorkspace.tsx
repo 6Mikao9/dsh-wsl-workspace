@@ -120,48 +120,39 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     }
   }
 
-  /**
-   * The work the dialog does when it opens: clear the error strip, fetch the
-   * advisory help description, confirm the preset, list the distros and seed
-   * the browse. Shared verbatim by the open effect and the Retry button so a
-   * retry re-fetches the exact same data instead of only hiding the error.
-   * @param isCancelled - true once the owning open-effect run is stale.
-   */
-  const loadOnOpen = async (isCancelled: () => boolean): Promise<void> => {
-    setError(null)
-    // Advisory data for the help panel: never fatal, never blocking the form.
-    void describe().then(value => { if (!isCancelled()) setSelfDescription(value) }).catch(() => { if (!isCancelled()) setSelfDescription(null) })
-    setOpening(true)
-    let presetIssue: string | undefined
-    try {
-      presetIssue = await checkPreset()
-    } catch {
-      presetIssue = t('error.loadDistros')
-    }
-    let names: string[]
-    try {
-      names = await listDistros()
-    } catch {
-      if (isCancelled()) return
-      setOpening(false)
-      setError(t('error.loadDistros'))
-      return
-    }
-    if (isCancelled()) return
-    setDistros(names)
-    const first = names[0] ?? ''
-    setDistro(first)
-    // The default browse root walks from `/`; the input defaults to `/home/`.
-    setBrowsing(true)
-    setOpening(false)
-    if (presetIssue !== undefined) setError(presetIssue)
-    if (first !== '') void refreshBrowse('/', first)
-  }
-
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    void loadOnOpen(() => cancelled)
+    setError(null)
+    // Advisory data for the help panel: never fatal, never blocking the form.
+    void describe().then(value => { if (!cancelled) setSelfDescription(value) }).catch(() => { if (!cancelled) setSelfDescription(null) })
+    setOpening(true)
+    void (async () => {
+      let presetIssue: string | undefined
+      try {
+        presetIssue = await checkPreset()
+      } catch {
+        presetIssue = t('error.loadDistros')
+      }
+      let names: string[]
+      try {
+        names = await listDistros()
+      } catch {
+        if (cancelled) return
+        setOpening(false)
+        setError(t('error.loadDistros'))
+        return
+      }
+      if (cancelled) return
+      setDistros(names)
+      const first = names[0] ?? ''
+      setDistro(first)
+      // The default browse root walks from `/`; the input defaults to `/home/`.
+      setBrowsing(true)
+      setOpening(false)
+      if (presetIssue !== undefined) setError(presetIssue)
+      if (first !== '') void refreshBrowse('/', first)
+    })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per open against current t.
   }, [open])
@@ -209,25 +200,6 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     void refreshBrowse(browsePath, value)
   }
 
-  /**
-   * Run the path check for the check/confirm flows. On failure the host names
-   * the cause (a permission-denied or busy path is no longer reported as
-   * "does not exist" by the route); show that cause, and fall back to the
-   * not-found copy only when there is nothing readable — never an empty box.
-   * @param targetDistro - the selected distribution.
-   * @param path - the normalized absolute Linux path.
-   * @returns the check facts, or null after setting the error strip.
-   */
-  const checkOrReport = async (targetDistro: string, path: string): Promise<WslPathCheck | null> => {
-    try {
-      return await check(targetDistro, path)
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      setError(reason !== '' ? reason : t('error.pathNotFound'))
-      return null
-    }
-  }
-
   const onCheck = async (): Promise<void> => {
     const path = normalizeLinuxPath(pathInput)
     setError(null)
@@ -235,8 +207,13 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
       setError(t('error.invalidPath'))
       return
     }
-    const facts = await checkOrReport(distro, path)
-    if (facts === null) return
+    let facts: WslPathCheck
+    try {
+      facts = await check(distro, path)
+    } catch {
+      setError(t('error.pathNotFound'))
+      return
+    }
     if (!facts.exists || !facts.isDirectory) {
       setError(t('error.pathNotFound'))
       return
@@ -260,8 +237,13 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     }
     setBusy(true)
     try {
-      const facts = await checkOrReport(distro, path)
-      if (facts === null) return
+      let facts: WslPathCheck
+      try {
+        facts = await check(distro, path)
+      } catch {
+        setError(t('error.pathNotFound'))
+        return
+      }
       if (!facts.exists || !facts.isDirectory) {
         setError(t('error.pathNotFound'))
         return
@@ -308,7 +290,7 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
           {error !== null ? (
             <div className="dww-error">
               {error}
-              <button type="button" className="dww-retry" onClick={() => void loadOnOpen(() => false)}>{t('dialog.retry')}</button>
+              <button type="button" className="dww-retry" onClick={() => setError(null)}>{t('dialog.retry')}</button>
             </div>
           ) : null}
           <div className="dww-field">

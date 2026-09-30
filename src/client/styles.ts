@@ -43,21 +43,6 @@ const STYLES = `
   height: 36px;
   color: var(--dsw-alias-label-primary);
 }
-/* Wide-sidebar state, mirroring the .dww-action--rail rule above: same box
-   model, with the 28px round the block comment on .dww-action already declares
-   for the wide sidebar (implemented today by the base rule and the base 14px
-   .dww-letter), and the base rule's secondary label color (the rail overrides
-   to primary; wide keeps secondary). Nothing here invents a size.
-   Property this file cannot justify: if the wide sidebar is meant to render
-   the labeled row the component header claims ("a labeled row" beside the
-   W mark), then row width/padding/gap and the label font are the
-   properties with no derivable value in this stylesheet — open design
-   question for the maintainer, not styled tonight. */
-.dww-action--wide {
-  width: 28px;
-  height: 28px;
-  color: var(--dsw-alias-label-secondary);
-}
 .dww-action svg { flex: none; }
 
 /* The W letter mark of the sidebar action (sized for wide/rail buttons). */

@@ -46,13 +46,20 @@ const UNSTYLED = new Map<string, string>([
  * by hand-classification: that is what distinguishes a real unstyled state from a container name
  * like `dww-feedback`.
  *
- * Currently empty, and the emptiness is not a relaxation: an unregistered modifier with no rule
- * fails the "every applied className has a rule or a stated reason" assertion directly.
- * `dww-action--wide` was the one entry here; it got a rule in the same night it was registered,
- * and the registration's own deletion was the closure evidence — the gate refused to stay green
- * while claiming a gap that had been fixed.
+ * The map below is not empty, and emptying it is not something to be achieved by editing this
+ * file: an unregistered modifier with no rule fails the "every applied className has a rule or a
+ * stated reason" assertion directly.
+ * `dww-action--wide` was given a rule in `night/test-repair` (commit 65d43a0) and its
+ * registration deleted in the same commit; that product change was then stripped out of the
+ * test-only branch by the owner's ruling ("先修复优化测试，不要动产品代码"), so the rule is gone
+ * from `src/client/styles.ts` and the registration is back. The gate reported the deletion as
+ * closure and now reports the gap again — same input, opposite verdict, which is what this
+ * file is for.
  */
 const MISSING_MODIFIER_RULES = new Map<string, string>([
+  ['dww-action--wide', 'no rule: the sidebar button renders identically wide and rail; '
+    + 'product ticket pending (v0.7.5 review finding 8 / issue #44 §6) — the wide-state '
+    + 'geometry is a design decision, not the test layer — to invent'],
 ])
 
 /** True when `token` is a `block--modifier` whose `block` is itself applied somewhere. */
