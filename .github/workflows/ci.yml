@@ -85,6 +85,10 @@ jobs:
       # WSL_COMPAT_ROOT=/tmp/… reached node as C:\tmp\…).
       WSL_COMPAT_RELAY_CWD: '\\wsl.localhost\Ubuntu-24.04\tmp\dsh-wsl-relay-ws'
       WSL_COMPAT_DRIVE_CWD: 'C:\'
+      # search-real's Windows-/mnt assertion: point it at this checkout's own
+      # tests dir (the value baked into the script names the maintainer
+      # machine's deployed copy under D:\ProgramData).
+      WSL_COMPAT_DRIVE_PATH: ${{ github.workspace }}\tests
       TMP: 'C:\tmp'
       TEMP: 'C:\tmp'
     steps:

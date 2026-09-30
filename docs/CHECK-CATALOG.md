@@ -59,7 +59,7 @@ Vampire/setup-wsl. Environment knobs: `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`,
 | `tests/smoke-built.ts` via `scripts/make-smoke-built.mjs` | the whole smoke pass run against `lib/` instead of `src/` — previously only existed as a runtime rewrite inside Run-Checks.ps1 | generated, gitignored |
 | `scripts/compatibility/fs-real.mjs` | symlink × policy-fence combinations on the real share (outside link denied, dangling link creates, distro `/tmp` allowed) | fixtures under `$HOME`, not `/tmp`, to keep the temp allowance honest |
 | `scripts/compatibility/skills-real.mjs` | real-9P skill discovery: CRLF+BOM bodies, external linked project, nested-below-linked, dangling, loop, node_modules trap | exercises how the share enumerates Linux symlinks — the WSL-build-sensitive check |
-| `scripts/compatibility/search-real.mjs` | GNU grep/find contract inside the distro over real fixtures (framing, caps, footers, cards) | |
+| `scripts/compatibility/search-real.mjs` | GNU grep/find contract inside the distro over real fixtures (framing, caps, footers, cards) | its Windows-/mnt assertion names the maintainer machine's deployed copy by default — CI points `WSL_COMPAT_DRIVE_PATH` at this checkout's own `tests` dir (runner frame 3: find died on the absent D:\ProgramData tree) |
 | `scripts/compatibility/relay-real.mjs` | the persistent-shell relay: state (`export`, `cd`) survives between sends, starts in the session cwd, honours `DSH_WSL_DISTRO`/`DSH_WSL_USER` | spawns with the session UNC as cwd — Windows builds that reject a UNC child cwd (Win10 19045) fail with a misleading `spawn … ENOENT`; the share also disappears when the instance idles out, so CI keeps a bounded `sleep` alive during the run |
 
 `scripts/compatibility/host-api.mjs` (12 API probes) needs a running
@@ -70,7 +70,7 @@ one per version.
 
 | Driver | What it does | Where |
 | --- | --- | --- |
-| `scripts/verify-dsh-compat.sh <version…>` | per dsh release: isolated `DSH_HOME`, `npm i @deepseek-ai/dsh@<v>`, `dsh plugin --profile web add` (set `PLUGIN_REF` to a local tarball for unpublished commits), boot web, probe `POST /wsl-workspace/api listDistros` = 200, uninstall, re-probe must be gone | compat.yml matrix over `ci/compat-window.json` (rolling 3 releases; weekly + dispatch + window-file changes) |
+| `scripts/verify-dsh-compat.sh <version…>` | per dsh release: isolated `DSH_HOME`, `npm i @deepseek-ai/dsh@<v>`, `dsh plugin --profile web add` (set `PLUGIN_REF` to the **extracted plugin directory** — `plugin add` accepts a package name or a local directory, never a .tgz path), boot web, probe `POST /wsl-workspace/api listDistros` = 200, uninstall, re-probe must be gone; exits non-zero unless every verdict line is `PASS compatible` (a frame-1 discovery: the script used to print failures under a green checkmark) | compat.yml matrix over `ci/compat-window.json` (rolling 3 releases; weekly + dispatch + window-file changes) |
 | `scripts/compatibility/*.ps1` (Prepare/Start/Run-Checks/Stop/Check-Uninstall) | the full 15-check sweep per case, pnpm-pinned case trees, junctions, PS 7.2 | manual / maintainer machine; kept as the deep tool |
 | `scripts/repro-setup.sh` + `scripts/repro-e2e.mjs` | builds the nested-skill repro tree inside a distro and drives the provider against the real share (4 printed assertions) | local, env-overridable |
 
