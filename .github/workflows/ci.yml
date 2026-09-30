@@ -30,7 +30,8 @@ jobs:
         run: npm run verify
       - name: pure-node unit bucket
         run: npm run test:unit
-      - name: rebuild must reproduce the committed lib/ byte-for-byte        run: |
+      - name: rebuild must reproduce the committed lib/ byte-for-byte
+        run: |
           npm run build
           if ! git diff --quiet -- lib; then
             echo "RED — lib/ in HEAD is not what a build of HEAD's src/ produces:"
