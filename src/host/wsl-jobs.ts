@@ -60,6 +60,8 @@ export const inject = ['tools']
 interface ToolExecution {
   signal?: AbortSignal
   agent?: {
+    /** The session id the jobs registry resolves to a live agent. */
+    id?: string
     session?: { header?: { cwd?: string } }
   }
 }
@@ -87,6 +89,13 @@ interface ShellFace {
 
 /** The `ctx.jobs` face: identity and lifecycle for one produced job. */
 interface JobsFace {
+  /**
+   * Present exactly on the releases whose `start()` takes an owner **session
+   * id**, absent on the releases whose `start()` takes the agent itself — the
+   * method the newer registry added to make that conversion. See
+   * {@link ownerOf}.
+   */
+  resolveOwner?: unknown
   start(spec: {
     kind: string
     label: string
@@ -102,6 +111,36 @@ interface JobsFace {
 /** The `ctx.shellEnv` face, read opportunistically like the host tool does. */
 interface ShellEnvFace {
   collect(exec: unknown): Record<string, string> | undefined
+}
+
+/**
+ * The `owner` entry for one job, in the shape this release's registry accepts.
+ *
+ * The registry changed that contract at `0.1.7-rc.1`, and the host's own
+ * producers changed with it (`owner: parent` before, `owner: parent.id` after):
+ *
+ *  - `0.1.0-rc.7` … `0.1.5-rc.2`: `start()` takes the **agent object**. It
+ *    resolves the owner with `agents.get(owner.id) !== owner` and reads
+ *    `owner.ctx` for scope cleanup, so handing it a session id throws
+ *    `Cannot read properties of undefined (reading 'Symbol(dsh.scope)')`.
+ *  - `0.1.7-rc.1` and later: `start()` takes the **session id** and resolves it
+ *    with `agents.get(id)`, so handing it the agent object throws
+ *    `session "[object Object]" has no live agent` — the second error in
+ *    issue #40.
+ *
+ * The two shapes are mutually exclusive and both mistakes fail loudly, so the
+ * release has to be asked which one it wants. The discriminator is
+ * `resolveOwner`, the method the newer registry added for exactly this
+ * conversion: measured present on `0.1.7-rc.1`, `0.1.7-rc.2` and `0.2.0-rc.2`,
+ * absent on all eight releases before them.
+ * @param jobs - the jobs registry.
+ * @param agent - the calling agent from the tool execution, when there is one.
+ * @returns the owner entry, or nothing for unowned work.
+ */
+export function ownerOf(jobs: JobsFace, agent: ToolExecution['agent']): { owner?: unknown } {
+  if (agent === undefined) return {}
+  if (typeof jobs.resolveOwner !== 'function') return { owner: agent }
+  return agent.id === undefined ? {} : { owner: agent.id }
 }
 
 /**
@@ -202,7 +241,9 @@ export function apply(ctx: Context, config?: Config): void {
       const jobId = jobs.start({
         kind: 'bash',
         label: args.command,
-        ...exec.agent === undefined ? {} : { owner: exec.agent },
+        // `owner` is a session id on 0.1.7+ and the agent object before that;
+        // see `ownerOf`. Getting it wrong is a loud failure either way.
+        ...ownerOf(jobs, exec.agent),
         run: () => {
           const process = shell.start(shell.resolve(request))
           return {

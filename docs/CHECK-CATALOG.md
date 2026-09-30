@@ -6,14 +6,16 @@ automation. CI wiring: `.github/workflows/ci.yml` (per PR/push) and
 `.github/workflows/compat.yml` (rolling window, weekly/dispatch). Local and CI
 run the same commands: the `npm run test:*` buckets below.
 
-## A. Pure-node unit bucket — `npm run test:unit` (+ `npm run test:skills`), no host packages needed
+## A. Pure-node unit bucket — `npm run test:unit` (+ `npm run test:win32` on windows), no host packages needed
 
 | Check | What it pins down | Prereq | CI home |
 | --- | --- | --- | --- |
 | `tests/variants.test.ts` | WSL preset-variant transform: row stripping, realm injection, exactly-once re-injection, unknown rows survive | node ≥ 24 | ci.yml#lint-build |
 | `tests/paths.test.ts` | UNC↔Linux path conversion, `/mnt/<drive>` mapping, Windows-path keys, distro-username validation | node ≥ 24 | ci.yml#lint-build |
 | `tests/locales.test.ts` | zh/en dictionary key parity, no empty values, help-panel body shape | node ≥ 24 | ci.yml#lint-build |
-| `tests/wsl-skills.test.ts` | skill provider over an in-memory IO fake: nested discovery, ranks, frontmatter incl. block scalars, depth/budget, cache TTL, dir-symlink following | node ≥ 24 — **runs on the windows runner** (`npm run test:skills`, ci.yml#wsl-gate): two expected UNC strings assume win32 `path.join`; on ubuntu the same provider code yields `/`-joined paths (first CI frame 2026-09-30, 2/84 failed there, all other bucket-A files platform-neutral) | ci.yml#wsl-gate |
+| `tests/wsl-skills.test.ts` | skill provider over an in-memory IO fake: nested discovery, ranks, frontmatter incl. block scalars, depth/budget, cache TTL, dir-symlink following | node ≥ 24 — **runs on the windows runner** (`npm run test:win32`, ci.yml#wsl-gate): expected UNC strings assume win32 `path.join`; on ubuntu the same provider code yields `/`-joined paths (first CI frame 2026-09-30, 2/84 failed there) | ci.yml#wsl-gate |
+| `tests/relay-node.test.mjs` | v0.7.5 #40/#43: relay-interpreter resolution — Electron-host classification, candidate order, probe discriminator (pure; describes hosts that are not this machine) | node ≥ 24 | ci.yml#lint-build |
+| `tests/readme-compat.test.mjs` | v0.7.5: `dsh.compatibility.dshReleases` vs both full READMEs' Compatibility sections + the install-URL, so declaration and documentation cannot drift apart | node ≥ 24 | ci.yml#lint-build |
 
 ## B. Node buckets needing the pinned host packages — `npm run test:node`
 
@@ -64,7 +66,12 @@ Vampire/setup-wsl. Environment knobs: `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`,
 
 `scripts/compatibility/host-api.mjs` (12 API probes) needs a running
 `dsh web` and lives in the compat matrix, not in ci.yml: the compat job boots
-one per version.
+one per version. v0.7.5 adds `scripts/compatibility/conpty-relay.mjs` (the
+relay interpreter under a real ConPTY, per the case's `runtime.json`) at the
+same tier: it is registered in Run-Checks.ps1 for the maintainer sweep and
+needs a booted case manifest, so no cloud fixture exists for it yet —
+recorded here rather than silently dropped from the automation map.
+
 
 ## E. Compatibility matrix
 

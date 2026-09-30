@@ -57,7 +57,7 @@ $cliPackage=Get-Content (Join-Path $RuntimeRoot 'node_modules/@deepseek-ai/dsh/p
 if($cliPackage.version -ne $Version){throw "CLI version drift: $($cliPackage.version)"}
 $plugin=Join-Path $caseRoot 'plugin'
 New-Item -ItemType Directory -Path $plugin -Force | Out-Null
-foreach($entry in 'src','lib','tests','scripts','package.json','cordis.patch.yml','tsconfig.json'){
+foreach($entry in 'src','lib','tests','scripts','package.json','cordis.patch.yml','tsconfig.json','README.md','README.zh.md'){
   Copy-Item -LiteralPath (Join-Path $repo $entry) -Destination $plugin -Recurse
 }
 $dependencies=Join-Path $RuntimeRoot 'node_modules/.pnpm/node_modules'

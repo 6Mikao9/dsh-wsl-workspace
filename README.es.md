@@ -8,6 +8,8 @@
 ![alt text](image-3.png)
 Añade un espacio de trabajo WSL desde la interfaz web de DeepSeek Harness y ejecuta toda la sesión del agente — comandos bash y lectura/escritura de archivos — dentro de una distribución WSL local con rutas en formato Linux. No hay nada que instalar dentro de WSL. La sesión puede acceder a la vez a WSL y a Windows: los comandos bash se ejecutan dentro de la distribución WSL, mientras que los archivos de Windows siguen accesibles vía `/mnt/<unidad>` (por ejemplo `/mnt/c/Users/...`).
 
+La lista de versiones de DSH compatibles está en la sección Compatibility de [README.md](README.md).
+
 ## Instalación
 
 Elige uno de los tres métodos siguientes y reinicia `dsh web`:
@@ -17,7 +19,7 @@ Elige uno de los tres métodos siguientes y reinicia `dsh web`:
 dsh plugin --profile web add dsh-wsl-workspace
 
 # 2) Repositorio de GitHub (incluye lib/ precompilado, sin compilar en local)
-dsh plugin --profile web add https://github.com/6Mikao9/dsh-wsl-workspace
+dsh plugin --profile web add https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace
 
 # 3) Directorio local (desarrollo / uso personal)
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
