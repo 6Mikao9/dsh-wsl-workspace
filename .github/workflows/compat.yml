@@ -114,6 +114,16 @@ jobs:
             echo "=== ${wlog#"$BASE"/} (full) ==="
             sed 's/[^[:print:]]//g' "$wlog"
           done
+          # dsh swallows the import error; reproduce it with a real stack.
+          # (Do NOT hand-build 'file:///' + a Windows path: file:///C:/x parses
+          # C: as the URL host on Windows — a local positive control showed the
+          # probe then reports MODULE_NOT_FOUND for a file that exists. The
+          # path is passed as the URL already.)
+          for entry in "$BASE"/*/dsh-home/profiles/web/node_modules/dsh-wsl-workspace/lib/index.js; do
+            [ -f "$entry" ] || { echo "plugin entry absent at $entry"; continue; }
+            echo "=== manual import ${entry#"$BASE"/} ==="
+            node --input-type=module -e "const u=await import('node:url');try{const m=await import(u.pathToFileURL(process.argv[1]).href);console.log('IMPORT OK keys=',Object.keys(m).length)}catch(e){console.log('IMPORT ERR',e.code||e.name);console.log(String(e.stack).split(String.fromCharCode(10)).slice(0,12).join(String.fromCharCode(10)))}" "$(cygpath -w "$entry")" 2>&1 | sed 's/[^[:print:]]//g' | head -14
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
