@@ -26,7 +26,7 @@ first because the client/host integration checks consume built artifacts.
 | --- | --- | --- | --- |
 | `tests/shell.test.ts` | login-shell `cd` prefix keeps the workdir (quote escaping); non-login shells leave the command alone | cordis | ci.yml#runtime-tests |
 | `tests/fs-execution-context.test.ts` | `WslFileSystem` inherits the session cwd through AsyncLocalStorage; falls back to the configured distro without an agent | cordis | ci.yml#runtime-tests |
-| `tests/fs-policy.test.ts` | write fence across `workspace-write` / read-only / danger-full-access / no-policy, plus the symlink-resolution seam (creates `.fs-policy-*` dirs in cwd, cleans up in finally) | cordis | ci.yml#runtime-tests |
+| `tests/fs-policy.test.ts` | write fence across `workspace-write` / read-only / danger-full-access / no-policy, plus the symlink-resolution seam (creates `.fs-policy-*` dirs in cwd, cleans up in finally) | cordis; **runs on windows** (`npm run test:win32`, ci.yml#wsl-gate): the fixture derives the distro from the shape of `process.cwd()`, so a POSIX-shaped runner cwd yields "Linux path carries no distribution" (2/2 CI frame 2026-09-30) | ci.yml#wsl-gate |
 | `tests/wsl-jobs.test.ts` | background-job producer (regression: `run_in_background` was silently ignored) | schemastery, dsh-tools | ci.yml#runtime-tests |
 | `tests/wsl-search.test.ts` | grep/glob twins vs the host `dsh-tool-fs-search` exported pieces (framing, caps, footers) — drift detector | dsh-tool-fs-search, dsh-output-retention | ci.yml#runtime-tests |
 | `tests/client-lifecycle.test.mjs` | the published `lib/client.js` in a vm sandbox against legacy + current runtime facades: preset binding, create & open, late-service registration | built lib | ci.yml#runtime-tests |

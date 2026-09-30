@@ -70,12 +70,12 @@ jobs:
         uses: Vampire/setup-wsl@v3
         with:
           wsl-version: 1
-          distribution: Ubuntu
+          distribution: Ubuntu-24.04
           set-as-default: 'true'
           systemd: 'false'
           use-headless: 'false'
       - name: keep the instance warm so the 9P share stays visible
-        run: wsl.exe -d Ubuntu -- bash -c '(nohup sleep 1800 >/dev/null 2>&1 & echo kept-alive)'
+        run: wsl.exe -d Ubuntu-24.04 -- bash -c '(nohup sleep 1800 >/dev/null 2>&1 & echo kept-alive)'
       - name: pack the working tree (never test a published artifact for an unpublished commit)
         run: |
           mkdir -p /tmp/compat-pack /tmp/compat-work

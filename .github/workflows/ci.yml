@@ -77,10 +77,10 @@ jobs:
       run:
         shell: bash
     env:
-      WSL_COMPAT_DISTRO: Ubuntu
+      WSL_COMPAT_DISTRO: Ubuntu-24.04
       WSL_COMPAT_USER: root
       WSL_COMPAT_ROOT: /tmp/dsh-wsl-compat
-      WSL_COMPAT_RELAY_CWD: '\\wsl.localhost\Ubuntu\tmp\dsh-wsl-relay-ws'
+      WSL_COMPAT_RELAY_CWD: '\\wsl.localhost\Ubuntu-24.04\tmp\dsh-wsl-relay-ws'
       WSL_COMPAT_DRIVE_CWD: 'C:\'
       TMP: 'C:\tmp'
       TEMP: 'C:\tmp'
@@ -97,7 +97,7 @@ jobs:
         uses: Vampire/setup-wsl@v3
         with:
           wsl-version: 1
-          distribution: Ubuntu
+          distribution: Ubuntu-24.04
           set-as-default: 'true'
           systemd: 'false'
           use-headless: 'false'
@@ -107,25 +107,25 @@ jobs:
           v=$(wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -i ubuntu | grep -oE '[12]$' || true)
           if [ "$v" != "1" ]; then
             echo "instance is VERSION=${v:-unknown}; converting to 1 (conversion does not need Hyper-V)"
-            wsl.exe --set-version Ubuntu 1 2>&1 | tr -d '\0' | tail -2
+            wsl.exe --set-version Ubuntu-24.04 1 2>&1 | tr -d '\0' | tail -2
           fi
-          wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -iE "ubuntu.*1$" || { echo "RED — Ubuntu is not running as WSL1"; exit 1; }
-          wsl.exe --set-default Ubuntu
+          wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -iE "ubuntu.*[[:space:]]1$" || { echo "RED — Ubuntu-24.04 is not running as WSL1"; exit 1; }
+          wsl.exe --set-default Ubuntu-24.04
       - name: fixture preparation (bounded keep-warm so the 9P share stays visible)
         run: |
           mkdir -p /c/tmp
-          wsl.exe -d Ubuntu -- bash -c 'mkdir -p /tmp/dsh-wsl-relay-ws /tmp/dsh-wsl-compat /root/symprobe/ws && (nohup sleep 900 >/dev/null 2>&1 & echo kept-alive)'
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'mkdir -p /tmp/dsh-wsl-relay-ws /tmp/dsh-wsl-compat /root/symprobe/ws && (nohup sleep 900 >/dev/null 2>&1 & echo kept-alive)'
       - name: preflight diagnostics (always collected before the gates)
         run: |
           mkdir -p logs
-          { wsl.exe --version 2>&1; wsl.exe -l -v 2>&1; wsl.exe -d Ubuntu -- uname -a 2>&1;
-            wsl.exe -d Ubuntu -- bash -c 'grep --version | head -1; find --version | head -1; whoami'; } | tr -d '\0' > logs/preflight-wsl.log 2>&1 || true
-          node -e 'const fs=require("node:fs");for(const p of ["\\\\wsl.localhost\\Ubuntu\\tmp","\\\\wsl.localhost\\Ubuntu\\tmp\\dsh-wsl-relay-ws"])console.log(p, fs.existsSync(p)?"present":"ABSENT")' > logs/preflight-unc.log 2>&1 || true
+          { wsl.exe --version 2>&1; wsl.exe -l -v 2>&1; wsl.exe -d Ubuntu-24.04 -- uname -a 2>&1;
+            wsl.exe -d Ubuntu-24.04 -- bash -c 'grep --version | head -1; find --version | head -1; whoami'; } | tr -d '\0' > logs/preflight-wsl.log 2>&1 || true
+          node -e 'const fs=require("node:fs");for(const p of ["\\\\wsl.localhost\\Ubuntu-24.04\\tmp","\\\\wsl.localhost\\Ubuntu-24.04\\tmp\\dsh-wsl-relay-ws"])console.log(p, fs.existsSync(p)?"present":"ABSENT")' > logs/preflight-unc.log 2>&1 || true
           cat logs/preflight-wsl.log logs/preflight-unc.log
       - name: build (smoke-built / shell-extra / client consume lib/)
         run: npm run build
-      - name: skills unit file (its expected UNC strings assume win32 path joining)
-        run: npm run test:skills
+      - name: win32-semantics unit files (wsl-skills + fs-policy assume drive-shaped cwd)
+        run: npm run test:win32
       - name: run every WSL gate, collect all failures in one frame
         run: |
           FAIL=0
@@ -153,7 +153,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p logs
-          { wsl.exe -l -v 2>&1; wsl.exe -d Ubuntu -- bash -c 'ls -la /tmp/dsh-wsl-compat 2>&1; ls -la /tmp/dsh-wsl-relay-ws 2>&1'; } | tr -d '\0' > logs/postflight.log 2>&1 || true
+          { wsl.exe -l -v 2>&1; wsl.exe -d Ubuntu-24.04 -- bash -c 'ls -la /tmp/dsh-wsl-compat 2>&1; ls -la /tmp/dsh-wsl-relay-ws 2>&1'; } | tr -d '\0' > logs/postflight.log 2>&1 || true
           cat logs/postflight.log
       - uses: actions/upload-artifact@v4
         if: always()
