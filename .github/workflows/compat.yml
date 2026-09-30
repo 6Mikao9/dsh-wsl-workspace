@@ -74,10 +74,10 @@ jobs:
     env:
       COMPAT_PORT: 3091
       TEMP: /tmp/compat-work
-      # the Windows spelling of the same directory (git-bash /tmp maps to the
-      # runner user's temp). A fixed job-level value so the upload step has a
-      # path even when an earlier step died before exporting anything.
-      COMPAT_BASE_WIN: 'C:\Users\runneradmin\AppData\Local\Temp\compat-work'
+      # No COMPAT_BASE_WIN here any more: the upload path is read back from the run itself
+      # (`compat-base:` printed by scripts/verify-dsh-compat.sh, captured by the step's
+      # output). A second hand-written spelling of the same directory is exactly what let the
+      # evidence path drift away from where the script actually wrote.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -124,12 +124,28 @@ jobs:
           # character closes the string. read-window now rejects non-version strings upstream,
           # and this removes the interpretation even if that gate is ever loosened.
           DSH_VERSION: ${{ matrix.version }}
-        run: bash scripts/verify-dsh-compat.sh "$DSH_VERSION"
+        run: |
+          # tee, so the run's own output stays in the step log AND the base directory the
+          # script chose can be read back afterwards. The upload step used to point at a
+          # second, hand-written spelling of this path (`COMPAT_BASE_WIN` below) with nothing
+          # checking the two agree.
+          bash scripts/verify-dsh-compat.sh "$DSH_VERSION" 2>&1 | tee /tmp/compat-run.log
+          BASE_LINE=$(grep -o '^compat-base: .*' /tmp/compat-run.log | tail -1 || true)
+          BASE=${BASE_LINE#'compat-base: '}
+          if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+            echo "::error=no compat-base line found — the script never reported where its evidence went"
+            exit 1
+          fi
+          echo "win=$(cygpath -w "$BASE")" >> "$GITHUB_OUTPUT"
+          echo "compat base: $BASE"
+        id: compat
       - name: collect dsh plugin-import diagnostics
         if: always()
         run: |
           BASE=$(ls -d /tmp/compat-work/dsh-compat-* 2>/dev/null | tail -1)
-          [ -n "$BASE" ] || { echo "no compat base found"; exit 0; }
+          # "no base" is a failure of the evidence collection, not a clean outcome: exiting 0
+          # here made a whole version's diagnostics vanish under a green step.
+          [ -n "$BASE" ] || { echo "::error::no compat base found under /tmp/compat-work"; exit 1; }
           find "$BASE" -path "*.plugin-manager*" -type f | while read -r f; do
             echo "=== ${f#"$BASE"/} ==="
             sed 's/[^[:print:]]//g' "$f" | tail -30
@@ -156,8 +172,13 @@ jobs:
           # verdicts + every step log only: the case tree also holds a full
           # `npm i @deepseek-ai/dsh` node_modules (frame 1's artifact was
           # 161 MB per version) and nothing in it is evidence.
+          # The base directory comes from the step that ran the script, not from a
+          # hand-written twin of it, and a mismatch is now a failure: upload-artifact's
+          # default is `warn`, so the old hardcoded COMPAT_BASE_WIN could match nothing and
+          # the step still showed green with an empty artifact.
           path: |
-            ${{ env.COMPAT_BASE_WIN }}/**/verdicts.txt
-            ${{ env.COMPAT_BASE_WIN }}/**/*.log
-            ${{ env.COMPAT_BASE_WIN }}/**/.plugin-manager/**
+            ${{ steps.compat.outputs.win }}/**/verdicts.txt
+            ${{ steps.compat.outputs.win }}/**/*.log
+            ${{ steps.compat.outputs.win }}/**/.plugin-manager/**
+          if-no-files-found: error
           retention-days: 14
