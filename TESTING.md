@@ -35,7 +35,8 @@ Coverage:
 
 ## Provider parity and compatibility checks
 
-- `node scripts/check-rank-parity.mjs` — the provider's project ranks are copied from `@deepseek-ai/dsh-skill-filesystem` (the host does not export them). This script parses the host's built lib when the package is resolvable on this machine and fails on drift. Run it before every release on a machine with the harness installed.
+- `node scripts/check-rank-parity.mjs` — the provider's project ranks are copied from `@deepseek-ai/dsh-skill-filesystem` (the host does not export them). This script parses the host's built lib when the package is resolvable on this machine and fails on drift. Strict by default: no resolvable host package is `NOT VERIFIED` and exits 1 (pass `--lenient` for the old warning-and-skip, `--host FILE` to compare against one explicit bundle). Run it before every release on a machine with the harness installed.
+- `node ci/install-pinned.mjs --verify-only` — compares every pin in `ci/pinned-deps.json` against the tree that is already installed, without writing a manifest, running npm or linking anything. Use it as the read-only probe when you need to prove the version comparison bites; installing against a changed pin rewrites `ci/deps/`, which on the maintainer machine is a junction into the live profile.
 - `scripts/verify-dsh-compat.sh <version>...` — disposable-Profile install/start/uninstall evidence against specific `@deepseek-ai/dsh` releases: fully isolated (`DSH_HOME` redirected to a temp tree, own port), boots the published harness version with the plugin added by name, probes `POST /wsl-workspace/api`, then removes the plugin and verifies the route disappears. Emits per-version verdict lines used for the `dsh.compatibility.dshReleases` manifest records.
 
 ## Preset materialization integration test
@@ -100,13 +101,20 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    wsl -d <distro> -- bash -c "bash /tmp/repro-setup.sh"
    ```
 
-2. Drive the provider against the real `\\wsl.localhost` share — four assertions print (workspace-root cwd finds root + nested skills; nested-project cwd finds only that project; `get()` loads a body; non-WSL cwd returns nothing). Override the target with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` / `WSL_COMPAT_ROOT`:
+2. Drive the provider against the real `\\wsl.localhost` share — ten assertions, all `node:assert/strict`, non-zero exit on any failure (workspace-root cwd finds its own skill **and** the nested projects, the pruned trees stay absent, every entry carries a source and a rank, nested-project cwd finds its own project and **not** a sibling's, `get()` returns a non-empty body for the entry asked for, a non-WSL cwd returns nothing). This file previously *printed* four listings and exited 0 whatever they contained, while this document described those prints as assertions — measured, `grep -cE 'assert|throw|exit'` on the old 34 lines returned 0.
 
    ```powershell
    node scripts/repro-e2e.mjs
    ```
 
    The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed).
+   Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare
+   `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the
+   Windows temp directory (run it through `bash -c "…"` instead, as above), and
+   `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with
+   `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes
+   `…\C:\Users\…\.qoder-cn\bin\git\home\…`, the listing comes back empty, and — before this
+   change — the script still exited 0.
 3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
 4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
 

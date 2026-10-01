@@ -43,6 +43,21 @@ jobs:
           else
             node -e 'const j=require("./ci/compat-window.json");console.log("versions="+JSON.stringify(j.window))' >> "$GITHUB_OUTPUT"
           fi
+      # A dispatched value is free text, and it re-enters this workflow as `matrix.version` in
+      # the compat job's name and in a shell command. Rather than quote-escaping at each use, the
+      # window is asserted to be version strings at the one place where it is assembled: a
+      # non-conforming value stops here, with a readable message, instead of reaching a runner.
+      - name: the window must contain version strings only
+        env:
+          VERSIONS: ${{ steps.win.outputs.versions }}
+        run: |
+          node -e '
+            const versions = JSON.parse(process.env.VERSIONS);
+            const bad = versions.filter(v => !/^\d+\.\d+\.\d+[-\w.]*$/.test(String(v)));
+            if (bad.length) { console.error(`read-window: RED — not version strings: ${JSON.stringify(bad)}`); process.exit(1); }
+            if (!versions.length) { console.error("read-window: RED — empty window, nothing would be tested"); process.exit(1); }
+            console.log(`read-window: OK — ${versions.length} version(s)`);
+          '
 
   compat:
     name: dsh ${{ matrix.version }}
@@ -59,10 +74,10 @@ jobs:
     env:
       COMPAT_PORT: 3091
       TEMP: /tmp/compat-work
-      # the Windows spelling of the same directory (git-bash /tmp maps to the
-      # runner user's temp). A fixed job-level value so the upload step has a
-      # path even when an earlier step died before exporting anything.
-      COMPAT_BASE_WIN: 'C:\Users\runneradmin\AppData\Local\Temp\compat-work'
+      # No COMPAT_BASE_WIN here any more: the upload path is read back from the run itself
+      # (`compat-base:` printed by scripts/verify-dsh-compat.sh, captured by the step's
+      # output). A second hand-written spelling of the same directory is exactly what let the
+      # evidence path drift away from where the script actually wrote.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -102,12 +117,44 @@ jobs:
           # '@deepseek-ai/schemastery'", the runner frame's exact stack).
           echo "PLUGIN_REF=$(cygpath -w /tmp/compat-pack/extract/package)" >> "$GITHUB_ENV"
       - name: install → boot → probe → uninstall → reprobe for dsh ${{ matrix.version }}
-        run: bash scripts/verify-dsh-compat.sh '${{ matrix.version }}'
+        env:
+          # Passed as an argument the shell never parses. `inputs.version` already arrived via
+          # env in read-window; `matrix.version` did not, so a dispatched value reached
+          # `bash scripts/verify-dsh-compat.sh '<value>'` inside single quotes, where one quote
+          # character closes the string. read-window now rejects non-version strings upstream,
+          # and this removes the interpretation even if that gate is ever loosened.
+          DSH_VERSION: ${{ matrix.version }}
+        run: |
+          # tee, so the run's own output stays in the step log AND the base directory the
+          # script chose can be read back afterwards. The upload step used to point at a
+          # second, hand-written spelling of this path (`COMPAT_BASE_WIN` below) with nothing
+          # checking the two agree.
+          #
+          # The script's failure must NOT abort this step: GitHub runs `run:` blocks under
+          # `bash -e -o pipefail`, so a RED verdict used to kill the step at the script line and
+          # the `win` output below was never written — upload-artifact then globbed the patterns
+          # against an empty base and errored (frame 36744046100, all three versions). The exit
+          # code is captured instead, reported after the evidence path is recorded, and re-raised
+          # last.
+          SCRIPT_RC=0
+          bash scripts/verify-dsh-compat.sh "$DSH_VERSION" 2>&1 | tee /tmp/compat-run.log || SCRIPT_RC=$?
+          BASE_LINE=$(grep -o '^compat-base: .*' /tmp/compat-run.log | tail -1 || true)
+          BASE=${BASE_LINE#'compat-base: '}
+          if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+            echo "::error=no compat-base line found — the script never reported where its evidence went"
+            exit 1
+          fi
+          echo "win=$(cygpath -w "$BASE")" >> "$GITHUB_OUTPUT"
+          echo "compat base: $BASE"
+          exit "$SCRIPT_RC"
+        id: compat
       - name: collect dsh plugin-import diagnostics
         if: always()
         run: |
           BASE=$(ls -d /tmp/compat-work/dsh-compat-* 2>/dev/null | tail -1)
-          [ -n "$BASE" ] || { echo "no compat base found"; exit 0; }
+          # "no base" is a failure of the evidence collection, not a clean outcome: exiting 0
+          # here made a whole version's diagnostics vanish under a green step.
+          [ -n "$BASE" ] || { echo "::error::no compat base found under /tmp/compat-work"; exit 1; }
           find "$BASE" -path "*.plugin-manager*" -type f | while read -r f; do
             echo "=== ${f#"$BASE"/} ==="
             sed 's/[^[:print:]]//g' "$f" | tail -30
@@ -134,8 +181,13 @@ jobs:
           # verdicts + every step log only: the case tree also holds a full
           # `npm i @deepseek-ai/dsh` node_modules (frame 1's artifact was
           # 161 MB per version) and nothing in it is evidence.
+          # The base directory comes from the step that ran the script, not from a
+          # hand-written twin of it, and a mismatch is now a failure: upload-artifact's
+          # default is `warn`, so the old hardcoded COMPAT_BASE_WIN could match nothing and
+          # the step still showed green with an empty artifact.
           path: |
-            ${{ env.COMPAT_BASE_WIN }}/**/verdicts.txt
-            ${{ env.COMPAT_BASE_WIN }}/**/*.log
-            ${{ env.COMPAT_BASE_WIN }}/**/.plugin-manager/**
+            ${{ steps.compat.outputs.win }}/**/verdicts.txt
+            ${{ steps.compat.outputs.win }}/**/*.log
+            ${{ steps.compat.outputs.win }}/**/.plugin-manager/**
+          if-no-files-found: error
           retention-days: 14

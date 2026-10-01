@@ -7,7 +7,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { apply } from '../../src/host/wsl-search.ts';
+// The subject comes from the active plane (scripts/compatibility/plane.mjs): a green run under
+// DSH_WSL_TEST_PLANE=lib is a claim about lib/wsl-search.js, the file the harness loads, and a
+// green run under the default is a claim about the source. verify-plane-log reads the log to
+// tell which one happened.
+import { load } from './plane.mjs';
+
+const { apply } = await load('search');
 
 const execFileAsync = promisify(execFile);
 const distro = process.env.WSL_COMPAT_DISTRO || 'Ubuntu';

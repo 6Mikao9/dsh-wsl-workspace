@@ -26,6 +26,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: committed lib/ is what HEAD says it is (before anything can rewrite it)
+        run: node scripts/verify-lib-sync.mjs --check-only
       - name: verify-lib on the committed lib/
         run: npm run verify
       - name: pure-node unit bucket
@@ -63,6 +65,16 @@ jobs:
         run: node scripts/typecheck-gate.mjs
       - name: clean npm install of the packed tarball
         run: npm run verify:install
+      # LAST, on purpose. A failing step skips everything after it, and this step is red by
+      # design until #44 §6 is fixed — frame 36797162445 proves the cost of getting this wrong:
+      # with the seam step in the middle, `typecheck does not grow past its recorded baseline`
+      # and `clean npm install of the packed tarball` both came back `skipped`. A known red is
+      # allowed to be the frame's verdict, not to silence the gates behind it. It aggregates the
+      # two seam suites through `scripts/run-seams.mjs` (one step naming every failing
+      # assertion), so no later step depends on it.
+      - name: seam ledger (#44 §6 reds must equal tests/deliberate-reds.mjs — runs last)
+        run: npm run test:seams
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -161,7 +173,54 @@ jobs:
           run_one skills-real node --experimental-strip-types scripts/compatibility/skills-real.mjs
           run_one search-real node --experimental-strip-types scripts/compatibility/search-real.mjs
           run_one relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
+          # The same gates against the shipped bundle. The default plane stays `src` until
+          # this pass has been green twice (issue #44 §1); a run is only credited to a plane
+          # if its log carries the matching `plane-module:` line, checked below. Each pass
+          # gets its own fixture root because these drivers create rather than clean their
+          # tree — two passes over one /tmp/dsh-wsl-compat is a race, not a rerun.
+          # `|| { tail; FAIL=1; }` rather than `|| echo rc=$?`: a lib-plane failure that
+          # leaves no reason in the step log is a red nobody can attribute.
+          run_lib() {
+            local name="$1"; shift
+            local rc=0
+            echo "::group::lib-$name"
+            DSH_WSL_TEST_PLANE=lib "$@" > "logs/lib-$name.log" 2>&1 || rc=$?
+            echo "rc=$rc"
+            tail -8 "logs/lib-$name.log" || true
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then FAIL=1; fi
+            return 0
+          }
+          # fs-real takes its root from the distro's own $HOME and relay-real from a
+          # Windows-shaped variable, so neither needs a second root: only search-real reads
+          # WSL_COMPAT_ROOT, and it must be handed over with MSYS_NO_PATHCONV=1. Without that
+          # the Windows bash runner rewrites `/tmp/dsh-wsl-lib` into `C:\tmp\dsh-wsl-lib` and
+          # the driver assembles `\\wsl.localhost\Ubuntu-24.04C:\tmp\…` — frame
+          # 36736537229 proved it (errno -4094, syscall mkdir). Same trap ci.yml already
+          # documents for WSL_COMPAT_ROOT at the top of this job.
+          run_lib fs-real node --experimental-strip-types scripts/compatibility/fs-real.mjs
+          MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib node --experimental-strip-types scripts/compatibility/search-real.mjs > logs/lib-search-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-search-real.log || true; FAIL=1; }
+          run_lib relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
+          # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
+          # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
+          # rather than falling back to src. Adding the entry changes what users install, so it
+          # is a maintainer decision, not a night-run side effect.
           exit $FAIL
+      - name: every gate must say which plane it loaded
+        if: always()
+        run: |
+          RC=0
+          # The module key is what plane.mjs prints (`fs`, `search`, …), not the driver's file
+          # name — passing `search-real` here demanded a line no driver can emit.
+          node scripts/verify-plane-log.mjs logs/fs-real.log src fs || RC=1
+          node scripts/verify-plane-log.mjs logs/search-real.log src search || RC=1
+          node scripts/verify-plane-log.mjs logs/skills-real.log src skills || RC=1
+          node scripts/verify-plane-log.mjs logs/relay-real.log src relay || RC=1
+          node scripts/verify-plane-log.mjs logs/lib-fs-real.log lib fs || RC=1
+          node scripts/verify-plane-log.mjs logs/lib-search-real.log lib search || RC=1
+          node scripts/verify-plane-log.mjs logs/lib-relay-real.log lib relay || RC=1
+          echo "plane evidence collected"
+          exit $RC
       - name: postflight (share state at the moment of failure)
         if: failure()
         run: |

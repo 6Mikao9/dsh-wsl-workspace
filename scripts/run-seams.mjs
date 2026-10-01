@@ -1,0 +1,109 @@
+/**
+ * Run the seam suites without letting the first red hide the second, and hold the set of reds to
+ * the declared ledger.
+ *
+ * Two separate jobs, in this order:
+ *   1. print everything. Each suite is spawned, its verdict line, every `not ok:` / `✖` name and
+ *      every `SKIP:` line is printed verbatim, and the count of red suites is reported. Nothing here
+ *      suppresses a failure: the deliberate reds of #46 are evidence and they stay printed.
+ *   2. gate on the SET, not on the pass/fail of the suites. `tests/deliberate-reds.mjs` declares
+ *      which assertions are red on which machine shape (win32 = the maintainer machine, posix = the
+ *      ubuntu runner). The runner exits 0 only when the observed set equals the declared set for this
+ *      shape. So a new regression turns the frame red, and so does a red that quietly went green —
+ *      which is the failure mode a permanently-red branch would have hidden.
+ *
+ * Why not just let the suites decide the verdict: because #46 ships five assertions that must fail
+ * until issue #44 §6 is repaired, and this project's accepted surface is "cloud checks green". A red
+ * frame that is expected is a frame that cannot warn. Moving the gate to the ledger keeps the reds
+ * AND keeps the warning.
+ *
+ *   node scripts/run-seams.mjs              # verdict + ledger check
+ *   node scripts/run-seams.mjs --legacy     # old behaviour: exit with the count of red suites
+ */
+
+import { spawnSync } from 'node:child_process'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { collectObserved, compareLedger } from '../tests/deliberate-reds.mjs'
+
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+/** [label, argv] — argv is what the repo's own gates advertise for that suite. */
+const SUITES = [
+  ['route-envelope (§6 exists:false fold)', ['tests/route-envelope.mjs']],
+  ['search-run-fakes (§6 transport seams)', ['tests/search-run-fakes.mjs']],
+  ['tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
+    ['--test', '--experimental-strip-types', 'tests/tech-debt-exposure.test.ts']],
+]
+
+const legacy = process.argv.includes('--legacy')
+// `DSH_SEAM_SHAPE=posix` answers the ledger as if this run were on the ubuntu runner. It exists for
+// one thing: a LIVE mutation control. On a win32 host the entry declared `skip` for posix is really
+// red, so reading the same observation against the posix ledger must come back MOVED and fail the
+// gate. That proves the gate reacts to a premise that changed, and not only to synthetic fixtures.
+const shape = process.env.DSH_SEAM_SHAPE ?? (process.platform === 'win32' ? 'win32' : 'posix')
+const observedRed = []
+const observedSkip = []
+const seenRed = new Set()
+const seenSkip = new Set()
+const suiteOfRed = new Map()
+
+let failed = 0
+for (const [label, argv] of SUITES) {
+  const result = spawnSync(process.execPath, argv, { cwd: repo, encoding: 'utf8', timeout: 900_000 })
+  const out = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  const lines = out.split('\n')
+  const verdict = lines.filter(l => /PASSED|FAILED \(\d+ failing\)|^# (pass|fail) \d+|^ℹ (tests|pass|fail) \d+/
+    .test(l.trim())).map(l => l.trim().replace(/^ℹ /, '')).join(' / ')
+  const collected = collectObserved(lines)
+  for (const name of collected.red) {
+    if (seenRed.has(name)) continue
+    seenRed.add(name)
+    observedRed.push(name)
+    suiteOfRed.set(name, label)
+  }
+  for (const name of collected.skip) {
+    if (seenSkip.has(name)) continue
+    seenSkip.add(name)
+    observedSkip.push(name)
+  }
+  console.log(`\n=== ${label}: rc ${result.status} — ${verdict || '(no verdict line)'} ===`)
+  if (verdict === '') {
+    // A suite that dies before its verdict line (a missing dependency, a bad import) would otherwise
+    // contribute zero reds, and the ledger would report its declared reds as "missing" — the wrong
+    // diagnosis for a broken harness. Show why it died.
+    const tail = lines.filter(l => l.trim() !== '').slice(-6).join('\n    ')
+    console.error(`  HARNESS: ${label} produced no verdict line; last lines of its output:\n    ${tail}`)
+  }
+  for (const line of lines.filter(l => l.startsWith('not ok:') || l.startsWith('✖ '))) console.error(`  ${line.trim()}`)
+  for (const line of lines.filter(l => l.startsWith('SKIP:'))) console.warn(`  ${line.trim()}`)
+  if (result.status !== 0) failed += 1
+  if (result.error !== undefined) {
+    console.error(`  harness error running ${label}: ${String(result.error.message)}`)
+    failed += 1
+  }
+}
+
+console.log(`\nrun-seams: ${failed} of ${SUITES.length} suite(s) red`)
+
+if (legacy) {
+  process.exit(failed === 0 ? 0 : 1)
+}
+
+const report = compareLedger(shape, { red: observedRed, skip: observedSkip })
+console.log(`ledger (${shape}): declared ${report.declared}, observed red ${observedRed.length}, `
+  + `observed skip ${observedSkip.length}`)
+for (const entry of report.missing) console.error(`  LEDGER MISSING  ${entry}`)
+for (const entry of report.moved) console.error(`  LEDGER MOVED    ${entry}`)
+for (const entry of report.extraRed) {
+  console.error(`  LEDGER UNDECLARED  ${entry} [${suiteOfRed.get(entry) ?? 'unknown suite'}] `
+    + '— a red nobody owns: fix it or add it to tests/deliberate-reds.mjs with its debt and repair')
+}
+for (const entry of report.extraSkip) console.warn(`  ledger: undeclared skip ${entry}`)
+
+if (report.ok) {
+  console.log('ledger: the reds are exactly the declared ones — evidence intact, nothing new broken')
+  process.exit(0)
+}
+console.error('ledger mismatch — this is the gate working, not a flake: a red appeared, disappeared, '
+  + 'or moved shape without tests/deliberate-reds.mjs being edited in the same commit')
+process.exit(1)

@@ -2,12 +2,13 @@
 // backend spawns must hand a stateful WSL shell its stdio, start in the
 // session's directory, and resolve the distribution from the cwd/env.
 import assert from 'node:assert/strict';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { resolvePath } from './plane.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const relay = path.resolve(here, '../../src/host/wsl-relay.ts');
+// The relay is spawned by path rather than imported, so the plane is chosen through the same
+// table the other drivers use (scripts/compatibility/plane.mjs) and the run prints the line
+// verify-plane-log.mjs checks: `lib` here means the shipped lib/wsl-relay.js answered the PTY.
+const relay = resolvePath('relay');
 const node = process.execPath;
 const distro = process.env.WSL_COMPAT_DISTRO || 'Ubuntu';
 const user = process.env.WSL_COMPAT_USER || 'mille';

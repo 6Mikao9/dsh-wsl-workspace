@@ -23,6 +23,16 @@ fi
 
 BASE="${TEMP:-/tmp}/dsh-compat-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BASE"
+# Where the evidence lives, announced before any work, so the line is in the log no matter which
+# exit is taken below. compat.yml used to hard-code a second spelling of this directory
+# (`COMPAT_BASE_WIN: C:\Users\runneradmin\AppData\Local\Temp\compat-work`) beside the
+# `TEMP: /tmp/compat-work` that produced it, with nothing checking the two agree — and
+# `upload-artifact` with a non-matching path warns instead of failing, so every version's evidence
+# could vanish while the step stayed green. The job now reads this line and uploads what it names.
+# It cannot be an end-of-script echo: the two RED exits below (empty verdicts, a non-PASS verdict)
+# are the exact frames whose evidence has to be collected, and they never reached that line
+# (frame 36744046100 — upload-artifact then matched nothing and errored).
+echo "compat-base: $BASE"
 PORT="${COMPAT_PORT:-3091}"
 PLUGIN_API="http://127.0.0.1:${PORT}/wsl-workspace/api"
 WEB_URL="http://127.0.0.1:${PORT}/"
@@ -74,7 +84,10 @@ for VERSION in "$@"; do
         && npm init -y >/dev/null 2>&1 \
         && npm i "@deepseek-ai/dsh@$VERSION" --no-audit --no-fund >/dev/null 2>&1); then
     echo "  ✖ harness installation failed"
-    echo "$Version INSTALL_FAIL unknown" >> "$BASE/verdicts.txt"
+    # $VERSION, not $Version: under `set -u` an unbound name aborts the whole script at this
+    # line, so the failure verdict was never written and every later version in the same call
+    # went dark instead of being recorded.
+    echo "$VERSION INSTALL_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
   BIN="$WORK/pkg/node_modules/@deepseek-ai/dsh/lib/bin.js"
@@ -128,6 +141,51 @@ for VERSION in "$@"; do
     echo "$VERSION ROUTE_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
   fi
+  # The asserted pass needs two things the manual Windows runbook created implicitly: a
+  # distribution name that exists on this runner, and its fixture directories. compat.yml
+  # provisions Ubuntu-24.04 via Vampire/setup-wsl (set as default) but exports no
+  # WSL_COMPAT_DISTRO, so host-api.mjs's 'Ubuntu' default opened a share root that does not
+  # exist -> `UNKNOWN: unknown error, mkdir '\\wsl.localhost\Ubuntu\tmp\dsh-wsl-compat\.agents'`
+  # (errno -4094, frame 36739213446, all three matrix entries). Read the name from the machine
+  # Read the name from the machine
+  # instead of guessing it a second time, and create the Linux-side directories through
+  # wsl.exe before anything tries to reach them over 9P. The manual sweep keeps the port in
+  # runtime.json (Prepare-Case.ps1:106); this path kept it in $PORT and wrote nothing, so emit
+  # the same manifest shape rather than invent a second one.
+  node -e 'const {writeFileSync}=require("node:fs");writeFileSync(process.argv[1],JSON.stringify({port:Number(process.argv[2]),version:process.argv[3],runId:process.argv[4],commit:process.argv[5]},null,2))' \
+    "$WORK/runtime.json" "$PORT" "$VERSION" "$(git rev-parse --short HEAD)"
+  COMPAT_DISTRO="${WSL_COMPAT_DISTRO:-$(wsl.exe -l -q 2>/dev/null | tr -d '\0' \
+    | sed '/^\s*$/d' | grep -i -m1 ubuntu || true)}"
+  if [ -z "$COMPAT_DISTRO" ]; then
+    echo "  ! no WSL distribution found for the asserted API pass — NOT VERIFIED"
+    echo "$VERSION HOST_API_NOT_VERIFIED unknown" >> "$BASE/verdicts.txt"
+  else
+    # The Linux-side fixture root is deliberately NOT passed through an environment variable.
+    # On a Windows bash runner MSYS rewrites a POSIX-looking value to an absolute Windows path,
+    # and that value then gets pasted straight after the distro name by the drivers:
+    # `\\wsl.localhost\Ubuntu-24.04C:\Users\RUNNER~1\AppData\Local\Temp\dsh-wsl-compat\.agents`
+    # (frame 36744046100, errno -4094). The drivers' own in-code default `/tmp/dsh-wsl-compat`
+    # never passes through the shell, so it cannot be mangled; matrix entries run sequentially,
+    # and `mkdir -p` plus the driver's own `rm -rf` keep the shared tree clean between them.
+    COMPAT_LINUX=/tmp/dsh-wsl-compat
+    wsl.exe -d "$COMPAT_DISTRO" -- bash -c \
+      "mkdir -p '$COMPAT_LINUX/.agents' '$COMPAT_LINUX/dsh-win-fixture'" >/dev/null 2>&1 || true
+    HOST_API_LOG="$WORK/host-api.log"
+    if WSL_COMPAT_DISTRO="$COMPAT_DISTRO" WSL_COMPAT_USER="${WSL_COMPAT_USER:-root}" \
+       node scripts/compatibility/host-api.mjs "$WORK/runtime.json" > "$HOST_API_LOG" 2>&1; then
+      # Success is carried by the script's own exit: if any later stage passes and this one was
+      # the only thing that could fail, the loop reaches the end for this version and the PASS
+      # verdict is written by the existing tail. A separate `… PASS` line in a side file would be
+      # a decoration — nothing reads it, and the final contract is `verdicts.txt` only.
+      echo "  ✔ asserted API pass $(tail -1 "$HOST_API_LOG")"
+    else
+      echo "  ✖ asserted API pass failed: $(tail -1 "$HOST_API_LOG")"
+      sed 's/^/      /' "$HOST_API_LOG" | tail -15
+      kill "$SERVER_PID" 2>/dev/null
+      echo "$VERSION HOST_API_FAIL unknown" >> "$BASE/verdicts.txt"
+      continue
+    fi
+  fi
   grep -i 'dsh-wsl-workspace.*\(error\|fail\)' "$WORK/boot-with-plugin.log" \
     && echo "  ✖ plugin errors found in the boot log" \
     && { kill "$SERVER_PID" 2>/dev/null; echo "$VERSION LOG_ERRORS unknown" >> "$BASE/verdicts.txt"; continue; }
@@ -164,16 +222,19 @@ for VERSION in "$@"; do
 done
 
 echo "=============================================================="
+# The guard runs before the cat: this script is `set -uo pipefail`, so reading a verdicts
+# file that was never created (every version aborted before its first write) died here on a
+# missing-file error and the honest verdict block below never ran.
+if [ ! -s "$BASE/verdicts.txt" ]; then
+  echo "verify-dsh-compat: RED — verdicts.txt is missing or empty (no version reached a verdict)" >&2
+  exit 1
+fi
 echo " verdicts ($BASE/verdicts.txt):"
 cat "$BASE/verdicts.txt"
 
 # The verdicts are the contract: only `PASS compatible` is green. Without
 # this exit the caller always saw rc 0 — the frame-1 compat matrix was
 # three PLUGIN_ADD_FAIL lines under a green checkmark.
-if [ ! -s "$BASE/verdicts.txt" ]; then
-  echo "verify-dsh-compat: RED — verdicts.txt is empty (no version reached a verdict)" >&2
-  exit 1
-fi
 if grep -qv ' PASS compatible$' "$BASE/verdicts.txt"; then
   echo "verify-dsh-compat: RED — at least one verdict is not 'PASS compatible'" >&2
   exit 1
