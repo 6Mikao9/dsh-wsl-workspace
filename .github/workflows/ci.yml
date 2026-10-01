@@ -72,7 +72,7 @@ jobs:
       # allowed to be the frame's verdict, not to silence the gates behind it. It aggregates the
       # two seam suites through `scripts/run-seams.mjs` (one step naming every failing
       # assertion), so no later step depends on it.
-      - name: seam suites (#44 §6 reproductions, red by design — runs last)
+      - name: seam ledger (#44 §6 reds must equal tests/deliberate-reds.mjs — runs last)
         run: npm run test:seams
 
       - uses: actions/upload-artifact@v4
