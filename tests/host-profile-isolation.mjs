@@ -394,7 +394,7 @@ const ARMS = [
   { n: 0, include: true, hoisted: '4', title: 'control: the tree today\'s CI links' },
   { n: 1, include: false, hoisted: '4', title: 'defect #1 alone: the Host include package is not on the profile tree' },
   { n: 2, include: true, hoisted: '5', title: 'defect #2 alone: the profile hoists a js-yaml major whose 4.x schema API is gone' },
-  { n: 3, include: false, hoisted: '5', nested: '5', title: 'sentinel: both hostile at once, and the copy handed to the plugin is hostile too' },
+  { n: 3, include: false, hoisted: '5', title: 'sentinel: the Host include package is absent AND the profile hoists the wrong major' },
   { n: 4, include: true, hoisted: '4', title: 'fault tolerance: one unreadable source must not take the others down' },
   { n: 5, include: true, hoisted: '4', nested: '5', title: 'diagnostic: the plugin\'s own copy is the wrong major — the failure must name it' },
 ]
