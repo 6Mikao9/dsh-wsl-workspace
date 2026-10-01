@@ -83,6 +83,11 @@ for VERSION in "$@"; do
   # first: `plugin add` creates a pnpm link whose realpath is the source
   # directory, and node resolves the plugin's optional peers by walking up
   # from that realpath — only next to the dsh install are they reachable.
+  # That staging is why this harness is the POSITIVE CONTROL and not the
+  # reproduction: a real Desktop profile keeps the host inside an archive, so
+  # the upward walk this line arranges is exactly what that deployment cannot
+  # do. Nothing here can show a peer going missing — the profile-shaped arms in
+  # tests/host-profile-isolation.mjs are what measure that shape.
   ADD_REF="$PLUGIN_REF"
   SRC_UNIX="$(cygpath -u "$PLUGIN_REF" 2>/dev/null || printf '%s' "$PLUGIN_REF")"
   if [ -d "$SRC_UNIX" ]; then
@@ -127,6 +132,30 @@ for VERSION in "$@"; do
     kill "$SERVER_PID" 2>/dev/null
     echo "$VERSION ROUTE_FAIL unknown" >> "$BASE/verdicts.txt"
     continue
+  fi
+  # An outcome, not only a route: the probe above answers HTTP, which a profile whose
+  # variant generation died on its very first source also did (issue #47 — every route
+  # served, no wsl-* variant existed). The plugin now logs one count line per boot, so
+  # the matrix asserts it. A missing line is NOT VERIFIED rather than a pass: the
+  # release may predate the line, and "we could not read it" is not "it was fine".
+  VARIANTS_LINE="$(grep -o 'WSL preset variants: [0-9]*/[0-9]* registered' "$WORK/boot-with-plugin.log" | tail -1)"
+  V_GOT="$(printf '%s' "$VARIANTS_LINE" | sed -n 's|.*variants: \([0-9]*\)/[0-9]* registered.*|\1|p')"
+  V_EXPECT="$(printf '%s' "$VARIANTS_LINE" | sed -n 's|.*variants: [0-9]*/\([0-9]*\) registered.*|\1|p')"
+  if [ -z "$VARIANTS_LINE" ]; then
+    echo "  ! no variant-outcome line in the boot log — NOT VERIFIED"
+    echo "$VERSION VARIANTS_NOT_VERIFIED unknown" >> "$BASE/verdicts.txt"
+  elif [ "$V_EXPECT" = "0" ]; then
+    # Nothing on the roster to derive a variant from is a broken fixture, not a
+    # compatible release: every shipped profile carries at least one mode preset.
+    echo "  ! the booted roster offered no source preset (0/0) — NOT VERIFIED"
+    echo "$VERSION VARIANTS_NOT_VERIFIED unknown" >> "$BASE/verdicts.txt"
+  elif [ "$V_GOT" != "$V_EXPECT" ]; then
+    echo "  ✖ variant generation published $V_GOT of $V_EXPECT sources: $(tail -1 "$WORK/boot-with-plugin.log")"
+    kill "$SERVER_PID" 2>/dev/null
+    echo "$VERSION VARIANTS_FAIL unknown" >> "$BASE/verdicts.txt"
+    continue
+  else
+    echo "  ✔ $VARIANTS_LINE"
   fi
   grep -i 'dsh-wsl-workspace.*\(error\|fail\)' "$WORK/boot-with-plugin.log" \
     && echo "  ✖ plugin errors found in the boot log" \

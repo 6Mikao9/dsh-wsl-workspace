@@ -63,6 +63,10 @@ jobs:
         run: node scripts/typecheck-gate.mjs
       - name: clean npm install of the packed tarball
         run: npm run verify:install
+      # LAST, on purpose. A failing step skips everything after it, so anything that is allowed
+      # to be red goes where it can only silence itself, not the gates behind it.
+      - name: profile-shaped isolation (#47 call-time peer imports)
+        run: npm run test:profile
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

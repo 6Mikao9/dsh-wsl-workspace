@@ -24,6 +24,12 @@ The `@deepseek-ai/*` peers are optional and provided by the host at runtime;
 in a clean checkout `node ci/install-pinned.mjs` materialises the pinned tree
 (ci/pinned-deps.json → ci/deps) and links it in. `test:node` rebuilds `lib/`
 first because the client/host integration checks consume built artifacts.
+The same command also materialises a SECOND tree (ci/deps-conflict) holding the
+`js-yaml` major the umbrella does NOT carry. It is deliberately never linked into
+the repo root: a hoisted wrong-major at the root would flip
+`tests/host-materialize.mjs`'s `require('js-yaml')` and poison the development
+tree, and the whole point of that copy is to be reachable only from inside a
+built arm.
 
 | Check | What it pins down | Extra prereq | CI home |
 | --- | --- | --- | --- |
@@ -35,6 +41,7 @@ first because the client/host integration checks consume built artifacts.
 | `tests/client-lifecycle.test.mjs` | the published `lib/client.js` in a vm sandbox against legacy + current runtime facades: preset binding, create & open, late-service registration | built lib | ci.yml#runtime-tests |
 | `tests/host-materialize.mjs` | host `apply()` directory channel: generated rows reference real lib files, atomic publish, stale cleanup, legacy `wsl` removal | cordis, schemastery, js-yaml, built lib | ci.yml#runtime-tests |
 | `tests/host-declare.mjs` | declaration channel (0.1.7+): capability switch, one declaration per healthy source, `!!js` round-trip, dispose retires all — must run paired with the check above | same | ci.yml#runtime-tests |
+| `tests/host-profile-isolation.mjs` (`npm run test:profile`) | #47: profile-shaped trees built under the temp dir — the plugin's manifest and `lib/` copied in (a copy, never a link: the loader resolves through a link to its target, which silently dissolves every hostile property of the tree), the Host packages junctioned per name, and a hoisted wrong-major `js-yaml` from the second tree. Pins that variant generation stands on nothing the Host happens to hoist, that the ancestor walk cannot escape the arm (checked by walking the way Node does, because both loaders dereference a Windows junction — the resolved path alone cannot answer this), that one unreadable source takes neither the other variants nor the stale sweep down, that every `file:` provider row a declaration names imports from inside the arm, and that a failure names the copy it stands on. A red on a premise line (P1-P7) is the fixture, never the product | pinned tree + ci/deps-conflict (`node ci/install-pinned.mjs` refuses when it cannot materialise it) + built lib | ci.yml#runtime-tests (last step, so a red here silences no gate behind it) |
 | `scripts/check-rank-parity.mjs --strict` | PROJECT_\*\_RANK copies vs the host dsh-skill-filesystem lib; `--strict` makes a missing host package a failure (the flag was documented but not honoured until 0.7.4+CI) | pinned tree | ci.yml#runtime-tests |
 
 ## C. Build / artifact-plane gates
@@ -45,7 +52,7 @@ first because the client/host integration checks consume built artifacts.
 | `npm run verify` = `scripts/verify-lib.mjs` | every lib file imports the `node:*` specifiers it calls (statSync 0.2.3 class bug) and nothing bound gets tree-shaken away | ci.yml#lint-build |
 | rebuild-vs-committed | `npm run build && git diff --quiet -- lib` — the committed artifact matches a build of the committed sources, byte for byte (`.gitattributes` keeps `lib/** -text` so this is exact) | ci.yml#lint-build |
 | `node scripts/verify-artifact-identity.mjs` | the TESTING.md §13 contract, machine-run: pack with prepack rebuild, pack `--ignore-scripts` over committed lib, and a repeat pack must agree; byte-identical tarballs reported as the strongest form | ci.yml#lint-build |
-| `npm run verify:install` | a clean plain-npm install of the packed tarball (the gate 0.7.0's E404 peer would have failed) | ci.yml#runtime-tests |
+| `npm run verify:install` | a clean plain-npm install of the packed tarball (the gate 0.7.0's E404 peer would have failed), **and** since #47 the installed tree's runtime surface: each declared dependency must be reachable from the installed `lib/` and on the version line the manifest declares, and an empty `dependencies` is itself a red — this gate's earlier green was *caused* by the engine being absent, which is the state a real profile cannot generate a variant in. Control measured: deleting the declared dependency exits 1 naming the reason | ci.yml#runtime-tests |
 | `node scripts/typecheck-gate.mjs` | `tsc --noEmit` error count must not exceed `ci/typecheck-baseline.json` (the documented "count does not grow" convention, previously unenforced; `--record` rebaselines) | ci.yml#runtime-tests |
 
 ## D. Checks needing Windows + a real WSL distribution — `npm run test:wsl`
@@ -78,7 +85,7 @@ recorded here rather than silently dropped from the automation map.
 
 | Driver | What it does | Where |
 | --- | --- | --- |
-| `scripts/verify-dsh-compat.sh <version…>` | per dsh release: isolated `DSH_HOME`, `npm i @deepseek-ai/dsh@<v>`, `dsh plugin --profile web add` (set `PLUGIN_REF` to the **extracted plugin directory** — `plugin add` accepts a package name or a local directory, never a .tgz path), boot web, probe `POST /wsl-workspace/api listDistros` = 200, uninstall, re-probe must be gone; exits non-zero unless every verdict line is `PASS compatible` (a frame-1 discovery: the script used to print failures under a green checkmark) | compat.yml matrix over `ci/compat-window.json` (rolling 3 releases; weekly + dispatch + window-file changes) |
+| `scripts/verify-dsh-compat.sh <version…>` | per dsh release: isolated `DSH_HOME`, `npm i @deepseek-ai/dsh@<v>`, `dsh plugin --profile web add` (set `PLUGIN_REF` to the **extracted plugin directory** — `plugin add` accepts a package name or a local directory, never a .tgz path), boot web, probe `POST /wsl-workspace/api listDistros` = 200, then assert the boot log's variant-outcome count line (`n/m` with `m > 0` and `n == m`, else the verdict is `VARIANTS_FAIL`; a line that never appears, or a `0/0`, is `VARIANTS_NOT_VERIFIED` and is not a pass — until #47 this job proved only that routes answer, and a profile that generated no variant answered every route. Its staging is why it is the structural **positive control** for the peer question and never the reproduction: the plugin is copied inside the dsh tree so a link-installed plugin's peers sit on its walk-up, which is exactly the step an archive-backed host cannot offer), uninstall, re-probe must be gone; exits non-zero unless every verdict line is `PASS compatible` (a frame-1 discovery: the script used to print failures under a green checkmark) | compat.yml matrix over `ci/compat-window.json` (rolling 3 releases; weekly + dispatch + window-file changes) |
 | `scripts/compatibility/*.ps1` (Prepare/Start/Run-Checks/Stop/Check-Uninstall) | the full 15-check sweep per case, pnpm-pinned case trees, junctions, PS 7.2 | manual / maintainer machine; kept as the deep tool |
 | `scripts/repro-setup.sh` + `scripts/repro-e2e.mjs` | builds the nested-skill repro tree inside a distro and drives the provider against the real share (4 printed assertions) | local, env-overridable |
 
