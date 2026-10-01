@@ -1565,8 +1565,10 @@ loader, from the *installed* `lib/index.js`, what the two borrowed specifiers re
 answered `ERR_MODULE_NOT_FOUND` for both — and for `@deepseek-ai/schemastery` too, which the
 running host plainly does provide by some route of its own. That last answer is why this
 section does not claim the host process was reproduced: a bare Node walk cannot see what the
-packaged host injects, so the arms emulate the *shortage* the report measured, not the host's
-resolver. (An earlier draft of this section said there is no DSH Desktop on this machine.
+packaged host resolves by a route this section first guessed at and later retracted (see the
+retraction below: the report's own profile listing shows the host scope as ordinary files on
+the walk-up, so no injected channel is needed to explain it). The arms emulate the *shortage*
+the report measured, not the host's resolver. (An earlier draft of this section said there is no DSH Desktop on this machine.
 That was wrong, found by looking; the limit is narrower than that and is stated below.)
 
 **Both legs, in a temp dir, laid out by the real installer.** Two profile trees were built
@@ -1680,11 +1682,24 @@ Desktop install exists here (`AppData\Local\Programs\DeepSeek Harness`, plugin i
 self-updater, and a window on a machine its owner is using, so that leg waits for a nod. Until
 someone boots that process with this build, the claim is "the shortage the report measured is
 reproduced and repaired in profile-shaped trees laid out by the real installer", not "the
-Desktop dialog was seen to work" — and the read-only probe showing `@deepseek-ai/schemastery`
-unreachable from the installed copy while the running host plainly loads it is direct evidence
-that the packaged host resolves things a bare Node walk does not. The reporter's own
-host-console line has not been read by anyone here, and that is the one check the report
-itself nominated as decisive, so the reply drafted for #47 asks for it.
+Desktop dialog was seen to work". One reading this section first drew was wrong and is
+retracted here: the probe could not resolve even `@deepseek-ai/schemastery` from this
+machine's installed copy, and that was taken as evidence the packaged host injects a
+resolution channel. It is not — the report's own listing shows `@deepseek-ai/cosmokit` and
+`schemastery` sitting **inside** `profiles/desktop/node_modules`, so on a profile like his the
+host packages are ordinary files on the walk-up and nothing mysterious is needed. This
+machine's profile is the different one (its host runs out of the archive), which is why the
+same probe found nothing to resolve. What the reporter's listing does show, alongside the
+hoisted scope, is the absence of `cordis-plugin-include` and a hoisted `js-yaml` 5.x — the
+exact two shortages the arms and the installer legs reproduce, and the reason the nested copy
+under the plugin wins the walk-up rather than competing with an injected path.
+The reporter's host-console line has not been read by anyone here, and it turns out **he
+cannot read it either**: on a healthy DSH Desktop boot nothing the host logs is persisted —
+the install's log directory holds crash bundles only, which embed a child's stderr solely
+when that child exited non-zero and capture only *renderer* console output. A main-process
+`console.error` has no sink. So the decisive check his report nominated is a maintainer-side
+one, and the reply drafted for #47 asks him for the observable instead: whether the dialog
+lists the variants.
 `@deepseek-ai/schemastery` is still a peer the plugin imports statically at module load:
 the installer tree above had to be given it explicitly, which is exactly how a real profile
 differs from this analog, and the activation probe covers that shape only inside the trees

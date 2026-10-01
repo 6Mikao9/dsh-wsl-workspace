@@ -27,9 +27,15 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   dependency; this now matches. The two peer entries nothing imports anymore are deleted,
   so the manifest stops describing an import that does not exist.
 - **One failing source is one variant's failure.** Generation is fault-tolerant per source,
-  the retired-directory sweep runs regardless, and the outcome is a count on the host log —
+  the retired-directory sweep runs regardless, and the outcome is a count line —
   `WSL preset variants: n/m registered` — because proving that routes answer had never
-  proved that anything was generated. Before this change, a source that vanished
+  proved that anything was generated. On `dsh web` that line is in the boot log and the
+  compatibility matrix now asserts it; **on DSH Desktop it is not persisted anywhere**
+  (measured on a real install: its log directory holds only crash bundles, which embed a
+  child's stderr solely when that child exits non-zero, and capture only *renderer* console
+  output — so a main-process `console.error` has no sink). Making the outcome visible there is
+  issue #47's own recommendation #3 and is now filed as a separate ticket, on measured
+  grounds rather than as polish. Before this change, a source that vanished
   mid-update preserved the previous complete variant only by accident: the abort skipped
   the sweep that would otherwise delete it. The accident is gone, the contract stays, and
   `tests/host-materialize.mjs` caught the difference on the first run.
@@ -62,8 +68,11 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   exactly those settings with no engine and no include package on its walk-up, which is the
   report's shortage sitting on a maintainer machine the whole time. Still unmeasured: the
   packaged host **process** — reading that profile is free, launching a GUI plus its
-  self-updater on a machine its owner is using is not, and it waits for a nod — and the
-  reporter's own host-console line, which is the check their report nominated as decisive.
+  self-updater on a machine its owner is using is not, and it waits for a nod. The
+  reporter's host-console line, which his report nominated as decisive, turns out not to be
+  reachable by him at all: a healthy Desktop boot persists no host output (above), so that
+  check is asked of a maintainer with a shell, and the reply drafted for #47 asks him instead
+  for the observable — whether the dialog lists the variants.
   Both limits, and the frames that back the rest, are in `docs/compatibility-evidence.md`.
 
 ## 0.7.5 — 2026-09-30
