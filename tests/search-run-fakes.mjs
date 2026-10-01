@@ -61,6 +61,9 @@ const skip = (label, reason) => {
   skips += 1
   console.error(`SKIP: ${label} — platform cannot answer it here (${reason})`)
 }
+/** The characters a reader would actually count: NUL carries no information. */
+const nulFree = (text) => text.replace(/\u0000/g, '')
+const nulCount = (text) => text.length - nulFree(text).length
 
 const work = mkdtempSync(join(tmpdir(), 'dsh-search-run-fakes-'))
 
@@ -356,6 +359,89 @@ try {
     assert(!message.includes(secondLine), 'no later stderr line leaks into the 127 detail')
   }
 
+  // ── 6b. UTF-16LE from wsl.exe: the transport #44 §6 is about ─────────────
+  // Section 6 is the contract for a UTF-8 transport and stays green when the decoder is
+  // fixed, which is why it is not the §6 test. `src/host/wsl-search.ts:841` decodes every
+  // stderr with `toString('utf8')`, so anything that arrives as UTF-16LE is read
+  // NUL-interleaved. Two harms, two assertions: the 300-character detail budget spends half
+  // of it on NULs, and `INVALID_PATTERN` (`:886`) can never match text with a NUL between
+  // every letter. One combined "normalise then compare" assertion was written first and
+  // rejected — it is green whether or not the decoder is fixed.
+  //
+  // Which stream carries UTF-16LE is a property of the WSL build, measured on this machine
+  // (Win10 19045 + WSL 2.1.5, this round, commands in docs/CHECK-CATALOG.md §"wsl.exe stream
+  // shapes"): wsl.exe's own human-readable diagnostics come out on **stdout** in UTF-16LE
+  // (`-l -q` is 48 B of `U\0b\0u\0…`; `-d <missing>` puts a 128 B UTF-16LE message on stdout
+  // with an empty stderr and exit 127), while its `<3>WSL (n) ERROR: CreateProcess…` lines are
+  // UTF-8 on **stderr**, and a Linux command's own output (`-- readlink -f /home`) is UTF-8.
+  // So a UTF-16LE *stderr* is the older/inbox-build shape rather than this build's; the WSL1
+  // runner is unverified. Scenario 6c below is the shape this machine really produces.
+  const wideFirstLine = `grep: ${'A'.repeat(639)}`
+  const wideStderr = `${wideFirstLine}\n${secondLine}\n${thirdLine}`
+  const wideBytes = Buffer.from(wideStderr, 'utf16le')
+  // The fixture's own bytes, pinned in the parent: if the fake ever stopped handing over real
+  // UTF-16LE, this line goes red instead of 6b quietly vacuating.
+  assert(wideBytes.length === wideStderr.length * 2 && wideBytes[1] === 0 && wideBytes.includes(0),
+    `the utf16le fixture is real UTF-16LE (${wideBytes.length} B for ${wideStderr.length} chars, `
+      + `byte 1 = ${wideBytes[1]})`)
+
+  const exit3Utf16 = runScenario('exit3-utf16', run({ code: 3, stdout: '', stderr: { utf16le: wideStderr } }))
+  if (exit3Utf16 !== undefined) {
+    const message = String(exit3Utf16.outcome?.message)
+    const prefix = 'grep needs a GNU grep inside the distribution'
+    const detail = message.startsWith(`${prefix} (`) && message.endsWith(')')
+      ? message.slice(prefix.length + 2, -1)
+      : message
+    assert(exit3Utf16.outcome?.code === 'SEARCH_FAILED',
+      `utf16le exit 3 still surfaces SEARCH_FAILED (got ${JSON.stringify(exit3Utf16.outcome?.code)})`)
+    // The contract half, decoder-agnostic: the detail is the FIRST line and nothing else.
+    // Stated on the NUL-free text, because a leak would not be visible as a raw substring.
+    assert(!nulFree(message).includes(secondLine) && !nulFree(message).includes('B'.repeat(40)),
+      `utf16le: no later stderr line leaks into the detail (${nulFree(detail).length} significant chars kept)`)
+    // The defect half — RED until §6 is fixed, and the reason this section exists.
+    assert(nulCount(detail) === 0,
+      `utf16le: the detail carries no NUL (found ${nulCount(detail)} in ${detail.length} chars, `
+        + `so the reader sees ${nulFree(detail).length} of the 300 they are owed)`)
+    assert(nulFree(detail) === wideFirstLine.slice(0, 300),
+      `utf16le: the detail is the first stderr line cut AT 300 significant characters `
+        + `(kept ${nulFree(detail).length})`)
+  }
+
+  const invalidStderr = 'grep: Unmatched [, [^, [:, [., or [='
+  // The classifier half, with its own UTF-8 control: same text, same exit code, only the
+  // transport differs. If the control below ever goes red too, the fixture is broken and the
+  // red above is not a product finding — that is the distinction this pair buys.
+  const exit2Utf8 = runScenario('exit2-utf8-control', run({ code: 2, stdout: '', stderr: invalidStderr }))
+  if (exit2Utf8 !== undefined) {
+    assert(exit2Utf8.outcome?.code === 'SEARCH_INVALID_PATTERN',
+      `utf8 exit 2 classifies an invalid pattern (got ${JSON.stringify(exit2Utf8.outcome?.code)})`)
+  }
+  const exit2Utf16 = runScenario('exit2-utf16', run({ code: 2, stdout: '', stderr: { utf16le: invalidStderr } }))
+  if (exit2Utf16 !== undefined) {
+    assert(exit2Utf16.outcome?.code === 'SEARCH_INVALID_PATTERN',
+      `utf16le exit 2 classifies the SAME invalid pattern (got ${JSON.stringify(exit2Utf16.outcome?.code)}; `
+        + `INVALID_PATTERN.test can never fire on NUL-interleaved text)`)
+  }
+
+  // ── 6c. The shape this machine really produces: reason on stdout, exit 127 ─
+  // Measured, not hypothetical: `wsl.exe -d <missing> -- echo hi` exits 127 with a 128-byte
+  // UTF-16LE message on **stdout** and an **empty stderr**. `acceptRun` (`:885`) builds the
+  // detail from stderr only, so the whole explanation is discarded and the user is told
+  // "grep could not start its search command inside the distribution" with no cause. The
+  // assertion is about the observable (the message names a reason), not about which stream the
+  // fix reads — that choice belongs to the product round.
+  const missingDistro = 'Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND'
+  const lost127 = runScenario('exit127-stdout-reason', run({
+    code: 127, stdout: { utf16le: `${missingDistro}\r\n` }, stderr: '',
+  }))
+  if (lost127 !== undefined) {
+    assert(lost127.outcome?.kind === 'thrown' && lost127.outcome?.code === 'SEARCH_FAILED',
+      `a launch failure still surfaces SEARCH_FAILED (got ${JSON.stringify(lost127.outcome?.code)})`)
+    assert(String(lost127.outcome?.message).includes(missingDistro),
+      `the reason wsl.exe gave must reach the user, not be dropped with the stream it came on `
+        + `(message was: "${String(lost127.outcome?.message)}")`)
+  }
+
   // ── 7. raw-output overflow ──────────────────────────────────────────────
   const overflowStdout = 'x'.repeat(RAW_MAX + 1)
   const overflow = runScenario('overflow', run({ code: 0, stdout: overflowStdout, stderr: '' }))
@@ -376,7 +462,8 @@ try {
   const scenarios = [['contract', plain], ['contract-signal', withSignal], ['contract-defaults', defaults],
     ['killed', killed], ['preabort', aborted], ['enoent', missing], ['exit1', noMatch],
     ['glob-exit1', globOne], ['exit3', exit3], ['exit127', exit127], ['overflow', overflow],
-    ['at-budget', atBudget]]
+    ['at-budget', atBudget], ['exit3-utf16', exit3Utf16], ['exit2-utf8-control', exit2Utf8],
+    ['exit2-utf16', exit2Utf16], ['exit127-stdout-reason', lost127]]
   for (const [label, report] of scenarios) {
     if (report === undefined) continue
     assert(report.armedAfter === true, `${label}: fakeArmed() was true once the probe ran (positive control)`)

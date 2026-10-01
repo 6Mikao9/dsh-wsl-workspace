@@ -132,10 +132,23 @@ function fakeExecFile(file, args, options, callback) {
 }
 
 function fakeExecFileSync(file, args, options) {
-  calls.push({ file, args: args ?? [], options, sync: true, matched: false })
-  const error = new Error(`fake-child-process: execFileSync(${file}) is not scripted; use execFile`)
-  error.code = 'FAKE_UNMATCHED'
-  throw error
+  const entry = select(file, args)
+  calls.push({ file, args: args ?? [], options, sync: true, matched: entry !== undefined })
+  if (entry === undefined) {
+    // Same rule as the async path: an unscripted sync call is a fixture gap, and it must not
+    // quietly spawn. `defaultDistroSync` reads the registry through this form.
+    const error = new Error(`fake-child-process: no scripted answer for execFileSync(${file})`)
+    error.code = 'FAKE_UNMATCHED'
+    throw error
+  }
+  const payload = encodePayload(entry.stdout, options)
+  if (entry.code !== undefined && entry.code !== 0) {
+    const error = buildError(entry, file)
+    error.stdout = payload
+    error.stderr = encodePayload(entry.stderr, options)
+    throw error
+  }
+  return payload
 }
 
 // Installing is an explicit action, never a module-load side effect. The probe under test

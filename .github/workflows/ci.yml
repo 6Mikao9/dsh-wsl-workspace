@@ -61,6 +61,14 @@ jobs:
         run: node ci/install-pinned.mjs
       - name: node bucket (build + host-package tests + host pair + rank --strict)
         run: npm run test:node
+      # The two seam files that carry #44 §6 reproductions run as their OWN steps, after the
+      # bucket: `npm run test:node` is an `&&` chain, so the first red hides every later one and
+      # a frame would name one defect while two exist. Red here is the deliverable, not a
+      # regression — see the Draft PR body before re-reading this as a broken build.
+      - name: route envelope seam (#44 §6 — the exists:false fold)
+        run: node tests/route-envelope.mjs
+      - name: search spawn seam (#44 §6 — decoder budget and the dropped launch reason)
+        run: node tests/search-run-fakes.mjs
       - name: typecheck does not grow past its recorded baseline
         run: node scripts/typecheck-gate.mjs
       - name: clean npm install of the packed tarball
@@ -174,7 +182,7 @@ jobs:
             local name="$1"; shift
             local rc=0
             echo "::group::lib-$name"
-            DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib "$@" > "logs/lib-$name.log" 2>&1 || rc=$?
+            DSH_WSL_TEST_PLANE=lib "$@" > "logs/lib-$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
             tail -8 "logs/lib-$name.log" || true
             echo "::endgroup::"

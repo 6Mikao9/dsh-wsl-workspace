@@ -140,3 +140,38 @@ test('a failing wsl.exe is reported with the executables it tried, not as an emp
   assert.equal(report.distros, null)
   assert.match(String(report.error), /cannot list WSL distributions/)
 })
+
+// What decoding UTF-16LE as UTF-8 actually does. This is a claim guard, not a product test:
+// the v0.7.5 review and issue #44 both said Node "drops the NUL bytes", which measurement
+// refutes — nothing is dropped, so the symptom is NOT garbled-then-shortened text. The harm
+// is the two consequences asserted below, and a future reader of those documents should find
+// this file before re-writing the wrong sentence.
+test('reading UTF-16LE as UTF-8 keeps every byte and costs the reader something else', () => {
+  const message = 'grep: Unmatched [, [^, [:, [., or [='
+  const bytes = Buffer.from(message, 'utf16le')
+  const lossy = bytes.toString('utf8')
+
+  // The retracted claim, as a counter-example: the decode is lossless and reversible.
+  assert.ok(Buffer.from(lossy, 'utf8').equals(bytes),
+    'the lossy text re-encodes to the ORIGINAL bytes: no NUL is dropped, so "Node swallows the '
+      + 'NULs" is false and must not be written again')
+  assert.equal(lossy.length, bytes.length)
+  assert.equal(lossy.length, message.length * 2)
+
+  // The harm #1: a budget counted in characters spends half of it on NULs.
+  const budget = 300
+  const long = Buffer.from('x'.repeat(639), 'utf16le').toString('utf8').slice(0, budget)
+  const significant = long.split(String.fromCharCode(0)).join('')
+  assert.ok(long.length === budget && significant.length === budget / 2,
+    'the lossy text carries NULs: 300 characters of it are 150 readable ones')
+  assert.equal(significant.length, budget / 2,
+    'a 300-character detail budget keeps 150 readable characters, which is what the user sees')
+
+  // The harm #2, and the quieter one: substring judgement on the lossy text can never fire.
+  assert.equal(lossy.includes('Unmatched'), false)
+  assert.equal(/Unmatched|unrecognized/.test(lossy), false,
+    'INVALID_PATTERN-shaped tests against NUL-interleaved text are permanently false')
+  assert.equal(Buffer.from(lossy, 'utf8').toString('utf16le'), message,
+    'and the fix is reversible too: the bytes are recoverable, which is why a decoder at the '
+      + 'call site is enough — no transport change is needed')
+})

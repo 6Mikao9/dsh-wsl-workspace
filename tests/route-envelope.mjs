@@ -28,7 +28,7 @@
  */
 
 import { createServer, request as httpRequest } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -318,6 +318,68 @@ try {
       `check with distro ${JSON.stringify(badDistro)} answers {ok:false} naming distro`)
     assert(!(answer.envelope?.ok === true && answer.envelope?.value?.exists === false),
       `check with distro ${JSON.stringify(badDistro)} did not fall through to a constructed UNC read`)
+  }
+
+  // ── 8b. a path that exists but cannot be read must not be called absent ──
+  // `src/index.ts:319-325` folds ANY `statSync` throw into `{exists:false}`, so the dialog
+  // answers "this directory does not exist" for a path that is there and merely unreadable —
+  // and then offers to create a workspace on top of it. This is #44 §6's visible one; the
+  // product fix was stripped out of this branch by ruling, so the assertion below is RED on
+  // purpose and is the reproduction, not a regression.
+  //
+  // Tier: win32, and the fixture is the OS's own machinery rather than a stubbed fs, measured
+  // on this machine before writing it: a junction cycle makes `statSync` throw
+  // `code=ELOOP errno=-4067`, while `chmod 000` on the parent or the directory does NOT deny
+  // stat on Windows (measured: NO THROW) — that is why the shape is a reparse loop, not a
+  // permission bit. The posix tier is declared, not passed: `joinUnc` there produces a
+  // `\\wsl.localhost\…` string that is only a filename, so no unreadable-but-existing path is
+  // reachable through this route on the ubuntu runner.
+  if (process.platform !== 'win32') {
+    skip('an unreadable existing path is not reported as absent',
+      'no unreadable-but-existing path is reachable through this route on posix')
+  } else {
+    const loopRoot = mkdtempSync(join(tmpdir(), 'dsh-route-envelope-loop-'))
+    try {
+      const dirA = join(loopRoot, 'A')
+      mkdirSync(dirA)
+      symlinkSync(dirA, join(dirA, 'J'), 'junction')
+      const deep = join(dirA, ...Array.from({ length: 40 }, () => 'J'))
+      let statCode
+      try {
+        statSync(deep)
+        statCode = 'NO THROW'
+      } catch (error) {
+        statCode = String(error?.code)
+      }
+      // The premise, asserted: if the fixture stopped producing a non-absent error, this line
+      // goes red rather than the case below quietly passing on nothing.
+      assert(statCode !== 'NO THROW' && statCode !== 'ENOENT' && statCode !== 'ENOTDIR',
+        `the fixture really makes statSync throw something other than "absent" (got ${statCode})`)
+      const winToMnt = (winPath) => {
+        const driven = /^([A-Za-z]):[\\/](.*)$/.exec(winPath)
+        return driven === null ? null
+          : `/mnt/${String(driven[1]).toLowerCase()}/${String(driven[2]).replace(/[\\/]+/g, '/')}`
+      }
+      const mnt = winToMnt(deep)
+      assert(mnt !== null, `the Windows fixture has a /mnt spelling the route accepts (${deep})`)
+
+      const unreadable = await post({ method: 'check', params: { distro: 'Ubuntu', path: mnt } })
+      assert(unreadable.status === 200 && isEnvelope(unreadable.envelope),
+        `check on the unreadable path still answers an envelope (status ${unreadable.status})`)
+      assert(!(unreadable.envelope?.ok === true && unreadable.envelope?.value?.exists === false),
+        `an unreadable existing path is NOT answered as {exists:false} (got `
+          + `${JSON.stringify(unreadable.envelope?.value ?? unreadable.envelope?.error ?? null)})`)
+
+      // The half that must stay true after the fix: a genuinely absent path is still "absent",
+      // not an error. Without it the red above could be "closed" by making every read fail.
+      const absent = await post({ method: 'check',
+        params: { distro: 'Ubuntu', path: winToMnt(join(loopRoot, 'no-such-directory-here')) } })
+      assert(absent.envelope?.ok === true && absent.envelope?.value?.exists === false,
+        `a path that really is missing still answers {exists:false} (got `
+          + `${JSON.stringify(absent.envelope?.value ?? absent.envelope?.error ?? null)})`)
+    } finally {
+      rmSync(loopRoot, { recursive: true, force: true })
+    }
   }
 
   // ── 10. setUser: refused before any registry call ──────────────────────
