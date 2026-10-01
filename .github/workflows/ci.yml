@@ -61,17 +61,20 @@ jobs:
         run: node ci/install-pinned.mjs
       - name: node bucket (build + host-package tests + host pair + rank --strict)
         run: npm run test:node
-      # The two seam files carry #44 §6 reproductions and run as their OWN step, after the
-      # bucket: `npm run test:node` is an `&&` chain, and a failing CI step skips the steps after
-      # it, so two reds in sequence report as one. `scripts/run-seams.mjs` spawns both and exits
-      # with the count of red suites, so this single red step names every red. Red here is the
-      # deliverable, not a regression — read the Draft PR body before re-reading it as a break.
-      - name: seam suites (#44 §6 reproductions, red by design)
-        run: npm run test:seams
       - name: typecheck does not grow past its recorded baseline
         run: node scripts/typecheck-gate.mjs
       - name: clean npm install of the packed tarball
         run: npm run verify:install
+      # LAST, on purpose. A failing step skips everything after it, and this step is red by
+      # design until #44 §6 is fixed — frame 36797162445 proves the cost of getting this wrong:
+      # with the seam step in the middle, `typecheck does not grow past its recorded baseline`
+      # and `clean npm install of the packed tarball` both came back `skipped`. A known red is
+      # allowed to be the frame's verdict, not to silence the gates behind it. It aggregates the
+      # two seam suites through `scripts/run-seams.mjs` (one step naming every failing
+      # assertion), so no later step depends on it.
+      - name: seam suites (#44 §6 reproductions, red by design — runs last)
+        run: npm run test:seams
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
