@@ -1586,6 +1586,10 @@ loader's own answer.
 | before the fix, at `2f913e9` | CI run 36864563398 (ubuntu, `workflow_dispatch`) | the same 8 named, exit 1; the same run shows the conflict copy materialising there too |
 | after the fix, at `a14ae1c` | win32 maintainer machine | 68 ok / 0 not ok, exit 0 |
 | after the fix | `npm run test:node`, `test:unit`, `scripts/typecheck-gate.mjs`, `npm run test:docs` | all exit 0 (typecheck at its recorded count, 212; docs 11/11) |
+| after the fix | CI run 36867538094 (`checks`, head `430c259`) | success on all three jobs, `test:profile` included on a second machine shape (symlinks, not junctions) |
+| after the fix | CI run 36867543543 (`compat-window`, head `430c259`) | all three window releases `PASS compatible`, each booting with `WSL preset variants: 4/4 registered` asserted from the real host's own log |
+| published 0.7.5 in a real installer tree | win32, pnpm hoisted, `autoInstallPeers: false`, sibling `dsh-config-manager@0.1.68` | zero variants; the host-console line is the include package being unreachable from the installed `lib/index.js` |
+| this build in the same installer shape | win32, same settings, tarball from `npm pack` | nested engine copy at 4.3.2 under the plugin, loader inside the install answers that copy, `WSL preset variants: 2/2 registered`, the `!!js` row still an expression node |
 
 The eight reds decompose into the two defects plus the amplifier: three arms are the
 missing loaned schema, the hoisted wrong engine major, and both together; two are the
@@ -1612,14 +1616,42 @@ asked for, deleted the user's working variant. The sweep now honours a failed va
 previous publication as well, the contract stays, and the accident it depended on is
 gone.
 
-**What remains unverified, stated as limits.** Whether a hoisted-linker installer really
-nests a satisfying copy when a sibling pins a different major is an act no gate in this
-repository can observe; the only local evidence about installer staging points the other
-way for link-installed plugins, and it is the reason every dialect failure now names the
-copy, version and path it resolved. The reporter's own host-console line has not been
-read by anyone here. `@deepseek-ai/schemastery` is still a call-time-free optional peer
-the plugin imports statically at module load, and the activation probe covers that shape
-only inside the analog trees. The compatibility matrix's real-host job now asserts the
-outcome count line rather than only route liveness; its first execution is a dispatch
-frame, recorded below when it exists, and that harness is structurally the positive
-control for the peer question, never the reproduction.
+**The installer act, measured rather than assumed.** The frame that decides whether this
+fix works on a real profile is not a tree this repository builds — it is the layout an
+installer chooses. So it was run for real: a temp project with `nodeLinker: hoisted` and
+`autoInstallPeers: false` (the deployment in the report's environment table), the sibling
+package `dsh-config-manager@0.1.68` that hoists `js-yaml` 5.x, and the plugin twice — once
+as the **published 0.7.5** from the registry, once as a tarball from `npm pack` of this
+build. Nothing about the tree was hand-shaped; pnpm laid it out.
+
+- published 0.7.5: no engine copy under the plugin at all, the profile root hoisting 5.4.2,
+  and generation registering **zero** variants — the failure arrives as the borrowed
+  include package being unreachable from the installed `lib/index.js`, i.e. the report's
+  defect #1 as the first thing the real installer produces.
+- this build: pnpm nests 4.3.2 under the plugin's own `node_modules` while the profile root
+  keeps the sibling's 5.4.2; `import.meta.resolve('js-yaml')` answered from *inside* the
+  installed plugin returns the nested 4.3.2, that namespace really carries the 4.x `Type`
+  export, and generation completes (`2/2`) with the `!!js` row surviving as an expression
+  node. That is the exact conflict the report describes, resolved by the manifest rather
+  than by luck.
+
+Replay: build a temp dir with that `pnpm-workspace.yaml` and a manifest depending on
+`dsh-config-manager@0.1.68`, `@deepseek-ai/schemastery@3.18.4` and the plugin (either
+`0.7.5` or `file:<npm pack output>`), `pnpm install`, then boot the installed
+`lib/index.js` against a roster face exposing `register`/`readDocument`. The scratch trees
+and their homes were removed after both readings.
+
+**What remains unverified, stated as limits.** The installer act above is measured for
+pnpm's hoisted linker with the reporter's own settings on this machine; what still has no
+reading anywhere is the deployment itself — an archive-packaged host on DSH Desktop, where
+the reason a peer is unreachable is the archive rather than the manifest. The reporter's
+own host-console line has not been read by anyone here, and that is the one check the
+report itself nominated as decisive, so the reply drafted for #47 asks for it.
+`@deepseek-ai/schemastery` is still a peer the plugin imports statically at module load:
+the installer tree above had to be given it explicitly, which is exactly how a real profile
+differs from this analog, and the activation probe covers that shape only inside the trees
+it builds. The compatibility matrix's real-host job now asserts the outcome count line
+rather than only route liveness — measured for the window releases in CI run 36867543543 —
+and it stays structurally the positive control for the peer question, never the
+reproduction, because its staging puts the plugin where a walk-up can find the host's
+packages.

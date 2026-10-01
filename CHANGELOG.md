@@ -52,11 +52,14 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   absent, which is the state the issue reported. `scripts/verify-dsh-compat.sh` asserts the
   outcome count per matrix release: generating less than it was offered is `VARIANTS_FAIL`,
   and a line that never appears is `VARIANTS_NOT_VERIFIED`, never a pass.
-- **Not verified here, and not claimed.** There is no DSH Desktop on this machine, so the
-  arms are a structural analog of that profile; and whether a hoisted-linker installer
-  really nests a satisfying copy under this plugin when a sibling pins another major is an
-  act no check in this repository can see. Both limits are written into
-  `docs/compatibility-evidence.md` next to the frames, not papered over as coverage.
+- **What this machine could not decide, and what it did.** Measured for real, with pnpm's
+  hoisted linker and the reporter's own `autoInstallPeers: false`: the published 0.7.5 in a
+  profile tree whose sibling package hoists `js-yaml` 5.x generates nothing, and this build
+  in that same tree gets its engine nested under itself and registers every source it was
+  offered. Still unmeasured: the deployment itself — an archive-packaged host on DSH
+  Desktop — and the reporter's own host-console line, which is the check their report
+  nominated as decisive. Both limits, and the frames that back the rest, are in
+  `docs/compatibility-evidence.md`.
 
 ## 0.7.5 — 2026-09-30
 
