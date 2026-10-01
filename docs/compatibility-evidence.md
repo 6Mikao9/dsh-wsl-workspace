@@ -1061,6 +1061,15 @@ carries it changed.
   `scripts/verify-install.mjs` performs that same install as the published-artifact gate
   and runs in `prepublishOnly`.
 
+  > Superseded **as a design claim**, not as a measurement (2026-10-01, plugin 0.7.6,
+  > issue #47): that install was read as the wanted end state, and on a real DSH Desktop
+  > profile it is the defect — the variant generator resolved both modules at call time,
+  > so an install carrying neither installs a plugin that generates no variant, silently.
+  > The install of that day and its readout stand; the conclusion drawn from them is
+  > replaced by the section `Issue #47: a profile that cannot lend the generator its
+  > modules` below, and `scripts/verify-install.mjs` now asserts the runtime surface is
+  > present instead of certifying that it is absent.
+
 **Note on the committed `lib/`.** The rebuild that ships with this change moves every
 chunk hash and reflows comments in files this change does not touch, because `tsdown`
 depends on `rolldown: "latest"` and neither lockfile is committed (`.gitignore` excludes
@@ -1535,3 +1544,82 @@ README-parity cases had no READMEs to read. The copy list in
 `scripts/compatibility/Prepare-Case.ps1` and `.test-runs/harness.mjs` now carries the
 two full READMEs, and the test skips with a named reason in a copy that has none
 instead of reporting a missing file as a documentation defect.
+
+## Issue #47: a profile that cannot lend the generator its modules (2026-10-01, plugin 0.7.6)
+
+**The claim, and who measured it.** A reporter running DSH Desktop 0.2.0-rc.2 on
+Windows found that no `wsl-*` variant exists at all: the add-workspace dialog answers
+that it found no healthy preset, sessions bound to a `\\wsl$\…` workspace stay on the
+Windows tools, and four leftover directories of the retired mechanism outlived every
+boot. Their own report states plainly that its two most load-bearing sentences are
+reconstructions from code paths and filesystem residue, not captured host output, and
+that the check which would settle it is one grep against the host console.
+
+**What this machine could settle.** Not the deployment — there is no DSH Desktop here.
+What was reproducible is the *shape*, with real packages:
+
+- the registry offers `js-yaml` `latest` = 5.4.2 and keeps 4.3.2 under `v4-legacy`, the
+  line the umbrella hoists; both are installed side by side on purpose
+  (`ci/deps` and `ci/deps-conflict`, the second never linked into the repo root).
+- a schema built against 4.3.2 and loaded through 5.4.2 fails inside the loader, on a
+  message that names neither package nor version nor path. Measured directly with the
+  two real releases, not inferred from the report.
+- 5.4.2 exposes no `Type`; the dialect this plugin needs is built from that class. So an
+  API-shape probe is not a guard: the load still dies with the schema built by the other
+  major. That is why the fix probes by *parsing one document* rather than by inspecting
+  exports.
+
+**The apparatus.** `tests/host-profile-isolation.mjs` (`npm run test:profile`) builds a
+profile-shaped tree per arm under the temp dir and boots each arm's own copy of the
+plugin against a roster face. Two properties had to be learned by going red first, and
+both are recorded in the file: the plugin copy must never be a link (the loader resolves
+through links to their targets, which silently dissolves the hostility), and containment
+cannot be read off a resolved path on Windows (both loaders dereference a junction), so
+the file performs the ancestor walk Node performs and cross-checks it against the
+loader's own answer.
+
+**Frames.**
+
+| frame | where | reading |
+| --- | --- | --- |
+| before the fix, at `2f913e9` | win32 maintainer machine, node v24.21.0 | 60 ok / 8 not ok, exit 1 |
+| before the fix, at `2f913e9` | CI run 36864563398 (ubuntu, `workflow_dispatch`) | the same 8 named, exit 1; the same run shows the conflict copy materialising there too |
+| after the fix, at `a14ae1c` | win32 maintainer machine | 68 ok / 0 not ok, exit 0 |
+| after the fix | `npm run test:node`, `test:unit`, `scripts/typecheck-gate.mjs`, `npm run test:docs` | all exit 0 (typecheck at its recorded count, 212; docs 11/11) |
+
+The eight reds decompose into the two defects plus the amplifier: three arms are the
+missing loaned schema, the hoisted wrong engine major, and both together; two are the
+all-or-nothing shape (one unreadable source removing the others, and the retired
+directory sweep never running); three are the repair-side arms (the plugin standing on a
+copy that is not its own, and a failure that names nothing). The control arm, the
+dialect-equivalence control against the pinned Host schema, and the activation probe over
+every provider path the declarations name were green on the *same* frame as the reds,
+which is what lets those reds mean the product.
+
+**The apparatus was shown to bite.** Three rehearsals, each reverted and each verified by
+hash (`lib/index.js` returned to the byte-for-byte output of a rebuild, sha 4848ebd2…):
+putting the borrowed schema back reddens the two arms that need it absent; deleting the
+declared dependency reddens the three arms that depend on the plugin's own copy;
+rethrowing from the per-source catch reddens exactly the two fault-tolerance arms and
+leaves the dependency arms green. Each red set is a different set, so no two of these
+defects are being reported as one.
+
+**A gate caught this change, and the change was wrong first.** The first green of
+`npm run test:node` did not happen: `tests/host-materialize.mjs` pins that a vanished
+source leaves the previous complete variant untouched, and it had been satisfied by
+accident — the abort skipped the sweep. Making the sweep run, which is what the report
+asked for, deleted the user's working variant. The sweep now honours a failed variant's
+previous publication as well, the contract stays, and the accident it depended on is
+gone.
+
+**What remains unverified, stated as limits.** Whether a hoisted-linker installer really
+nests a satisfying copy when a sibling pins a different major is an act no gate in this
+repository can observe; the only local evidence about installer staging points the other
+way for link-installed plugins, and it is the reason every dialect failure now names the
+copy, version and path it resolved. The reporter's own host-console line has not been
+read by anyone here. `@deepseek-ai/schemastery` is still a call-time-free optional peer
+the plugin imports statically at module load, and the activation probe covers that shape
+only inside the analog trees. The compatibility matrix's real-host job now asserts the
+outcome count line rather than only route liveness; its first execution is a dispatch
+frame, recorded below when it exists, and that harness is structurally the positive
+control for the peer question, never the reproduction.
