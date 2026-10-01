@@ -3,8 +3,8 @@
 This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the two preset-channel integration tests (the retired directory generation and the declaration generation), a real-WSL smoke test, and a post-build lib verification gate.
 
 > **Fast path (same commands CI runs):** after `npm ci && node ci/install-pinned.mjs`,
-> run `npm run test:unit`, `npm run test:node`, `npm run test:wsl` (Windows + a real
-> distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
+> run `npm run test:unit`, `npm run test:node`, `npm run test:profile`, `npm run test:wsl`
+> (Windows + a real distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
 > The full inventory of every check — command, prerequisites, CI home, and what is
 > still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
 > the background and the release checklist.
@@ -222,6 +222,7 @@ Two levels, in order of cost:
 2. `node --experimental-strip-types --test tests/*.test.ts` — all green (locales, variants, paths, shell, fs execution context, fs policy, wsl skills, wsl search).
 3. `node tests/host-materialize.mjs` — all assertions pass (the directory channel).
 4. `node tests/host-declare.mjs` — all assertions pass (the declaration channel).
+   - `node ci/install-pinned.mjs && npm run test:profile` — every arm green (issue #47: profile-shaped trees laid out by Node's own resolution, the hostile `js-yaml` major from `ci/deps-conflict`, one unreadable source among healthy ones). This is the CI step placed after `verify:install`, so a red there silences no other gate; its premise lines P1–P7 must stay green, because a red on one of those is the fixture, never the product.
 5. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
 6. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
 7. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
