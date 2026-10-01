@@ -254,12 +254,20 @@ are all wrong".
 - `src/shared/wsl.ts:102` chooses UTF-16LE by probing for a NUL byte. It is the
   only place in `src/` that does this; every other consumer takes UTF-8
   (`grep -rniE 'utf16|ucs2' src/` → `src/shared/wsl.ts` only). **(A)**
-- `src/host/wsl-search.ts:841` converts wsl.exe's own stderr with
-  `toString('utf8')`. When the failing process is `wsl.exe` itself (a bad `-d` or
-  `-u`), that stream is UTF-16LE, and decoding it as UTF-8 does not keep the NULs:
-  Node drops them, so the text arrives as spaced-out characters and the pattern
-  tests at `:885-886` misfire without an error. Symptom predicted from the code;
-  not exercised. **(C/U)**
+- `src/host/wsl-search.ts:841` decodes wsl.exe's stderr with `toString('utf8')` unconditionally.
+  Decoding UTF-16LE that way does **not** drop the NUL bytes — measured here, the result
+  re-encodes back to the original bytes (`Buffer.from(text, 'utf8').equals(buffer)` is true), so
+  nothing vanishes and the symptom is not "shorter text". What is lost is the content: the
+  300-character detail budget spends half of it on NULs (a 645-character first line arrives as
+  150 readable characters), and every substring judgement after it (`INVALID_PATTERN` at `:886`)
+  can never fire, because `Unmatched` is spelled `U\0n\0m\0a…`. Which stream carries the
+  UTF-16LE is build-dependent: measured on this machine (Win10 19045 + WSL 2.1.5) wsl.exe puts
+  its own human-readable diagnostics on **stdout** as UTF-16LE with an **empty stderr** (exit
+  127, 128 bytes), while its `<3>WSL (n) ERROR:` lines are UTF-8 on stderr — so on this build
+  the reachable harm at that call site is worse than garbled: `acceptRun` reads only stderr and
+  throws the reason away. Both halves have red tests now
+  (`tests/search-run-fakes.mjs` §6b/§6c). The WSL1 runner's stream shapes are unverified.
+  **(A, measured 2026-10-01)**
 - Capability is decided by string-matching an error message in
   `src/index.ts:582-584`, by `grep --version | grep -q GNU` in
   `src/host/wsl-search.ts:120`/`:159`, and by regex over `reg.exe` text in
@@ -438,30 +446,14 @@ re-measured on this frame; `(C)`/`(U)` items remain unproven and are still label
   difference is real; the conclusion drawn from it is not. Do not reuse that
   argument. The adjacent finding that survives is the missing version comparison
   (`ci/install-pinned.mjs:111`).
-- **"UTF-16 mis-decode produces null-laced mojibake."** Corrected above: decoding
-  UTF-16LE as UTF-8 in Node drops the NUL bytes rather than preserving them, so
-  the observable symptom is spacing between characters. The line and the risk are
-  unchanged; the described symptom was wrong.
-- Reviewer figures replaced by measurements taken here: `src/host/wsl-search.ts`
-  blame attribution is 1165 of 1166 lines to `d701fbe` (not 1166), `src/index.ts`
-  has 14 distinct blame commits (not 15), and the unreachable-commit tally across
-  stale remote branches is 17 branches holding 54 commits (not "17 branches,
-  53").
-
-- **"The deterministic install branch of `ci/install-pinned.mjs` is dead code,
-  because `ci/deps/package-lock.json` cannot satisfy `npm ci`."** A reviewer
-  derived this from a real observation — the lock's root entry declares 19
-  dependencies while `ci/deps/package.json:4-24` declares 20, with
-  `@deepseek-ai/cordis-plugin-include` absent from the lock root — and from it
-  concluded `npm ci` must fail. Measured here: `npm ci --no-audit --no-fund
-  --dry-run` in `ci/deps` reports `up to date` and exits 0. The 19-versus-20
-  difference is real; the conclusion drawn from it is not. Do not reuse that
-  argument. The adjacent finding that survives is the missing version comparison
-  (`ci/install-pinned.mjs:111`).
-- **"UTF-16 mis-decode produces null-laced mojibake."** Corrected above: decoding
-  UTF-16LE as UTF-8 in Node drops the NUL bytes rather than preserving them, so
-  the observable symptom is spacing between characters. The line and the risk are
-  unchanged; the described symptom was wrong.
+- **"UTF-16 mis-decode produces null-laced mojibake."** — and the sentence that "corrected" it,
+  which claimed Node *drops* the NUL bytes. Both are wrong, and I wrote the second one. Measured
+  here: decoding UTF-16LE as UTF-8 is lossless and reversible (852 bytes → 852 characters,
+  `Buffer.from(text, 'utf8').equals(buffer)` true; every NUL is still there). The real harms are
+  the halved detail budget, the substring tests that can never match, and an operator reading
+  text with a gap between every letter. Reproduced as red tests in
+  `tests/search-run-fakes.mjs` §6b, and pinned as a claim guard in
+  `tests/wsl-output-decode.test.ts` ("keeps every byte and costs the reader something else").
 - Reviewer figures replaced by measurements taken here: `src/host/wsl-search.ts`
   blame attribution is 1165 of 1166 lines to `d701fbe` (not 1166), `src/index.ts`
   has 14 distinct blame commits (not 15), and the unreachable-commit tally across
@@ -472,7 +464,7 @@ re-measured on this frame; `(C)`/`(U)` items remain unproven and are still label
 
 - The `compat.yml` interpolation (finding 3) is proven as a shape only. No
   workflow was dispatched and `main` was not touched.
-- The UTF-16 stderr path (`src/host/wsl-search.ts:841`) was read, not run. The
+- The UTF-16 stderr path (`src/host/wsl-search.ts:841`) was read, not run, when this review was written; it is exercised now, offline, by `tests/search-run-fakes.mjs` §6b/§6c, and the stream shapes around it are recorded as measurements in `docs/CHECK-CATALOG.md` (bucket D).
   predicted symptom is inference.
 - Whether the missing `tsc.status` check has ever produced a green frame in this
   repository's CI is not established; only the code path and a reproduction of
