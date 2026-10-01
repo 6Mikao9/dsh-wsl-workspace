@@ -1,5 +1,7 @@
 /**
- * Tech-debt exposure: the four hazards named in the 2026-10-01 review pass, turned into tests.
+ * Tech-debt exposure: the four hazards named in the 2026-10-01 review pass, turned into tests,
+ * plus the two boundary cases from that review's own list (interpreter metacharacters, and an
+ * existing path past MAX_PATH) that the four numbered hazards do not reach.
  *
  * CONTRACT OF THIS FILE — read before triaging a red.
  *   Nothing here fixes product code. A red line is the reproduction, and the repair direction is
@@ -7,11 +9,12 @@
  *   the test either. 绝对不要修改业务源代码：这些测试只负责让脆弱写法原形毕露。
  *
  * Every expectation below was measured on Win10 19045 + WSL 2.1.5 + node 24.21.0 before it was
- * written, and one of the report's four predictions did NOT survive that measurement: `mklink /J`
- * with spaced paths works, because `shell:false` still goes through CreateProcess and Node quotes
- * argv entries containing spaces. That is recorded as a green contract line rather than quietly
- * dropped — a suite is allowed to correct the person who wrote the ticket, and a hand-quoted
-   'fix' for a non-bug would have regressed it.
+ * written, and two suspects came out sound. The report predicted that `mklink /J` would crash on
+ * spaced paths; it does not, because `shell:false` still goes through CreateProcess and Node
+ * quotes argv entries containing spaces. The boundary list flagged long paths; a 300-character
+ * existing path is read by `statSync` without help. Both are recorded as green contract lines
+ * rather than quietly dropped — a suite is allowed to correct the person who wrote the ticket,
+ * and a hand-quoted 'fix' for a non-bug would have regressed it.
  *
  *   node --test --experimental-strip-types tests/tech-debt-exposure.test.ts
  */
@@ -300,4 +303,100 @@ test('D: a NUL inside a UTF-8 stream does not flip the decode to UTF-16LE', () =
   const realUtf16 = Buffer.from(listingText, 'utf16le')
   assert.equal(decodeWslOutput(realUtf16), listingText,
     'a real UTF-16LE stream must decode — the guard must stay structural, not become a constant')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 技术债 E —《被吞掉的 &，被重定向的 >》: the same fallback as A, but the failure is SILENT.
+// A measured a path with a space, which at least exits non-zero. These two do not:
+//
+//   `%DSH_PROBE_UNSET%literal&tail`  shell:false → received verbatim
+//                                    shell:true  → the child gets `%DSH_PROBE_UNSET%literal`
+//                                    with status 0: `&tail` vanished and cmd parsed the rest
+//   `a^b>c`                          shell:false → verbatim
+//                                    shell:true  → the child gets NOTHING (empty argv), status
+//                                    0, and cmd used `>c` as a REDIRECTION, writing a file
+//                                    named c into the working directory
+//
+// That is the review's third principle as a failing test: a value the caller treats as data can
+// lose its tail without an error, or reach the interpreter as a control character and create
+// files. No gate downstream would notice — `npm install <path>` resolving a different path, or a
+// publish step writing into the tree, both look like success.
+//
+// REPAIR DIRECTION: as A — no shell on any argv path (`process.execPath` plus the CLI's own
+// .js). Where a `.cmd` launcher genuinely must run, hand it one fixed string with no
+// caller-derived content in it, and treat an argument containing & | > < ^ % as a defect report
+// rather than as input. `spawn-through-a-shell-with-args` in the scanner lists the sites.
+// ─────────────────────────────────────────────────────────────────────────────
+test('E: an argument handed to the shell fallback keeps its metacharacters and writes nothing', () => {
+  // No space in this scratch root on purpose: the space case is A's, and mixing them would make
+  // a red here ambiguous about which behaviour broke.
+  const work = mkdtempSync(join(tmpdir(), 'dsh-tde-pct-'))
+  try {
+    const script = join(work, 'argv.js')
+    writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)))\n', 'utf8')
+    const ampersand = '%DSH_PROBE_UNSET%literal&tail'
+    const redirect = 'a^b>c'
+    const stray = join(work, 'c')
+    const argvOf = (result: ReturnType<typeof spawnSync>) => {
+      try {
+        return JSON.parse(String(result.stdout).trim()) as string[]
+      } catch {
+        return []
+      }
+    }
+    const throughShell = (value: string) =>
+      spawnSync(process.execPath, [script, value], { shell: true, encoding: 'utf8', cwd: work })
+    const directly = (value: string) =>
+      spawnSync(process.execPath, [script, value], { shell: false, encoding: 'utf8', cwd: work })
+
+    // Controls first: without an interpreter both values are data and nothing is written.
+    assert.deepEqual(argvOf(directly(ampersand)), [ampersand],
+      'the shell-less control must receive the ampersand value verbatim')
+    assert.deepEqual(argvOf(directly(redirect)), [redirect],
+      'the shell-less control must receive the caret/redirect value verbatim')
+    assert.equal(existsSync(stray), false, 'the shell-less control must not write a file')
+
+    const amp = throughShell(ampersand)
+    assert.deepEqual(argvOf(amp), [ampersand],
+      'a value containing & must reach the program intact — measured today: status '
+        + `${amp.status} (no error!) and the child received ${JSON.stringify(argvOf(amp))}, so `
+        + 'cmd ate the tail of the argument and parsed the remainder as a command')
+    const red = throughShell(redirect)
+    assert.deepEqual(argvOf(red), [redirect],
+      'a value containing ^ and > must reach the program intact — measured today: status '
+        + `${red.status}, child argv ${JSON.stringify(argvOf(red))}`)
+    assert.equal(existsSync(stray), false,
+      `a value containing > must not be able to create a file in the working directory `
+        + `(measured today: ${JSON.stringify(stray)} exists = ${existsSync(stray)})`)
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 边界探测 —《极长路径》, measured rather than assumed.
+// A path built past 300 characters — well over the 260 MAX_PATH line — is still readable by
+// statSync on this machine, so `check` sees it and answers honestly today. This line is GREEN on
+// purpose: it is the tier declaration, and it is the assertion that flips if the volume ever
+// loses long-path transparency. At that point the review's `exists:false` fold becomes reachable
+// from an ordinary deep working tree, and this becomes the red the product round needs.
+// ─────────────────────────────────────────────────────────────────────────────
+test('boundary: an existing path past the 260-character line is still seen as existing', () => {
+  const work = mkdtempSync(join(tmpdir(), 'dsh-tde-longpath-'))
+  try {
+    let cursor = work
+    for (let depth = 0; depth < 40 && cursor.length <= 300; depth += 1) {
+      cursor = join(cursor, 'segment-directory-name')
+      mkdirSync(cursor)
+    }
+    assert.ok(cursor.length > 260, `the fixture is past MAX_PATH (${cursor.length} characters)`)
+    const leaf = join(cursor, 'leaf.txt')
+    writeFileSync(leaf, 'x', 'utf8')
+    assert.equal(existsSync(leaf), true, 'the deep file exists as far as the OS is concerned')
+    assert.doesNotThrow(() => statSync(leaf),
+      `statSync must read a ${cursor.length}-character path — measured today it does; if this `
+        + 'goes red, src/index.ts:319-325 is reachable from an ordinary deep tree')
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
 })
