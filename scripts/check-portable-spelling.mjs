@@ -80,6 +80,43 @@ export const RULES = [
       && /execFile|spawn|wsl\.exe/.test(line)
       && !/require[A-Z]|assert[A-Z]|portability-allow/.test(line),
   },
+  // The three shapes the 2026-10-01 tech-debt pass turned into red tests
+  // (tests/tech-debt-exposure.test.ts). They belong here because a passing test wrapped around a
+  // fragile spelling only moves the cost to whoever debugs it next; the spelling has to go.
+  {
+    id: 'spawn-through-a-shell-with-args',
+    shape: 'a spawn that hands an argument list to a command interpreter (shell: true, or '
+      + 'shell: process.platform === "win32")',
+    instead: 'spawnSync(process.execPath, [entryScript, ...args]) with no shell at all. The '
+      + 'interpreter RE-TOKENISES argv — Node says so itself (DEP0190: the arguments are not '
+      + 'escaped, only concatenated) — so one space inside a path-derived argument becomes two '
+      + 'arguments. Measured on this machine: the same argv through shell:true exits 1 with '
+      + '"Cannot find module D:\\Temp\\dsh-spaced"; through shell:false the child receives exactly '
+      + 'one intact argument',
+    enforceable: 'none',
+    match: (_rel, line) => /\bshell:\s*(true|process\.platform)/.test(line)
+      && !/portability-allow/.test(line),
+  },
+  {
+    id: 'cmd-exe-as-an-api',
+    shape: 'spawning cmd.exe to do something Node\'s own API can already do',
+    instead: 'the API. fs.symlinkSync(target, path, "junction") stands in for cmd /c mklink /J and '
+      + 'throws an Error carrying EEXIST/EPERM/ENOENT instead of a bare exit status. Measured on '
+      + 'spaced paths: both forms succeed, so the debt here is the interpreter and the lost errno, '
+      + 'NOT a quoting crash — the report predicted a syntax failure and measurement refuted it',
+    enforceable: 'none',
+    match: (_rel, line) => /['"]cmd(\.exe)?['"]/.test(line)
+      && /spawn|execFile/.test(line) && !/portability-allow/.test(line),
+  },
+  {
+    id: 'stdio-ignore-discards-the-reason',
+    shape: 'stdio: "ignore" on a child process whose exit status the caller checks',
+    instead: 'capture stderr (encoding: "utf8") and print it in the failure message, so a red run '
+      + 'names its cause — the rule the WSL gates already hold themselves to. Measured: the same '
+      + 'failing mklink carries cmd\'s own sentence as soon as stdio is not ignored',
+    enforceable: 'none',
+    match: (_rel, line) => /stdio:\s*['"]ignore['"]/.test(line) && !/portability-allow/.test(line),
+  },
   {
     id: 'abs-posix-path-in-windows-bash-step',
     shape: 'an absolute /tmp-style path assigned in a bash step that runs on a Windows runner',
