@@ -1555,8 +1555,39 @@ boot. Their own report states plainly that its two most load-bearing sentences a
 reconstructions from code paths and filesystem residue, not captured host output, and
 that the check which would settle it is one grep against the host console.
 
-**What this machine could settle.** Not the deployment — there is no DSH Desktop here.
-What was reproducible is the *shape*, with real packages:
+**What this machine could settle.** Not the host *process* — see the limits below. What it
+did settle is the deployment shape, and it turned out to be sitting on this machine all
+along: `AppData\Local\Programs\DeepSeek Harness` is a real DSH Desktop install, and its own
+profile at `.dsh\profiles\desktop` declares `dsh-wsl-workspace@0.7.5` under
+`nodeLinker: hoisted` with `autoInstallPeers: false`, while that profile's `node_modules`
+carries no `js-yaml` for the plugin and no `cordis-plugin-include` anywhere. Asking the ESM
+loader, from the *installed* `lib/index.js`, what the two borrowed specifiers resolve to
+answered `ERR_MODULE_NOT_FOUND` for both — and for `@deepseek-ai/schemastery` too, which the
+running host plainly does provide by some route of its own. That last answer is why this
+section does not claim the host process was reproduced: a bare Node walk cannot see what the
+packaged host injects, so the arms emulate the *shortage* the report measured, not the host's
+resolver. (An earlier draft of this section said there is no DSH Desktop on this machine.
+That was wrong, found by looking; the limit is narrower than that and is stated below.)
+
+**Both legs, in a temp dir, laid out by the real installer.** Two profile trees were built
+under the temp dir with this profile's own settings (`nodeLinker: hoisted`,
+`autoInstallPeers: false`) and a manifest declaring the host scope plus the sibling package
+the report names — `dsh-config-manager@0.1.68`, whose own dependency hoists `js-yaml` 5.4.2 —
+then each was booted through the plugin's real `apply()` with a roster face:
+
+| leg | pnpm installed | layout it chose | result |
+| --- | --- | --- | --- |
+| A | `dsh-wsl-workspace@0.7.5` from the registry | root `js-yaml` 5.4.2, nothing under the plugin, no include package anywhere | zero variants, the stale directory survived, and the one line the frame wrote was the failure naming the include package |
+| B | the tarball of this build | root still 5.4.2, **4.3.2 nested under the plugin** | `WSL preset variants: 2/2 registered`, stale swept, the `!!js` row still an expression node, zero failure lines |
+
+The first run of this pair reported leg B as failing. That was this harness's bug, not the
+product's: it counted Node's own `DEP0190` shell warning as "the frame said something", ended
+the wait early, and deleted the tree while the fire-and-forget generation was still running,
+so the ENOENT it then saw was its own. After filtering to the plugin's own lines and waiting
+for the frame to finish, both legs read as above. The scratch trees and the scripts were
+removed afterwards; the machine's own `.dsh` was only ever read.
+
+The shape was established with real packages before either tree existed:
 
 - the registry offers `js-yaml` `latest` = 5.4.2 and keeps 4.3.2 under `v4-legacy`, the
   line the umbrella hoists; both are installed side by side on purpose
@@ -1642,11 +1673,18 @@ Replay: build a temp dir with that `pnpm-workspace.yaml` and a manifest dependin
 and their homes were removed after both readings.
 
 **What remains unverified, stated as limits.** The installer act above is measured for
-pnpm's hoisted linker with the reporter's own settings on this machine; what still has no
-reading anywhere is the deployment itself — an archive-packaged host on DSH Desktop, where
-the reason a peer is unreachable is the archive rather than the manifest. The reporter's
-own host-console line has not been read by anyone here, and that is the one check the
-report itself nominated as decisive, so the reply drafted for #47 asks for it.
+pnpm's hoisted linker with the reporter's own settings on this machine, on this machine's own
+Desktop profile shape; what still has no reading is the **packaged host process**. A real DSH
+Desktop install exists here (`AppData\Local\Programs\DeepSeek Harness`, plugin installed at
+`.dsh\profiles\desktop`) and was read, never launched — starting it means a GUI process, the
+self-updater, and a window on a machine its owner is using, so that leg waits for a nod. Until
+someone boots that process with this build, the claim is "the shortage the report measured is
+reproduced and repaired in profile-shaped trees laid out by the real installer", not "the
+Desktop dialog was seen to work" — and the read-only probe showing `@deepseek-ai/schemastery`
+unreachable from the installed copy while the running host plainly loads it is direct evidence
+that the packaged host resolves things a bare Node walk does not. The reporter's own
+host-console line has not been read by anyone here, and that is the one check the report
+itself nominated as decisive, so the reply drafted for #47 asks for it.
 `@deepseek-ai/schemastery` is still a peer the plugin imports statically at module load:
 the installer tree above had to be given it explicitly, which is exactly how a real profile
 differs from this analog, and the activation probe covers that shape only inside the trees

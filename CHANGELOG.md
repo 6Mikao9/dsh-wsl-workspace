@@ -33,9 +33,10 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   mid-update preserved the previous complete variant only by accident: the abort skipped
   the sweep that would otherwise delete it. The accident is gone, the contract stays, and
   `tests/host-materialize.mjs` caught the difference on the first run.
-- **A dialect failure names what it stood on** — package, version and path. The version is
-  decided on a user's machine by an installer no gate of ours can observe, so the log line
-  is the part that can be acted on.
+- **A dialect failure names what it stood on** — package, version and path. That act is
+  decided on a user's machine by an installer; it has since been measured through a real pnpm
+  layout rather than assumed (see the last bullet), and the line still names the copy so a
+  frame on some other installer carries its own conclusion.
 - **New gate** `tests/host-profile-isolation.mjs` (`npm run test:profile`): profile-shaped
   trees under the temp dir, each booting the plugin's own copy — the loaned schema absent,
   the hoisted engine on the wrong major, both at once, and one unreadable source among
@@ -56,10 +57,14 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   hoisted linker and the reporter's own `autoInstallPeers: false`: the published 0.7.5 in a
   profile tree whose sibling package hoists `js-yaml` 5.x generates nothing, and this build
   in that same tree gets its engine nested under itself and registers every source it was
-  offered. Still unmeasured: the deployment itself — an archive-packaged host on DSH
-  Desktop — and the reporter's own host-console line, which is the check their report
-  nominated as decisive. Both limits, and the frames that back the rest, are in
-  `docs/compatibility-evidence.md`.
+  offered. The same pair was then run in this machine's own Desktop profile shape — and it
+  turned out the real thing is installed here: `.dsh\profiles\desktop` carries 0.7.5 under
+  exactly those settings with no engine and no include package on its walk-up, which is the
+  report's shortage sitting on a maintainer machine the whole time. Still unmeasured: the
+  packaged host **process** — reading that profile is free, launching a GUI plus its
+  self-updater on a machine its owner is using is not, and it waits for a nod — and the
+  reporter's own host-console line, which is the check their report nominated as decisive.
+  Both limits, and the frames that back the rest, are in `docs/compatibility-evidence.md`.
 
 ## 0.7.5 — 2026-09-30
 
