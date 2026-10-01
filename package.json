@@ -23,6 +23,7 @@
     "test:node": "npm run build && node --experimental-strip-types --test tests/shell.test.ts tests/fs-execution-context.test.ts tests/wsl-jobs.test.ts tests/wsl-search.test.ts tests/client-lifecycle.test.mjs && node tests/host-materialize.mjs && node tests/host-declare.mjs && node scripts/check-rank-parity.mjs --strict",
     "test:wsl": "node --experimental-strip-types tests/smoke.ts && node --experimental-strip-types tests/exec-shape.mjs && node tests/shell-extra.mjs && node scripts/make-smoke-built.mjs && node --experimental-strip-types tests/smoke-built.ts && node --experimental-strip-types scripts/compatibility/fs-real.mjs && node --experimental-strip-types scripts/compatibility/skills-real.mjs && node --experimental-strip-types scripts/compatibility/search-real.mjs && node --experimental-strip-types scripts/compatibility/relay-real.mjs",
     "test:rank": "node scripts/check-rank-parity.mjs --strict",
+    "test:profile": "node tests/host-profile-isolation.mjs",
     "test:compat": "bash scripts/verify-dsh-compat.sh",
     "test:docs": "node scripts/check-docs-parity.mjs",
     "prepack": "npm run build",

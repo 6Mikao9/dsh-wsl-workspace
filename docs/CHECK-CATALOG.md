@@ -24,6 +24,12 @@ The `@deepseek-ai/*` peers are optional and provided by the host at runtime;
 in a clean checkout `node ci/install-pinned.mjs` materialises the pinned tree
 (ci/pinned-deps.json → ci/deps) and links it in. `test:node` rebuilds `lib/`
 first because the client/host integration checks consume built artifacts.
+The same command also materialises a SECOND tree (ci/deps-conflict) holding the
+`js-yaml` major the umbrella does NOT carry. It is deliberately never linked into
+the repo root: a hoisted wrong-major at the root would flip
+`tests/host-materialize.mjs`'s `require('js-yaml')` and poison the development
+tree, and the whole point of that copy is to be reachable only from inside a
+built arm.
 
 | Check | What it pins down | Extra prereq | CI home |
 | --- | --- | --- | --- |
@@ -35,6 +41,7 @@ first because the client/host integration checks consume built artifacts.
 | `tests/client-lifecycle.test.mjs` | the published `lib/client.js` in a vm sandbox against legacy + current runtime facades: preset binding, create & open, late-service registration | built lib | ci.yml#runtime-tests |
 | `tests/host-materialize.mjs` | host `apply()` directory channel: generated rows reference real lib files, atomic publish, stale cleanup, legacy `wsl` removal | cordis, schemastery, js-yaml, built lib | ci.yml#runtime-tests |
 | `tests/host-declare.mjs` | declaration channel (0.1.7+): capability switch, one declaration per healthy source, `!!js` round-trip, dispose retires all — must run paired with the check above | same | ci.yml#runtime-tests |
+| `tests/host-profile-isolation.mjs` (`npm run test:profile`) | #47: profile-shaped trees built under the temp dir — the plugin's manifest and `lib/` copied in (a copy, never a link: the loader resolves through a link to its target, which silently dissolves every hostile property of the tree), the Host packages junctioned per name, and a hoisted wrong-major `js-yaml` from the second tree. Pins that variant generation stands on nothing the Host happens to hoist, that the ancestor walk cannot escape the arm (checked by walking the way Node does, because both loaders dereference a Windows junction — the resolved path alone cannot answer this), that one unreadable source takes neither the other variants nor the stale sweep down, that every `file:` provider row a declaration names imports from inside the arm, and that a failure names the copy it stands on. A red on a premise line (P1-P7) is the fixture, never the product | pinned tree + ci/deps-conflict (`node ci/install-pinned.mjs` refuses when it cannot materialise it) + built lib | ci.yml#runtime-tests (last step, so a red here silences no gate behind it) |
 | `scripts/check-rank-parity.mjs --strict` | PROJECT_\*\_RANK copies vs the host dsh-skill-filesystem lib; `--strict` makes a missing host package a failure (the flag was documented but not honoured until 0.7.4+CI) | pinned tree | ci.yml#runtime-tests |
 
 ## C. Build / artifact-plane gates
